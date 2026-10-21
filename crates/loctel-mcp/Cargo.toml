@@ -1,0 +1,31 @@
+[package]
+name = "loctel-mcp"
+description = "Read-only MCP server for loctel: trace, log and service map tools over Streamable HTTP (rmcp)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+loctel-model.workspace = true
+loctel-store.workspace = true
+loctel-ingest.workspace = true
+rmcp.workspace = true
+axum.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+loctel-meshgen.workspace = true
+# The client half of rmcp and its HTTP transport: tests/http.rs talks to the
+# server the way Claude Code does.
+rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
+reqwest.workspace = true
+jsonschema.workspace = true
+
+[lints]
+workspace = true

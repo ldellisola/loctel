@@ -316,3 +316,279 @@ async fn shutdown_and_drop_are_safe_inside_a_runtime() {
     engine.shutdown();
     drop(engine);
 }
+
+// --- MCP (plan Task 9) ---------------------------------------------------------
+
+fn mcp_addr(handle: &EngineHandle) -> SocketAddr {
+    match listener(handle, "mcp").state {
+        ListenerState::Listening(addr) => addr,
+        ListenerState::Failed(why) => panic!("mcp failed: {why}"),
+    }
+}
+
+/// Runs `body` with an MCP client connected to the engine's MCP URL, on a
+/// runtime of the test's own (the engine has its own).
+fn with_mcp_client<T>(
+    engine: &EngineHandle,
+    body: impl AsyncFnOnce(
+        &rmcp::service::RunningService<rmcp::RoleClient, rmcp::model::ClientConfig>,
+    ) -> T,
+) -> T {
+    use rmcp::ServiceExt;
+    use rmcp::transport::StreamableHttpClientTransport;
+    use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
+
+    let url = engine.mcp_url().expect("the MCP server is up");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let transport = StreamableHttpClientTransport::from_config(
+            StreamableHttpClientTransportConfig::with_uri(url),
+        );
+        let client = rmcp::model::ClientConfig::default()
+            .serve(transport)
+            .await
+            .unwrap();
+        let out = body(&client).await;
+        let _ = client.cancel().await;
+        out
+    })
+}
+
+async fn call(
+    client: &rmcp::service::RunningService<rmcp::RoleClient, rmcp::model::ClientConfig>,
+    tool: &'static str,
+    arguments: serde_json::Value,
+) -> serde_json::Value {
+    let arguments = arguments.as_object().cloned();
+    let mut request = rmcp::model::CallToolRequestParams::new(tool);
+    if let Some(arguments) = arguments {
+        request = request.with_arguments(arguments);
+    }
+    let result = client.call_tool(request).await.unwrap();
+    assert_eq!(result.is_error, Some(false), "{tool}: {result:?}");
+    result.structured_content.expect("structured content")
+}
+
+#[test]
+fn engine_status_lists_mcp_listener() {
+    let engine = Engine::start(config()).unwrap();
+
+    let status = engine.status();
+    let names: Vec<_> = status.listeners.iter().map(|l| l.name).collect();
+    assert_eq!(names, ["otlp-grpc", "otlp-http", "mcp"]);
+
+    let mcp = listener(&engine, "mcp");
+    assert_eq!(mcp.requested, SocketAddr::new(LOOPBACK, 0));
+    let ListenerState::Listening(addr) = mcp.state else {
+        panic!("not listening: {mcp:?}");
+    };
+    assert_eq!(addr.ip(), LOOPBACK);
+    assert_ne!(addr.port(), 0, "the real port");
+    assert_eq!(
+        engine.mcp_url(),
+        Some(format!("http://127.0.0.1:{}/mcp", addr.port()))
+    );
+    assert!(TcpStream::connect(addr).is_ok());
+    engine.shutdown();
+}
+
+#[test]
+fn mcp_is_loopback_whatever_the_receivers_bind() {
+    let engine = Engine::start(EngineConfig {
+        bind_ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        ..config()
+    })
+    .unwrap();
+
+    // The OTLP receivers follow `bind_ip`; MCP never does.
+    match listener(&engine, "otlp-http").state {
+        ListenerState::Listening(addr) => assert!(addr.ip().is_unspecified()),
+        ListenerState::Failed(why) => panic!("otlp-http: {why}"),
+    }
+    assert_eq!(mcp_addr(&engine).ip(), LOOPBACK);
+    assert_eq!(listener(&engine, "mcp").requested.ip(), LOOPBACK);
+    engine.shutdown();
+}
+
+#[test]
+fn mcp_port_comes_from_settings() {
+    // Find a free port, release it and ask the engine for it.
+    let port = {
+        let probe = TcpListener::bind((LOOPBACK, 0)).unwrap();
+        probe.local_addr().unwrap().port()
+    };
+    let engine = Engine::start(EngineConfig {
+        settings: Settings {
+            mcp_port: port,
+            ..config().settings
+        },
+        ..config()
+    })
+    .unwrap();
+
+    assert_eq!(mcp_addr(&engine), SocketAddr::new(LOOPBACK, port));
+    assert_eq!(
+        engine.mcp_url(),
+        Some(format!("http://127.0.0.1:{port}/mcp"))
+    );
+    engine.shutdown();
+}
+
+#[test]
+fn a_taken_mcp_port_is_a_failed_listener_and_ingest_keeps_running() {
+    let taken = TcpListener::bind((LOOPBACK, 0)).unwrap();
+    let taken_port = taken.local_addr().unwrap().port();
+    let engine = Engine::start(EngineConfig {
+        settings: Settings {
+            mcp_port: taken_port,
+            ..config().settings
+        },
+        ..config()
+    })
+    .unwrap();
+
+    let mcp = listener(&engine, "mcp");
+    assert_eq!(mcp.requested, SocketAddr::new(LOOPBACK, taken_port));
+    assert!(matches!(mcp.state, ListenerState::Failed(_)), "{mcp:?}");
+    assert_eq!(engine.mcp_url(), None, "nothing to connect to");
+    let (code, _) = post_json(
+        http_addr(&engine),
+        "/v1/traces",
+        &trace_body(TRACE_A, "eee19b7ec3c1b174"),
+    );
+    assert_eq!(code, 200);
+    assert_eq!(engine.status().stats.spans, 1);
+    engine.shutdown();
+}
+
+#[test]
+fn agents_read_the_engine_status_and_the_stored_traces_over_mcp() {
+    let engine = Engine::start(config()).unwrap();
+    let (code, _) = post_json(
+        http_addr(&engine),
+        "/v1/traces",
+        &trace_body(TRACE_A, "eee19b7ec3c1b174"),
+    );
+    assert_eq!(code, 200);
+    let (code, _) = post_json(http_addr(&engine), "/v1/logs", logs_body());
+    assert_eq!(code, 200);
+
+    with_mcp_client(&engine, async |client| {
+        let status = call(client, "get_status", serde_json::json!({})).await;
+        assert_eq!(status["paused"], false);
+        assert_eq!(status["traces_held"], 1);
+        assert_eq!(status["spans_held"], 1);
+        assert_eq!(status["logs_held"], 1);
+        assert!(status["spans_per_sec"].as_f64().unwrap() > 0.0, "{status}");
+        assert!(status["logs_per_sec"].as_f64().unwrap() > 0.0, "{status}");
+        let listeners = status["listeners"].as_array().unwrap();
+        let names: Vec<&str> = listeners
+            .iter()
+            .map(|l| l["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["otlp-grpc", "otlp-http", "mcp"]);
+        for l in listeners {
+            assert_eq!(l["state"], "listening", "{l}");
+            assert!(
+                l["address"].as_str().unwrap().starts_with("127.0.0.1:"),
+                "{l}"
+            );
+        }
+
+        let traces = call(client, "search_traces", serde_json::json!({})).await;
+        assert_eq!(traces["traces"][0]["trace_id"], TRACE_A);
+        assert_eq!(traces["traces"][0]["root_name"], "GET /cart");
+        assert_eq!(traces["traces"][0]["root_service"], "checkout");
+
+        let services = call(client, "list_services", serde_json::json!({})).await;
+        assert_eq!(services[0]["name"], "checkout");
+        let marker = call(client, "get_marker", serde_json::json!({})).await;
+        assert!(
+            marker["marker"].as_str().unwrap().parse::<u64>().unwrap() > 1_700_000_000_000_000_000
+        );
+    });
+
+    // Pausing shows in what the agent reads, and so does what the engine
+    // could not bind.
+    engine.set_paused(true);
+    with_mcp_client(&engine, async |client| {
+        let status = call(client, "get_status", serde_json::json!({})).await;
+        assert_eq!(status["paused"], true);
+    });
+    engine.shutdown();
+}
+
+#[test]
+fn a_failed_listener_shows_up_in_the_mcp_status_with_its_reason() {
+    let taken = TcpListener::bind((LOOPBACK, 0)).unwrap();
+    let taken_port = taken.local_addr().unwrap().port();
+    let engine = Engine::start(EngineConfig {
+        settings: Settings {
+            otlp_http_port: taken_port,
+            ..config().settings
+        },
+        ..config()
+    })
+    .unwrap();
+
+    with_mcp_client(&engine, async |client| {
+        let status = call(client, "get_status", serde_json::json!({})).await;
+        let http = &status["listeners"][1];
+        assert_eq!(http["name"], "otlp-http");
+        assert_eq!(http["state"], "failed");
+        assert_eq!(http["address"], format!("127.0.0.1:{taken_port}"));
+        assert!(
+            http["error"].as_str().is_some_and(|e| !e.is_empty()),
+            "{http}"
+        );
+        assert_eq!(status["listeners"][2]["state"], "listening");
+    });
+    engine.shutdown();
+}
+
+#[test]
+fn foreign_origins_are_refused_on_the_engines_mcp_port() {
+    let engine = Engine::start(config()).unwrap();
+    let addr = mcp_addr(&engine);
+
+    let mut stream = TcpStream::connect(addr).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let body = "{}";
+    write!(
+        stream,
+        "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nOrigin: https://evil.example\r\n\
+         Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+    let mut reply = String::new();
+    stream.read_to_string(&mut reply).unwrap();
+
+    assert!(reply.starts_with("HTTP/1.1 403"), "{reply}");
+    engine.shutdown();
+}
+
+#[test]
+fn shutdown_stops_mcp_with_the_rest() {
+    let engine = Engine::start(config()).unwrap();
+    let addr = mcp_addr(&engine);
+    assert!(TcpStream::connect(addr).is_ok());
+
+    engine.shutdown();
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while TcpStream::connect(addr).is_ok() {
+        assert!(
+            Instant::now() < deadline,
+            "mcp still accepting after shutdown"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    // Asking again is harmless, and the URL is still the one it was.
+    assert!(engine.mcp_url().is_some());
+}

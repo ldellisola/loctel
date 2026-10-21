@@ -72,3 +72,14 @@ fn store_config_defaults_match_the_design() {
     assert_eq!(config.max_log_records, 5_000_000);
     assert_eq!(config.completeness_quiet, Duration::from_secs(10));
 }
+
+#[test]
+fn store_reads_now_from_its_own_clock() {
+    // The MCP marker tool hands out the store's time, so a test that drives
+    // the store with a manual clock gets a marker it controls.
+    let clock = std::sync::Arc::new(ManualClock::new(1_800_000_000_000_000_000));
+    let store = loctel_store::Store::new(StoreConfig::default(), clock.clone());
+    assert_eq!(store.now_unix_nano(), 1_800_000_000_000_000_000);
+    clock.advance(Duration::from_secs(3));
+    assert_eq!(store.now_unix_nano(), 1_800_000_003_000_000_000);
+}

@@ -23,8 +23,8 @@ the task that creates a crate changes its row.
 | `loctel-model` | core | Domain types (spans, logs, resources, IDs, severity), independent of OTLP | implemented (see "Domain model" below) |
 | `loctel-store` | core | In-memory store: trace assembly, completeness, dedup, eviction, failure semantics, search, logs, service map | implemented: assembly, completeness, dedup, eviction, failure semantics, trace summaries and search, logs, service map and services list (see "Store" below) |
 | `loctel-ingest` | core | OTLP gRPC and HTTP receivers, protobuf and JSON to model conversion | implemented: gRPC and HTTP receivers, gzip, conversion, `partial_success` (see "Ingest" below) |
-| `loctel-mcp` | core | MCP server (rmcp, Streamable HTTP), tools and their DTOs | planned |
-| `loctel-engine` | core | Wires store, ingest and MCP; settings, pause, rates; owns threads and runtime | implemented: store and OTLP receivers, `settings.toml`, pause, rates (MCP is wired in by a later task; see "Engine" below) |
+| `loctel-mcp` | core | MCP server (rmcp, Streamable HTTP), tools and their DTOs | implemented: nine read-only tools, the `Origin` check, both protocol generations (see "MCP" below) |
+| `loctel-engine` | core | Wires store, ingest and MCP; settings, pause, rates; owns threads and runtime | implemented: store, OTLP receivers and MCP server, `settings.toml`, pause, rates (see "Engine" below) |
 | `loctel-meshgen` | test tooling | Fake microservice mesh scenarios (library and `meshgen` binary) | implemented: six scenarios and a sender over gRPC, HTTP protobuf and HTTP JSON (see "Test tooling" below) |
 | `loctel-e2e` | test tooling | End-to-end tests through real OTLP and a real MCP client (`publish = false`) | planned |
 | `loctel-ui` | UI | GPUI views and the headless screenshot harness | planned |
@@ -34,8 +34,8 @@ the task that creates a crate changes its row.
 
 ## Data flow
 
-Target shape for Milestone 1 (MCP and the UI are not wired in yet; the rest is
-what runs today):
+Target shape for Milestone 1 (the UI is not wired in yet; the rest is what runs
+today):
 
 ```
  services (Docker or bare metal)
@@ -59,8 +59,10 @@ what runs today):
  AI agents  (MCP 2026-07-28, http://127.0.0.1:4319/mcp, read-only)
 ```
 
-Readers (MCP, UI) get the same `EngineHandle` and ask the store or the status
-directly; the engine is not in the read path.
+Readers (MCP, UI) read the store directly; the engine is not in the read path.
+The UI gets the `EngineHandle` and asks it for the status. The MCP server gets
+the store and a `StatusSource` that the engine implements, so `get_status` and
+`EngineHandle::status()` read the same state.
 
 Telemetry is never persisted. Only `settings.toml` (and discard rules from
 Milestone 2) is written to disk.
@@ -166,26 +168,61 @@ other crates rely on:
 - **Lifetime.** The servers run on the runtime that called `start`. Dropping
   `IngestServers`, or `shutdown(self)`, stops them gracefully.
 
+## MCP
+
+`loctel-mcp` depends on `loctel-model`, `loctel-store`, `loctel-ingest` (only
+for `ListenerStatus`), `rmcp`, `axum`, `tokio`, `schemars`, `chrono` and
+`serde`. The details (the tool table, the sizing rules, how to connect Claude
+Code) are in [`areas/mcp.md`](areas/mcp.md); the choices and their reasons are
+in [`decisions/0006-mcp-server-choices.md`](decisions/0006-mcp-server-choices.md).
+What other crates rely on:
+
+- **Read-only and small.** Nine tools (`get_status`, `get_marker`,
+  `list_services`, `get_service_map`, `search_traces`, `recent_failures`,
+  `get_trace`, `get_span`, `search_logs`), each answering from the store with a
+  compact summary by default, `limit` and `cursor` to page, and
+  `structuredContent` with an output schema plus the same JSON as text. No tool
+  changes anything.
+- **`serve(addr, store, status)`** mounts rmcp's Streamable HTTP service at
+  `/mcp` in an axum router and returns the `mcp` `ListenerStatus` and an
+  `McpShutdown` (drop it to stop). It runs on the caller's runtime and refuses
+  any address that is not loopback. A port that cannot be bound is a failed
+  listener, not an error.
+- **`Origin` and `Host`.** A request whose `Origin` names a host other than
+  `localhost`, `127.0.0.1` or `[::1]` gets 403, as does a foreign `Host` (rmcp
+  checks that one); no `Origin` is fine.
+- **`StatusSource`.** The engine implements it. It is the only thing the MCP
+  crate needs from the engine, so `loctel-mcp` does not depend on
+  `loctel-engine`.
+- **Failure semantics are the store's.** The tools never re-derive "failed":
+  they print `TraceSummary`, `TraceSnapshot` and `trace_exception`, so the UI
+  and the agents agree (design 9.4).
+- **`LoctelTools::call(name, args)`** runs a tool without a connection, which
+  is how the tool tests drive them; `dispatch` routes by name and a test fails if
+  it misses a registered tool.
+
 ## Engine
 
 `loctel-engine` depends on `loctel-model`, `loctel-store`, `loctel-ingest`,
-`tokio`, `toml`, `serde`, `dirs` and `anyhow`. It is the one object the menu
+`loctel-mcp`, `tokio`, `toml`, `serde`, `dirs` and `anyhow`. It is the one object the menu
 bar, the window and the headless binary hold, so none of them knows how the
 store and the receivers are put together. Decisions and reasons:
 [`decisions/0004-engine-lifecycle-and-settings.md`](decisions/0004-engine-lifecycle-and-settings.md).
 
 - **Starting.** `Engine::start(EngineConfig { bind_ip, settings, store })`
   returns an `EngineHandle`. It builds the `Store` (with `SystemClock`), a
-  multi-thread tokio runtime on threads named `loctel-engine`, and the OTLP
-  receivers on `bind_ip` and the ports in `Settings` (loopback by default).
-  The caller needs no async `main`. Calling it from inside a tokio runtime is
-  an `Err`, not a panic.
+  multi-thread tokio runtime on threads named `loctel-engine`, the OTLP
+  receivers on `bind_ip` and the ports in `Settings` (loopback by default), and
+  the MCP server on `127.0.0.1` at `mcp_port`, **always loopback whatever
+  `bind_ip` says**. The caller needs no async `main`. Calling it from inside a
+  tokio runtime is an `Err`, not a panic.
 - **Ports.** A port that cannot be bound is a `ListenerState::Failed` in
-  `EngineStatus::listeners` and does not stop the other receivers (design §4).
+  `EngineStatus::listeners` and does not stop the other endpoints (design §4).
   Port 0 picks a free one, and the listener status carries the real address.
 - **The handle.** `EngineHandle` is `Clone`, and every clone is the same
-  engine: `store()`, `status()`, `set_paused`, `is_paused`, `mcp_url()` (`None`
-  until MCP is wired in) and `shutdown()`. `shutdown` is idempotent and safe
+  engine: `store()`, `status()`, `set_paused`, `is_paused`, `mcp_url()`
+  (`http://127.0.0.1:{port}/mcp` with the port really bound, `None` when the MCP
+  port could not be bound) and `shutdown()`. `shutdown` is idempotent and safe
   from any thread, including inside a runtime (where it does not wait). The
   engine also stops when the last handle is dropped.
 - **Pause.** `EngineSink` is the receivers' `Sink`. While paused it drops
@@ -199,7 +236,9 @@ store and the receivers are put together. Decisions and reasons:
   first 5 seconds after start understate the rate.
 - **Status.** `EngineStatus { paused, listeners, spans_per_sec, logs_per_sec,
   stats }` is a snapshot by value. Callers poll it (the UI) or print it (the
-  headless binary).
+  headless binary). `listeners` is `otlp-grpc`, `otlp-http`, `mcp`, in that
+  order. The same state, behind `StatusSource`, answers the MCP `get_status`
+  tool, so the two cannot disagree.
 - **Settings.** `Settings` is `settings.toml`: `otlp_grpc_port` (4317),
   `otlp_http_port` (4318), `mcp_port` (4319), `disk_cap_bytes` (4 GiB),
   `start_at_login` (true) and `first_launch_done` (false). Every key is
@@ -228,8 +267,9 @@ loctel [--headless] [--grpc-port N] [--http-port N] [--mcp-port N]
   `--completeness-ms` sets how long a trace must be quiet to count as complete
   (tests use small values). Port 0 picks a free port. The file is only read:
   headless mode never writes it.
-- **Output.** Stdout carries one JSON line per listener, once, when the
-  engine is up, and nothing else:
+- **Output.** Stdout carries one JSON line per listener (`otlp-grpc`,
+  `otlp-http`, `mcp`, in that order), once, when the engine is up, and nothing
+  else:
   `{"event":"listener","name":"otlp-grpc","state":"listening","address":"127.0.0.1:4317"}`
   or `{"event":"listener","name":"otlp-http","state":"failed","error":"..."}`.
   A script that starts loctel with ports 0 reads its real ports from these

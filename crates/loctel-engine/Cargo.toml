@@ -10,6 +10,7 @@ publish = false
 loctel-model.workspace = true
 loctel-store.workspace = true
 loctel-ingest.workspace = true
+loctel-mcp.workspace = true
 anyhow.workspace = true
 dirs.workspace = true
 serde.workspace = true
@@ -19,6 +20,8 @@ toml.workspace = true
 [dev-dependencies]
 serde_json.workspace = true
 tempfile.workspace = true
+# A real MCP client, to read the engine's status the way an agent does.
+rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
 
 [lints]
 workspace = true

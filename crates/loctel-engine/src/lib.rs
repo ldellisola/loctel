@@ -1,12 +1,12 @@
 //! The loctel engine: everything between the sockets and the UI that is not
 //! the store or the receivers themselves.
 //!
-//! [`Engine::start`] builds a [`Store`], starts the OTLP receivers on a
-//! runtime of its own, and returns an [`EngineHandle`]: the one object the
-//! menu bar, the window and the headless binary hold. Through it they read the
-//! store, ask for a status snapshot, pause and resume receiving, and shut
-//! everything down. [`Settings`] is the `settings.toml` the ports and the
-//! disk cap come from.
+//! [`Engine::start`] builds a [`Store`], starts the OTLP receivers and the MCP
+//! server on a runtime of its own, and returns an [`EngineHandle`]: the one
+//! object the menu bar, the window and the headless binary hold. Through it
+//! they read the store, ask for a status snapshot, pause and resume receiving,
+//! find the MCP address and shut everything down. [`Settings`] is the
+//! `settings.toml` the ports and the disk cap come from.
 //!
 //! The engine has no UI or graphics dependency, and its `start` needs no async
 //! `main`: it owns its threads. See `docs/architecture.md` ("Engine" and
@@ -18,11 +18,12 @@ mod sink;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use anyhow::{Context as _, bail};
 use loctel_ingest::{DEFAULT_MAX_MESSAGE_BYTES, IngestConfig, IngestServers};
+use loctel_mcp::{ListenerDto, McpShutdown, StatusDto, StatusSource};
 use loctel_store::{Clock, SystemClock};
 use tokio::runtime::{Builder, Handle, Runtime};
 
@@ -63,7 +64,7 @@ impl Default for EngineConfig {
 pub struct EngineStatus {
     pub paused: bool,
     /// Every endpoint, as bound (or why it could not be): `otlp-grpc`,
-    /// `otlp-http` and, once the MCP server is wired in, `mcp`.
+    /// `otlp-http` and `mcp`, in that order.
     pub listeners: Vec<ListenerStatus>,
     /// Spans accepted per second over the last 5 seconds. Spans dropped
     /// while paused are not counted.
@@ -78,7 +79,8 @@ pub struct Engine;
 
 impl Engine {
     /// Starts the engine: a multi-thread tokio runtime on threads of its own,
-    /// the store, and the OTLP receivers.
+    /// the store, the OTLP receivers and the MCP server (on loopback, at the
+    /// port in the settings, whatever `bind_ip` says).
     ///
     /// Call it from plain code, such as a non-async `main`. It blocks only
     /// while the sockets are bound, which is quick; a port that cannot be
@@ -123,17 +125,37 @@ impl Engine {
             max_message_bytes: DEFAULT_MAX_MESSAGE_BYTES,
         };
         let ingest = runtime.block_on(loctel_ingest::start(ingest_config, sink));
-        let listeners = vec![ingest.grpc.clone(), ingest.http.clone()];
+
+        // The MCP server reads the engine's status, so it is started with the
+        // state it reads. The state learns the MCP listener's own status once
+        // the server has bound (a request in the instant before that sees the
+        // other two listeners).
+        let state = Arc::new(State {
+            store: store.clone(),
+            paused,
+            clock,
+            span_rate,
+            log_rate,
+            otlp: [ingest.grpc.clone(), ingest.http.clone()],
+            mcp: OnceLock::new(),
+        });
+        let mcp_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), settings.mcp_port);
+        let status_source: Arc<dyn StatusSource> = state.clone();
+        let (mcp, mcp_shutdown) =
+            runtime.block_on(loctel_mcp::serve(mcp_addr, store, status_source));
+        state
+            .mcp
+            .set(mcp)
+            .expect("the MCP status is set once, here");
 
         Ok(EngineHandle {
             shared: Arc::new(Shared {
-                store,
-                paused,
-                clock,
-                span_rate,
-                log_rate,
-                listeners,
-                running: Mutex::new(Some(Running { runtime, ingest })),
+                state,
+                running: Mutex::new(Some(Running {
+                    runtime,
+                    ingest,
+                    mcp: mcp_shutdown,
+                })),
             }),
         })
     }
@@ -148,12 +170,7 @@ pub struct EngineHandle {
 }
 
 struct Shared {
-    store: Store,
-    paused: Arc<AtomicBool>,
-    clock: Arc<dyn Clock>,
-    span_rate: Arc<RateMeter>,
-    log_rate: Arc<RateMeter>,
-    listeners: Vec<ListenerStatus>,
+    state: Arc<State>,
     /// `None` once stopped.
     running: Mutex<Option<Running>>,
 }
@@ -162,42 +179,110 @@ struct Shared {
 struct Running {
     runtime: Runtime,
     ingest: IngestServers,
+    mcp: McpShutdown,
+}
+
+/// What the engine knows about itself: the one place a status is read from,
+/// for [`EngineHandle::status`] and for the MCP `get_status` tool, so the two
+/// cannot disagree.
+struct State {
+    store: Store,
+    paused: Arc<AtomicBool>,
+    clock: Arc<dyn Clock>,
+    span_rate: Arc<RateMeter>,
+    log_rate: Arc<RateMeter>,
+    /// `otlp-grpc` and `otlp-http`.
+    otlp: [ListenerStatus; 2],
+    /// Set once, right after the MCP server has bound.
+    mcp: OnceLock<ListenerStatus>,
+}
+
+impl State {
+    fn snapshot(&self) -> EngineStatus {
+        let now = self.clock.now_unix_nano();
+        EngineStatus {
+            paused: self.paused.load(Ordering::Acquire),
+            listeners: self.otlp.iter().chain(self.mcp.get()).cloned().collect(),
+            spans_per_sec: self.span_rate.per_sec(now),
+            logs_per_sec: self.log_rate.per_sec(now),
+            stats: self.store.stats(),
+        }
+    }
+
+    /// Where the MCP server listens, if it could bind.
+    fn mcp_address(&self) -> Option<SocketAddr> {
+        match &self.mcp.get()?.state {
+            ListenerState::Listening(address) => Some(*address),
+            ListenerState::Failed(_) => None,
+        }
+    }
+}
+
+impl StatusSource for State {
+    fn status(&self) -> StatusDto {
+        let status = self.snapshot();
+        StatusDto {
+            paused: status.paused,
+            listeners: status.listeners.iter().map(listener_dto).collect(),
+            spans_per_sec: status.spans_per_sec,
+            logs_per_sec: status.logs_per_sec,
+            traces_held: status.stats.traces as u64,
+            spans_held: status.stats.spans as u64,
+            logs_held: status.stats.logs as u64,
+        }
+    }
+}
+
+/// A listener as the MCP status tells it: where it listens, or where it was
+/// asked to and why it could not.
+fn listener_dto(listener: &ListenerStatus) -> ListenerDto {
+    match &listener.state {
+        ListenerState::Listening(address) => ListenerDto {
+            name: listener.name.to_owned(),
+            address: address.to_string(),
+            state: "listening".to_owned(),
+            error: None,
+        },
+        ListenerState::Failed(reason) => ListenerDto {
+            name: listener.name.to_owned(),
+            address: listener.requested.to_string(),
+            state: "failed".to_owned(),
+            error: Some(reason.clone()),
+        },
+    }
 }
 
 impl EngineHandle {
     /// The store the receivers fill. It stays usable after shutdown, with
     /// whatever it held.
     pub fn store(&self) -> &Store {
-        &self.shared.store
+        &self.shared.state.store
     }
 
     /// A snapshot: pause, endpoints, rates and what the store holds.
     pub fn status(&self) -> EngineStatus {
-        let now = self.shared.clock.now_unix_nano();
-        EngineStatus {
-            paused: self.is_paused(),
-            listeners: self.shared.listeners.clone(),
-            spans_per_sec: self.shared.span_rate.per_sec(now),
-            logs_per_sec: self.shared.log_rate.per_sec(now),
-            stats: self.shared.store.stats(),
-        }
+        self.shared.state.snapshot()
     }
 
     /// While paused, the receivers keep answering success and everything
     /// that arrives is dropped (design §4). Resuming keeps what arrives next;
     /// what was dropped stays dropped.
     pub fn set_paused(&self, paused: bool) {
-        self.shared.paused.store(paused, Ordering::Release);
+        self.shared.state.paused.store(paused, Ordering::Release);
     }
 
     pub fn is_paused(&self) -> bool {
-        self.shared.paused.load(Ordering::Acquire)
+        self.shared.state.paused.load(Ordering::Acquire)
     }
 
-    /// Where agents reach the MCP server: `None` until the MCP server is
-    /// wired into the engine.
+    /// Where agents reach the MCP server, `http://127.0.0.1:{port}/mcp` with
+    /// the port it really bound (the one to give `claude mcp add`). `None`
+    /// when the MCP port could not be bound.
     pub fn mcp_url(&self) -> Option<String> {
-        None
+        self.shared
+            .state
+            .mcp_address()
+            .map(|address| format!("http://127.0.0.1:{}/mcp", address.port()))
     }
 
     /// Stops the receivers and the engine's threads. Safe to call again, from
@@ -218,10 +303,16 @@ impl Shared {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take();
-        let Some(Running { runtime, ingest }) = running else {
+        let Some(Running {
+            runtime,
+            ingest,
+            mcp,
+        }) = running
+        else {
             return;
         };
         ingest.shutdown();
+        mcp.shutdown();
         if wait {
             runtime.shutdown_timeout(SHUTDOWN_GRACE);
         } else {

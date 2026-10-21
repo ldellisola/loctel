@@ -53,9 +53,9 @@ impl Loctel {
         serde_json::from_str(&line).unwrap_or_else(|e| panic!("not JSON ({e}): {line:?}"))
     }
 
-    /// The two listener lines, as printed.
-    fn listener_lines(&self) -> [Value; 2] {
-        [self.next_json(), self.next_json()]
+    /// The three listener lines, as printed: `otlp-grpc`, `otlp-http`, `mcp`.
+    fn listener_lines(&self) -> [Value; 3] {
+        [self.next_json(), self.next_json(), self.next_json()]
     }
 
     fn signal(&self, name: &str) {
@@ -114,9 +114,10 @@ fn headless_binary_starts_and_stops() {
     let dir = tempfile::tempdir().unwrap();
     let mut loctel = Loctel::spawn(&settings_path(&dir), &PORTS_ZERO);
 
-    let [grpc, http] = loctel.listener_lines();
+    let [grpc, http, mcp] = loctel.listener_lines();
     assert_listening(&grpc, "otlp-grpc");
     assert_listening(&http, "otlp-http");
+    assert_listening(&mcp, "mcp");
 
     loctel.signal("TERM");
 
@@ -139,9 +140,9 @@ fn headless_binary_stops_cleanly_on_sigint() {
 fn headless_binary_serves_the_ports_it_printed() {
     let dir = tempfile::tempdir().unwrap();
     let loctel = Loctel::spawn(&settings_path(&dir), &PORTS_ZERO);
-    let [grpc, http] = loctel.listener_lines();
+    let [grpc, http, mcp] = loctel.listener_lines();
 
-    for line in [&grpc, &http] {
+    for line in [&grpc, &http, &mcp] {
         let name = line["name"].as_str().unwrap();
         let address = assert_listening(line, name);
         assert!(
@@ -168,9 +169,10 @@ fn headless_binary_reports_a_failed_listener_and_keeps_running() {
         ],
     );
 
-    let [grpc, http] = loctel.listener_lines();
+    let [grpc, http, mcp] = loctel.listener_lines();
 
     assert_listening(&grpc, "otlp-grpc");
+    assert_listening(&mcp, "mcp");
     assert_eq!(http["event"], "listener", "{http}");
     assert_eq!(http["name"], "otlp-http", "{http}");
     assert_eq!(http["state"], "failed", "{http}");
@@ -199,10 +201,11 @@ fn headless_binary_reads_ports_from_the_settings_file() {
     .unwrap();
     let loctel = Loctel::spawn(&path, &[]);
 
-    let [grpc, http] = loctel.listener_lines();
+    let [grpc, http, mcp] = loctel.listener_lines();
 
     assert_ne!(assert_listening(&grpc, "otlp-grpc").port(), 4317);
     assert_ne!(assert_listening(&http, "otlp-http").port(), 4318);
+    assert_ne!(assert_listening(&mcp, "mcp").port(), 4319);
 }
 
 #[test]
@@ -219,10 +222,11 @@ fn headless_binary_prefers_flags_over_the_settings_file() {
     .unwrap();
     let loctel = Loctel::spawn(&path, &["--http-port", "0"]);
 
-    let [grpc, http] = loctel.listener_lines();
+    let [grpc, http, mcp] = loctel.listener_lines();
 
     assert_listening(&grpc, "otlp-grpc");
     assert_ne!(assert_listening(&http, "otlp-http").port(), taken_port);
+    assert_listening(&mcp, "mcp");
 }
 
 #[test]
@@ -233,13 +237,95 @@ fn headless_binary_survives_an_invalid_settings_file() {
     let mut loctel = Loctel::spawn(&path, &PORTS_ZERO);
 
     // The flags still apply, and the bad file is left as it was.
-    let [grpc, http] = loctel.listener_lines();
+    let [grpc, http, mcp] = loctel.listener_lines();
     assert_listening(&grpc, "otlp-grpc");
     assert_listening(&http, "otlp-http");
+    assert_listening(&mcp, "mcp");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "this is not toml");
 
     loctel.signal("TERM");
     assert_eq!(loctel.wait().code(), Some(0));
+}
+
+#[test]
+fn headless_binary_reports_a_taken_mcp_port_and_keeps_running() {
+    let taken = TcpListener::bind("127.0.0.1:0").unwrap();
+    let taken_port = taken.local_addr().unwrap().port().to_string();
+    let dir = tempfile::tempdir().unwrap();
+    let mut loctel = Loctel::spawn(
+        &settings_path(&dir),
+        &[
+            "--grpc-port",
+            "0",
+            "--http-port",
+            "0",
+            "--mcp-port",
+            &taken_port,
+        ],
+    );
+
+    let [grpc, http, mcp] = loctel.listener_lines();
+
+    assert_listening(&grpc, "otlp-grpc");
+    assert_listening(&http, "otlp-http");
+    assert_eq!(
+        mcp,
+        serde_json::json!({
+            "event": "listener",
+            "name": "mcp",
+            "state": "failed",
+            "error": mcp["error"],
+        })
+    );
+    assert!(
+        mcp["error"].as_str().is_some_and(|e| !e.is_empty()),
+        "{mcp}"
+    );
+    assert!(loctel.child.try_wait().unwrap().is_none());
+    loctel.signal("TERM");
+    assert_eq!(loctel.wait().code(), Some(0));
+}
+
+/// A POST to `address`, answered in full (the request closes the connection).
+fn post(address: SocketAddr, path: &str, extra_headers: &str, body: &str) -> String {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(address).unwrap();
+    stream.set_read_timeout(Some(TIMEOUT)).unwrap();
+    write!(
+        stream,
+        "POST {path} HTTP/1.1\r\nHost: {address}\r\n{extra_headers}\
+         Content-Type: application/json\r\nAccept: application/json, text/event-stream\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+    let mut reply = String::new();
+    stream.read_to_string(&mut reply).unwrap();
+    reply
+}
+
+#[test]
+fn headless_binary_answers_mcp_on_the_printed_address() {
+    let dir = tempfile::tempdir().unwrap();
+    let loctel = Loctel::spawn(&settings_path(&dir), &PORTS_ZERO);
+    let [_, _, mcp] = loctel.listener_lines();
+    let address = assert_listening(&mcp, "mcp");
+    let initialize = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"#;
+
+    let reply = post(address, "/mcp", "", initialize);
+
+    assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+    assert!(reply.contains("\"serverInfo\""), "{reply}");
+    assert!(reply.contains("\"name\":\"loctel\""), "{reply}");
+
+    // A page on another site is refused.
+    let refused = post(
+        address,
+        "/mcp",
+        "Origin: https://evil.example\r\n",
+        initialize,
+    );
+    assert!(refused.starts_with("HTTP/1.1 403"), "{refused}");
 }
 
 #[test]

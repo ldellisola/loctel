@@ -233,6 +233,14 @@ target). Times are distinct, so the store's duplicate check keeps them all.
 - **`crates/loctel-meshgen/tests/send.rs`** sends every scenario over every
   transport to the real receivers from `loctel-ingest`: counts, delays,
   gzip, rejections and unreachable endpoints.
+- **`crates/loctel-mcp/tests/tools.rs`** loads `CheckoutFailure` (and the
+  success, health-check and huge scenarios) into a store through the real
+  converter, with a `ManualClock` moved past the quiet period, and calls the
+  MCP tools directly. Because the checkout scenario is frozen, it asserts the
+  failed-in span, the exception, the log counts and the span counts it implies.
+  `tests/http.rs` there and the MCP tests in `loctel-engine` and `loctel-app`
+  talk to the real server with an rmcp client or raw HTTP; see
+  [`mcp.md`](mcp.md).
 - **End-to-end tests** (Task 10) start `loctel --headless`, drive these
   scenarios through real OTLP and assert through an MCP client.
 - **Screenshot tests** (Task 11 and later) render views from fixed meshgen

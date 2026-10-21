@@ -228,6 +228,14 @@ impl Store {
         Page { items, next_cursor }
     }
 
+    /// The current time on the store's clock, in nanoseconds since the Unix
+    /// epoch. Completeness is judged by this clock, and the MCP marker tool
+    /// hands it to agents as the "since" mark, so both agree on "now" (and a
+    /// test that drives the store with a `ManualClock` controls it).
+    pub fn now_unix_nano(&self) -> u64 {
+        self.shared.clock.now_unix_nano()
+    }
+
     pub fn stats(&self) -> StoreStats {
         let inner = self.shared.inner.read();
         StoreStats {

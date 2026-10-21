@@ -32,6 +32,7 @@ let lines = store.logs_for_span(trace_id, span_id); // Vec<LogRecord>, oldest fi
 let map = store.service_map(TimeWindow { since_unix_nano }); // ServiceMap
 let services = store.services(TimeWindow { since_unix_nano }); // Vec<ServiceStats>
 let stats = store.stats();               // StoreStats
+let now = store.now_unix_nano();         // the store's clock, for markers
 store.clear();
 ```
 
@@ -43,6 +44,10 @@ store.clear();
   `SystemClock` is the wall clock. `ManualClock::new(start)` only moves when
   told: `advance(Duration)` (saturating) and `set(u64)` (either direction).
   Tests drive completeness with it instead of sleeping.
+- `Store::now_unix_nano()` is the current time on that same clock. The MCP
+  `get_marker` tool hands it to agents as the `since` mark, so the marker and
+  completeness agree on "now", and a test that drives the store with a
+  `ManualClock` controls the marker.
 - `StoreConfig` and its defaults:
 
   | Field | Default | Meaning |
