@@ -27,15 +27,15 @@ the task that creates a crate changes its row.
 | `loctel-engine` | core | Wires store, ingest and MCP; settings, pause, rates; owns threads and runtime | implemented: store, OTLP receivers and MCP server, `settings.toml`, pause, rates (see "Engine" below) |
 | `loctel-meshgen` | test tooling | Fake microservice mesh scenarios (library and `meshgen` binary) | implemented: six scenarios and a sender over gRPC, HTTP protobuf and HTTP JSON (see "Test tooling" below) |
 | `loctel-e2e` | test tooling | End-to-end tests through real OTLP and a real MCP client (`publish = false`) | implemented: a `Harness` over a real engine and six tests (see "Test tooling" below) |
-| `loctel-ui` | UI | GPUI views and the headless screenshot harness | planned |
+| `loctel-ui` | UI | GPUI views and the headless screenshot harness | implemented: the status view, the shared menu text, the theme, and `testing::{render_png, assert_snapshot}` behind the `screenshot` feature (see "UI" below) |
 | `loctel-macos` | macOS | Status item, activation policy, login item (`cfg(target_os = "macos")`) | planned |
-| `loctel-app` | binary | The `loctel` binary: headless mode and GUI, bundle metadata | implemented: headless mode only (see "Headless mode" below); the GUI comes with the UI tasks |
-| `xtask` | tooling | Screenshots, next-version, release notes, MCP smoke test | placeholder (empty `main`) |
+| `loctel-app` | binary | The `loctel` binary: headless mode and GUI, bundle metadata | implemented: headless mode, and on Linux the status window (see "Headless mode" and "UI" below); the macOS shell comes with the macOS task |
+| `xtask` | tooling | Screenshots, next-version, release notes, MCP smoke test | `screenshots [--update]` and `run-shot` (see "UI" below); the release subcommands arrive with the release task |
 
 ## Data flow
 
-Target shape for Milestone 1 (the UI is not wired in yet; the rest is what runs
-today):
+Target shape for Milestone 1 (the macOS status item is not wired in yet; the
+rest is what runs today, including the Linux status window):
 
 ```
  services (Docker or bare metal)
@@ -280,11 +280,38 @@ loctel [--headless] [--grpc-port N] [--http-port N] [--mcp-port N]
   SIGTERM shuts the engine down and exits 0. A taken port is not fatal: the
   process runs with what it could bind. An unknown flag exits 2, and an
   engine that cannot start exits 1.
-- **Without `--headless`** the binary does the same for now. The menu bar app
-  and the window arrive with the UI tasks (Linux window, then the macOS status
-  item), and those branches will live in `main`.
+- **Without `--headless`** on Linux the binary opens the status window (see
+  "UI" below) and prints the same listener lines; with no display it says so
+  on stderr and runs headless. On any other OS it does the same as headless
+  until the macOS status item lands, and that branch will live in `main`.
 - **Tests.** `crates/loctel-app/tests/headless.rs` runs the built binary:
   the lines, SIGTERM and SIGINT, a taken port, settings file and flags.
+
+## UI
+
+`loctel-ui` is the thin GPUI layer: it depends on the engine (for
+`EngineStatus` and `EngineHandle`) and on GPUI (`gpui-pre`, `gpui-pre-platform`,
+`gpui-pre-wgpu`, all pinned `=0.3.9`), and the core depends on none of it. The
+details, the theme tokens and the workflow are in
+[`areas/ui.md`](areas/ui.md); the choices and their reasons are in
+[`decisions/0008-ui-and-screenshot-choices.md`](decisions/0008-ui-and-screenshot-choices.md).
+
+- **Milestone 1 has one view.** `StatusView` draws a `StatusModel`, a plain
+  copy of what `EngineHandle::status()` returns (`StatusModel::from_status`),
+  so it is tested by building the model by hand. The window refreshes it every
+  second. The text of the status line and the rates is in `menu_text`, shared
+  with the macOS menu so the two cannot drift.
+- **Screenshot tests** (`crates/loctel-ui/tests/screenshots.rs`) render views
+  through GPUI's headless renderer (software wgpu, no GPU or display) with a
+  bundled font, and compare pixel for pixel with references in
+  `crates/loctel-ui/tests/snapshots/`. The `screenshot` feature is on in every
+  test build of the crate, so `cargo test --workspace` runs them. On a failure
+  the actual and diff images go to `target/screenshot-diffs/`, which `ci.yml`
+  uploads.
+- **`cargo xtask screenshots [--update]`** runs (or regenerates) the references;
+  **`cargo xtask run-shot`** runs the real window under Xvfb and writes
+  `target/run-shot.png`. The repo skills `run-and-screenshot` and
+  `update-screenshots` are the procedures.
 
 ## Test tooling
 

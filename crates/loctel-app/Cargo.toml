@@ -1,6 +1,6 @@
 [package]
 name = "loctel-app"
-description = "The loctel binary: headless mode today, the menu bar app in later tasks"
+description = "The loctel binary: headless mode, and the status window on Linux; the menu bar app comes later"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -18,6 +18,11 @@ serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["signal"] }
 tracing-subscriber.workspace = true
+
+# The development window (Linux only for now: the macOS shell is a later task).
+[target.'cfg(target_os = "linux")'.dependencies]
+loctel-ui.workspace = true
+gpui-pre-platform.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

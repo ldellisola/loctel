@@ -1,9 +1,15 @@
 //! The `loctel` binary.
 //!
 //! Headless mode (`--headless`) serves OTLP with no window, prints one JSON
-//! line per listener and runs until SIGINT or SIGTERM. The menu bar app and
-//! the window come with the UI tasks; until then, running without `--headless`
-//! does the same.
+//! line per listener and runs until SIGINT or SIGTERM.
+//!
+//! Without `--headless` on Linux it opens one window with the status view
+//! (`loctel_ui::StatusView`), refreshed every second, and prints the same
+//! listener lines; closing the window quits. With no display to open it on, it
+//! says so and runs headless instead. That window is a development aid: the
+//! product is the macOS menu bar app, which comes with the macOS task. Until
+//! then, running without `--headless` on any other OS is the same as running
+//! with it.
 
 mod cli;
 
@@ -13,7 +19,7 @@ use std::process::ExitCode;
 use anyhow::Context as _;
 use clap::Parser as _;
 use cli::Cli;
-use loctel_engine::{Engine, ListenerState, ListenerStatus, Settings};
+use loctel_engine::{Engine, EngineConfig, ListenerState, ListenerStatus, Settings};
 use serde::Serialize;
 use tokio::runtime::Runtime;
 use tokio::signal::unix::{Signal, SignalKind, signal};
@@ -45,14 +51,24 @@ fn init_logging() {
 }
 
 fn run(cli: &Cli) -> anyhow::Result<()> {
-    // Placeholder until the UI tasks: with or without `--headless`, serve
-    // and print.
     let settings_path = cli.settings_path();
     let settings = Settings::load(&settings_path).unwrap_or_else(|error| {
         eprintln!("loctel: {error:#}; using the default settings");
         Settings::default()
     });
 
+    #[cfg(target_os = "linux")]
+    if !cli.headless {
+        if display_available() {
+            return run_window(cli.engine_config(settings));
+        }
+        eprintln!(
+            "loctel: no display (DISPLAY and WAYLAND_DISPLAY are unset), so there is no window; \
+             running headless"
+        );
+    }
+
+    // Headless, or an OS whose app shell has not landed yet: serve and print.
     // Listen for the signals before announcing anything: whoever reads the
     // listener lines may signal right away, and a signal that arrives before
     // the handlers exist would kill the process instead of stopping it.
@@ -63,6 +79,57 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
     signals.wait();
     engine.shutdown();
     Ok(())
+}
+
+/// Whether there is an X11 or Wayland display for a window. Without one, GPUI
+/// would hand out windows that draw nothing and the app would sit there
+/// invisible.
+#[cfg(target_os = "linux")]
+fn display_available() -> bool {
+    ["DISPLAY", "WAYLAND_DISPLAY"]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
+}
+
+/// The Linux development window: the engine, and the status view over it.
+/// Prints the listener lines like headless mode does (so a script can find
+/// the ports when they were asked for as 0), then runs the window until it is
+/// closed.
+#[cfg(target_os = "linux")]
+fn run_window(config: EngineConfig) -> anyhow::Result<()> {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let engine = Engine::start(config)?;
+    print_listeners(&engine.status().listeners)?;
+
+    let failure: Rc<RefCell<Option<anyhow::Error>>> = Rc::new(RefCell::new(None));
+    gpui_platform::application().run({
+        let engine = engine.clone();
+        let failure = Rc::clone(&failure);
+        move |cx| match loctel_ui::open_status_window(engine, cx) {
+            Ok(_window) => {
+                // It is the only window, so closing it ends the app.
+                cx.on_window_closed(|cx, _| {
+                    if cx.windows().is_empty() {
+                        cx.quit();
+                    }
+                })
+                .detach();
+                cx.activate(true);
+            }
+            Err(error) => {
+                *failure.borrow_mut() = Some(error);
+                cx.quit();
+            }
+        }
+    });
+    engine.shutdown();
+
+    match failure.take() {
+        None => Ok(()),
+        Some(error) => Err(error.context("cannot open the window (`--headless` runs without one)")),
+    }
 }
 
 /// A listener as the one JSON line printed for it. Field order is the order

@@ -5,10 +5,11 @@ and manual run draws its data from. Design references: §10.1 (the fake mesh),
 §10.3 (the checks, which are the only quality gate) and §9.4 (what "failed"
 means).
 
-Status: the per-crate unit and integration tests, `loctel-meshgen` and the
-end-to-end crate (`loctel-e2e`) exist. The screenshot harness and the
-performance tests are planned (see `architecture.md`); they will add their own
-sections here and use the scenarios below.
+Status: the per-crate unit and integration tests, `loctel-meshgen`, the
+end-to-end crate (`loctel-e2e`) and the screenshot harness (`loctel-ui`, see
+"Screenshot tests" below) exist. The performance tests are planned (see
+`architecture.md`); they will add their own section here and use the scenarios
+below.
 
 The gate, which is the only quality gate:
 
@@ -251,6 +252,30 @@ target). Times are distinct, so the store's duplicate check keeps them all.
 Add a scenario by adding a variant to `Scenario`, a module for it, a stream
 constant in `scenario.rs` (so it never shares IDs), a CLI value in `main.rs`,
 tests, and a section above.
+
+## Screenshot tests: `loctel-ui`
+
+The views are tested by pixels: each test renders a view with a fixed model
+through GPUI's headless renderer (software wgpu: no GPU, no display) and
+compares it, pixel for pixel, with a reference PNG in
+`crates/loctel-ui/tests/snapshots/`. They run with `cargo test --workspace`
+(the `screenshot` feature is on in every test build of that crate), and alone:
+
+```bash
+cargo test -p loctel-ui           # menu text, theme, model and screenshots (about a second for the pixels)
+cargo xtask screenshots --update  # rewrite the references; then view every changed PNG
+cargo xtask run-shot              # the real window under Xvfb, to target/run-shot.png
+```
+
+A failure writes `target/screenshot-diffs/{name}.actual.png` and `.diff.png`
+(CI uploads them). Rules: a reference changes only with an intended change to
+the view, in the same commit, and the agent looks at the new PNG before
+committing it. Everything else (the harness API, the 2x scale, the bundled
+font that makes it machine-independent, the CI diff workflow) is in
+[`ui.md`](ui.md) and the repo skill `update-screenshots`; the choices are in
+[`decisions/0008-ui-and-screenshot-choices.md`](../decisions/0008-ui-and-screenshot-choices.md).
+Screenshot tests can also be fed meshgen scenarios: `generate` is
+deterministic, so the same seed draws the same pixels.
 
 ## End-to-end tests: `loctel-e2e`
 

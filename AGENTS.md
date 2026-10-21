@@ -73,6 +73,20 @@ cargo run -p loctel-meshgen -- --scenario checkout-failure \
   --transport http-json --endpoint http://127.0.0.1:4318
 ```
 
+See the app, and the screenshot tests. Without `--headless`, Linux opens the
+status window and prints the same listener lines (with no display it says so
+and runs headless), so the real window runs under Xvfb. The first command
+writes `target/run-shot.png`; open it with the Read tool. The screenshot tests
+run with the rest of `cargo test --workspace`; the second command rewrites
+their reference PNGs, which you must view before committing (the repo skills
+`run-and-screenshot` and `update-screenshots` have the steps, and
+[`docs/areas/ui.md`](docs/areas/ui.md) has the theme and the harness):
+
+```bash
+cargo xtask run-shot
+cargo xtask screenshots --update
+```
+
 The end-to-end tests (real OTLP in, a real MCP client out, driven by the same
 fake mesh) run with the rest of `cargo test --workspace`, and alone with
 `cargo test -p loctel-e2e` (a few seconds). Read the "End-to-end tests" section

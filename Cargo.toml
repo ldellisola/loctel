@@ -16,6 +16,7 @@ loctel-ingest = { path = "crates/loctel-ingest" }
 loctel-mcp = { path = "crates/loctel-mcp" }
 loctel-engine = { path = "crates/loctel-engine" }
 loctel-meshgen = { path = "crates/loctel-meshgen" }
+loctel-ui = { path = "crates/loctel-ui" }
 parking_lot = "0.12.5"
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = "1.0.154"
@@ -53,6 +54,16 @@ schemars = "1.2.3"
 chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 tokio-util = "0.7.20"
 jsonschema = { version = "0.59.0", default-features = false }
+
+# UI (loctel-ui, loctel-app). GPUI comes as the weekly `gpui-pre` snapshot,
+# pinned exactly: upgrades are deliberate, in their own PR (decision 0001).
+# The platform crate gets both Linux windowing backends so the dev window
+# works on X11 and Wayland; they compile only on Linux. `image` is the version
+# GPUI's own `capture_screenshot` hands back, so the types match.
+gpui-pre = "=0.3.9"
+gpui-pre-platform = { version = "=0.3.9", features = ["x11", "wayland"] }
+gpui-pre-wgpu = "=0.3.9"
+image = { version = "0.25.1", default-features = false, features = ["png"] }
 
 [workspace.lints.clippy]
 all = "warn"
