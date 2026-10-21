@@ -100,9 +100,13 @@ For each batch, in this order:
    memory has not expired), every span of it is dropped and counted on the rule
    that dropped the trace.
 2. **A remembered parent.** If a span's `(trace, parent)` is in the memory of
-   dropped spans, it is a late descendant: dropped, counted on the same rule, and
-   its own ID is remembered for its children. Spans of the same batch below a
-   dropped span go with it, whatever order the batch is in.
+   dropped spans, it is a late descendant, and it is dropped the way a span-scope
+   match is, counted on the same rule: with everything below it, and every ID
+   remembered. That includes the spans of the same batch below it, whatever order
+   the batch is in, and the spans the store already holds below it. Those are
+   descendants that arrived before it (a service's exporter flushed early, so a
+   grandchild came before the child): they went in the store because their
+   parent was unknown, and they go in `SpanVerdict::drop_spans` now.
 3. **The rules, in file order,** each over what is still live in the batch.
    - A query that can be judged span by span (`TraceQuery::needs_whole_trace()`
      is false: one filter, no structural operator, no pipeline, no `rootName`,
@@ -130,7 +134,9 @@ A match drops according to the rule's **scope**:
   - Stored ones go in `SpanVerdict::drop_spans` for the caller to remove, with
     the logs emitted in them.
   - Every ID is remembered, so descendants that arrive later are dropped
-    on arrival.
+    on arrival. A descendant that arrived *earlier* than the span that links it
+    to the match (its parent unknown at the time, so it was kept) is dropped when
+    that span arrives (step 2).
   - The rest of the trace is kept.
 
 **The caller's side.** `filter_spans` changes nothing in the store. For a batch
@@ -237,8 +243,9 @@ logs are those at or after it.
 the empty file and its example, errors), `filter.rs` (the filter with a
 `ManualClock`, a `Store` and the fake mesh: whole-trace drops that cover stored
 and late spans, structural rules over stored spans, span scope and its
-descendants, LogQL rules, disabled and invalid rules, file-order counting, memory
-expiry, `replace`, crediting removals), `preview.rs` (the counts, `since`,
+descendants (including stored ones that arrived before their ancestor), LogQL
+rules, disabled and invalid rules, file-order counting, memory expiry, `replace`,
+crediting removals), `preview.rs` (the counts, `since`,
 errors). `memory.rs` has unit tests for the bounded memory, and
 `fixtures.rs` holds the shared builders. The whole-trace drop with a root that
 arrives last is `whole_trace_drop_covers_stored_and_late_spans`, and

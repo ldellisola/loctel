@@ -22,11 +22,22 @@ later agent might be tempted to undo, and the one place the plan was adapted.
   span came first in the batch. Walking the rules in file order, each over what
   is still live, gives "a span is counted once, on the first rule that dropped
   it" for spans, traces and logs alike, whatever order the batch is in.
-- **A late descendant is found through the batch too.** The plan drops a span
-  whose parent is in the dropped-span memory. A batch is in no particular order,
-  so a child can precede its parent; when a span is dropped, the batch's spans
-  below it are dropped with it (an index of the batch by parent, built only when
-  a span-level drop happens), and every ID is remembered.
+- **A late descendant is dropped with its whole subtree, stored spans
+  included.** The plan drops a span whose parent is in the dropped-span memory.
+  A batch is in no particular order, so a child can precede its parent, and
+  services flush their exporters on their own schedules, so a grandchild can
+  arrive in an earlier batch than the child, be kept (its parent is unknown) and
+  be stored. When the child then arrives as a late descendant of a dropped span,
+  that grandchild is a descendant of the matched span (design §7: "only the
+  matching span and its descendants"), so it must go. A late descendant is
+  therefore handled exactly like a span-scope match: the same sweep
+  (`Pass::drop_subtrees`) over the stored spans of the trace and the batch's
+  condemns everything below it, lists the stored spans in `drop_spans` and
+  remembers every ID. The late spans of a batch are gathered first and swept once
+  per trace and rule, so a batch of them costs one copy of the trace's stored
+  spans. A stored span counts on the rule that dropped its ancestor. (An earlier
+  version swept only the batch, which left the stored grandchild, and its logs,
+  for good.)
 - **`remove_dropped(&SpanVerdict, &Store) -> Removed` is added, to close the gap
   in `record_removed`.** The plan has the engine call `remove_trace` or
   `remove_spans` for the verdict's lists "feeding `record_removed(rule,

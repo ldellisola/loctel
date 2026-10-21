@@ -325,6 +325,120 @@ fn span_scope_drops_descendants_including_late_ones() {
     assert_eq!(w.counts(0).logs, 2);
 }
 
+/// The trace the next three tests use: `root(1)`, a child `s(2)` that the rule
+/// matches, its child `c(3)` and its grandchild `g(4)`.
+fn s_c_g() -> (Span, Span, Span, Span) {
+    (
+        span(1, 1, None, "web", "root", 0, 10),
+        span(1, 2, Some(1), "web", "s", 1, 8),
+        span(1, 3, Some(2), "web", "c", 2, 6),
+        span(1, 4, Some(3), "web", "g", 3, 2),
+    )
+}
+
+#[test]
+fn span_scope_drops_a_stored_descendant_that_arrived_before_its_late_ancestor() {
+    // Services flush on their own schedules, so the grandchild can come before
+    // the child: S (matched), then G (its parent is not known, so it is kept
+    // and stored), then C, which is a late descendant of S and has G below it.
+    let w = World::new(vec![span_rule("S", r#"{ name = "s" }"#)]);
+    let (root, s, c, g) = s_c_g();
+
+    let verdict = w.ingest_spans(vec![root.clone(), s]);
+    assert_eq!(verdict.keep, vec![root.clone()]);
+    assert_eq!(w.counts(0), counts(0, 1, 0));
+
+    let verdict = w.ingest_spans(vec![g.clone()]);
+    assert_eq!(verdict.keep, vec![g.clone()], "its parent is unknown");
+    assert!(verdict.drop_spans.is_empty());
+    assert_eq!(w.store.stats().spans, 2);
+    let early_log = in_span(log("web", "in g, early", 3), 1, 4);
+    assert_eq!(w.ingest_logs(vec![early_log]).len(), 1);
+    assert_eq!(w.store.stats().logs, 1);
+
+    // C arrives: it goes, and so does G, which the store holds.
+    let verdict = w.ingest_spans(vec![c]);
+    assert!(verdict.keep.is_empty());
+    assert!(verdict.drop_traces.is_empty(), "only a span subtree goes");
+    assert_eq!(verdict.drop_spans, vec![(tid(1), sid(4))]);
+    assert_eq!(w.store.stats().spans, 1, "only the root is left");
+    assert_eq!(w.store.stats().logs, 0, "the log of G went with it");
+    // Credited to the rule: S and C incoming, G removed, and G's log.
+    assert_eq!(w.counts(0), counts(0, 3, 1));
+
+    // G's ID is remembered: later logs in G, and later children of G, go too.
+    let kept = w.ingest_logs(vec![
+        in_span(log("web", "in g, late", 4), 1, 4),
+        in_span(log("web", "in root", 4), 1, 1),
+    ]);
+    let bodies: Vec<&str> = kept.iter().map(|l| l.body.as_str()).collect();
+    assert_eq!(bodies, ["in root"]);
+    let below_g = span(1, 5, Some(4), "web", "below g", 4, 1);
+    assert!(w.ingest_spans(vec![below_g]).keep.is_empty());
+    assert_eq!(w.counts(0), counts(0, 4, 2));
+    assert_eq!(w.store.stats().spans, 1);
+}
+
+#[test]
+fn span_scope_drops_what_is_stored_and_what_is_incoming_below_a_late_ancestor() {
+    // The late C arrives in one batch with a descendant of the stored G, in
+    // either order: both are below S, through G.
+    for h_first in [false, true] {
+        let w = World::new(vec![span_rule("S", r#"{ name = "s" }"#)]);
+        let (root, s, c, g) = s_c_g();
+        let h = span(1, 6, Some(4), "web", "h, a child of g", 4, 1);
+        let bystander = span(1, 7, Some(1), "web", "child of the root", 4, 1);
+        w.ingest_spans(vec![root, s]);
+        w.ingest_spans(vec![g]);
+
+        let batch = if h_first {
+            vec![h, c, bystander.clone()]
+        } else {
+            vec![c, h, bystander.clone()]
+        };
+        let verdict = w.ingest_spans(batch);
+
+        assert_eq!(verdict.keep, vec![bystander], "h_first: {h_first}");
+        assert_eq!(verdict.drop_spans, vec![(tid(1), sid(4))]);
+        assert_eq!(w.store.stats().spans, 2, "the root and the bystander");
+        // S, C and H incoming, G removed.
+        assert_eq!(w.counts(0), counts(0, 4, 0));
+    }
+}
+
+#[test]
+fn a_stored_descendant_of_a_late_ancestor_counts_on_the_rule_of_that_ancestor() {
+    // Two span rules, each with its own subtree arriving in the order S, G, C.
+    let w = World::new(vec![
+        span_rule("A", r#"{ name = "sa" }"#),
+        span_rule("B", r#"{ name = "sb" }"#),
+    ]);
+    let root = span(1, 1, None, "web", "root", 0, 10);
+    let sa = span(1, 2, Some(1), "web", "sa", 1, 8);
+    let sb = span(1, 3, Some(1), "web", "sb", 1, 8);
+    // Under `sa`: ca (4), then ga (5). Under `sb`: cb (6), then gb (7).
+    let ca = span(1, 4, Some(2), "web", "ca", 2, 6);
+    let ga = span(1, 5, Some(4), "web", "ga", 3, 2);
+    let cb = span(1, 6, Some(3), "web", "cb", 2, 6);
+    let gb = span(1, 7, Some(6), "web", "gb", 3, 2);
+
+    w.ingest_spans(vec![root, sa, sb]);
+    assert_eq!(w.counts(0), counts(0, 1, 0));
+    assert_eq!(w.counts(1), counts(0, 1, 0));
+    assert_eq!(w.ingest_spans(vec![ga, gb]).keep.len(), 2);
+    assert_eq!(w.store.stats().spans, 3);
+
+    let verdict = w.ingest_spans(vec![ca, cb]);
+
+    assert!(verdict.keep.is_empty());
+    let mut dropped = verdict.drop_spans.clone();
+    dropped.sort_by_key(|&(_, id)| id.0);
+    assert_eq!(dropped, vec![(tid(1), sid(5)), (tid(1), sid(7))]);
+    assert_eq!(w.store.stats().spans, 1);
+    assert_eq!(w.counts(0), counts(0, 3, 0));
+    assert_eq!(w.counts(1), counts(0, 3, 0));
+}
+
 #[test]
 fn span_scope_with_a_structural_rule_drops_only_the_matched_spans() {
     // The matched span is the cache call, which has no descendants.

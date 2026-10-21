@@ -8,7 +8,8 @@
 //!    span goes, and counts on that rule.
 //! 2. **A remembered parent.** The span's parent was dropped (a span-scope
 //!    match, or a descendant of one), so the span is a late descendant: it
-//!    goes, and its own ID is remembered for its children.
+//!    goes, with everything below it, in the batch and in the store (a
+//!    grandchild can arrive before the child), and every ID is remembered.
 //! 3. **The rules, in file order.** A single-span query judges the span; a
 //!    query that needs the whole trace is evaluated once per trace, over the
 //!    stored spans of the trace followed by the batch's.
@@ -492,10 +493,6 @@ struct Pass<'a> {
     /// appearance. Filled by `ensure_groups`, when first needed.
     groups: Groups,
     groups_built: bool,
-    /// The slots by `(trace, parent span ID)`. Filled by `ensure_children`,
-    /// when first needed.
-    children: HashMap<(TraceId, SpanId), Vec<usize>>,
-    children_built: bool,
 }
 
 #[derive(Default)]
@@ -518,8 +515,6 @@ impl<'a> Pass<'a> {
             condemned: HashSet::new(),
             groups: Groups::default(),
             groups_built: false,
-            children: HashMap::new(),
-            children_built: false,
         }
     }
 
@@ -558,58 +553,38 @@ impl<'a> Pass<'a> {
         }
     }
 
-    /// The batch's slots that are children of `parent` of `trace`.
-    fn incoming_children(&mut self, trace: TraceId, parent: SpanId) -> Vec<usize> {
-        if !self.children_built {
-            self.children_built = true;
-            for (i, slot) in self.slots.iter().enumerate() {
-                if let Some(span) = slot
-                    && let Some(parent) = span.parent_span_id
-                {
-                    self.children
-                        .entry((span.trace_id, parent))
-                        .or_default()
-                        .push(i);
-                }
-            }
-        }
-        self.children
-            .get(&(trace, parent))
-            .cloned()
-            .unwrap_or_default()
-    }
-
     /// Steps 1 and 2: spans of a remembered trace, and late descendants of a
     /// remembered span.
+    ///
+    /// A late descendant is the root of a subtree to drop, the same as a span
+    /// that a span-scope rule matches: whatever the store holds below it (a
+    /// grandchild that came before it) and whatever the batch holds below it,
+    /// in any order, goes with it, and every ID is remembered. The roots are
+    /// gathered first and dropped once per trace and rule, so that a batch of
+    /// late spans costs one copy of the trace's stored spans, not one each.
     fn apply_memory(&mut self) {
         if self.state.traces.is_empty() && self.state.spans.is_empty() {
             return;
         }
+        let mut late: Vec<(TraceId, RuleId, Vec<SpanId>)> = Vec::new();
+        let mut position: HashMap<(TraceId, RuleId), usize> = HashMap::new();
         for i in 0..self.slots.len() {
             let Some(span) = &self.slots[i] else { continue };
-            let (trace, parent) = (span.trace_id, span.parent_span_id);
+            let (trace, id, parent) = (span.trace_id, span.span_id, span.parent_span_id);
             if let Some(rule) = self.state.traces.get(&trace, self.now) {
                 self.take_slot(i, rule);
             } else if let Some(parent) = parent
                 && let Some(rule) = self.state.spans.get(&(trace, parent), self.now)
             {
-                self.drop_incoming_subtree(i, rule);
+                let at = *position.entry((trace, rule)).or_insert_with(|| {
+                    late.push((trace, rule, Vec::new()));
+                    late.len() - 1
+                });
+                late[at].2.push(id);
             }
         }
-    }
-
-    /// Drops span `i` and, through the batch, everything below it (a child
-    /// may come before its parent in a batch), remembering every ID.
-    fn drop_incoming_subtree(&mut self, i: usize, rule: RuleId) {
-        let mut stack = vec![i];
-        while let Some(at) = stack.pop() {
-            let Some(span) = self.take_slot(at, rule) else {
-                continue;
-            };
-            self.state
-                .spans
-                .remember((span.trace_id, span.span_id), rule, self.now);
-            stack.extend(self.incoming_children(span.trace_id, span.span_id));
+        for (trace, rule, roots) in late {
+            self.drop_subtrees(rule, trace, &roots);
         }
     }
 
@@ -732,10 +707,13 @@ impl<'a> Pass<'a> {
         }
     }
 
-    /// A span-scope match: `roots` and everything below them, among the
-    /// stored spans of the trace and the batch's. Incoming ones are dropped now,
-    /// stored ones go in `drop_spans` for the caller to remove, and every ID
-    /// is remembered, so that descendants arriving later are dropped too.
+    /// A span-scope match, or a late descendant of one: `roots` and everything
+    /// below them, among the stored spans of the trace and the batch's.
+    /// Incoming ones are dropped now, stored ones go in `drop_spans` for the
+    /// caller to remove, and every ID is remembered, so that descendants
+    /// arriving later are dropped too. (A stored span whose parent was not
+    /// known when it arrived is below `roots` once the missing link arrives, so
+    /// the store is searched, not only the batch.)
     fn drop_subtrees(&mut self, rule: RuleId, trace: TraceId, roots: &[SpanId]) {
         let condemned = &self.condemned;
         let stored: Vec<(SpanId, Option<SpanId>)> = self
