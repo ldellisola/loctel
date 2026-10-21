@@ -102,9 +102,10 @@ item it is.
    --transport http-json --endpoint http://127.0.0.1:4318`. Ask Claude, in a
    session connected to loctel (Milestone 1, item 5), to list the recent traces
    through loctel. *Right:* no `/health` trace is listed, other traffic still
-   is, and the rules row shows a non-zero percentage (with only meshgen's health
-   checks it reads 100%; with a busy service of your own it is smaller, and
-   can still round to 0% if health checks are rare).
+   is, and the rules row shows a non-zero percentage. The percentage counts
+   everything since loctel started, so traffic from earlier checks (such as
+   Milestone 1's) keeps it below 100%, and with a busy service of your own it
+   can still round to 0% if health checks are rare.
 3. **Turning the rule off.** Set `enabled = false` in the rule and save.
    *Right:* within about 5 seconds the rules row reads `No discard rules on`,
    and the health checks sent from now on appear when you ask Claude for recent

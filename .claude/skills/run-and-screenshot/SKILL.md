@@ -28,8 +28,7 @@ kill %1                                    # SIGTERM or SIGINT: clean exit 0
 To see a discard rule work, add one to the rules file (a new file holds no
 rules, only the example commented out; `docs/areas/rules.md`), wait for the
 engine to notice the edit (it looks every 2 seconds), send the `health-checks`
-scenario and look at what is stored. `get_status` over MCP will show the rule
-counts (Milestone 2, Task 7):
+scenario and look at what is stored. `get_status` over MCP shows the rule counts:
 
 ```bash
 cat >> /tmp/loctel-rules.toml <<'RULE'
