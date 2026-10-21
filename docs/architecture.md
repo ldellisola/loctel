@@ -25,10 +25,10 @@ diagram below it.
 | `loctel-model` | core | Domain types (spans, logs, resources, IDs, severity), independent of OTLP | implemented (see "Domain model" below) |
 | `loctel-store` | core | In-memory store: trace assembly, completeness, dedup, eviction, failure semantics, search (with TraceQL and LogQL filters), logs, removal and scans, service map | implemented: assembly, completeness, dedup, eviction, failure semantics, trace summaries and search, logs, service map and services list, and (Milestone 2) query filters with matched spans, `remove_trace`, `remove_spans`, `with_trace_spans` and the scans (see "Store" below) |
 | `loctel-query` | core | TraceQL and LogQL lexers, parsers and evaluators, with errors that carry the position in the query. Pure: depends only on `loctel-model` (and `regex`) | in progress (Milestone 2): `QueryError`, `Pattern`, duration literals, the TraceQL lexer, parser and evaluator (`TraceView`, `evaluate`, `matches_span`) and LogQL (`logql::parse`, `LogQuery::matches`, `logql::labels`); the store and the rules use them, and MCP will in a later task (see "Query languages" below) |
-| `loctel-rules` | core | Discard rules: the rule model and `rules.toml`, `RuleSet` (the ingest filter for spans and logs, with a bounded memory of what was dropped), and the preview | implemented (Milestone 2, Task 5): `RuleSpec`, `RulesFile`, `RuleSet`, `preview`; the engine does not run it yet (Task 6) (see "Discard rules" below) |
+| `loctel-rules` | core | Discard rules: the rule model and `rules.toml`, `RuleSet` (the ingest filter for spans and logs, with a bounded memory of what was dropped), and the preview | implemented (Milestone 2): `RuleSpec`, `RulesFile`, `RuleSet`, `preview`; the engine runs it at ingest (see "Discard rules" and "Engine" below) |
 | `loctel-ingest` | core | OTLP gRPC and HTTP receivers, protobuf and JSON to model conversion | implemented: gRPC and HTTP receivers, gzip, conversion, `partial_success` (see "Ingest" below) |
 | `loctel-mcp` | core | MCP server (rmcp, Streamable HTTP), tools and their DTOs | implemented: nine read-only tools, the `Origin` check, both protocol generations (see "MCP" below) |
-| `loctel-engine` | core | Wires store, ingest and MCP; settings, pause, rates; owns threads and runtime | implemented: store, OTLP receivers and MCP server, `settings.toml`, pause, rates (see "Engine" below) |
+| `loctel-engine` | core | Wires store, ingest, MCP and the discard rules; settings, pause, rates; owns threads and runtime | implemented: store, OTLP receivers and MCP server, `settings.toml`, pause, rates, and (Milestone 2) the discard rules at ingest with live reload of `rules.toml` and the handle API (see "Engine" below) |
 | `loctel-meshgen` | test tooling | Fake microservice mesh scenarios (library and `meshgen` binary) | implemented: six scenarios and a sender over gRPC, HTTP protobuf and HTTP JSON (see "Test tooling" below) |
 | `loctel-e2e` | test tooling | End-to-end tests through real OTLP and a real MCP client (`publish = false`) | implemented: a `Harness` over a real engine and six tests (see "Test tooling" below) |
 | `loctel-ui` | UI | GPUI views and the headless screenshot harness | implemented: the status view, the shared menu text, the theme, and `testing::{render_png, assert_snapshot}` behind the `screenshot` feature (see "UI" below) |
@@ -45,8 +45,10 @@ are left out):
    |                    |                  |                 `---> loctel-query
    |                    |                  |--> loctel-ingest ---> loctel-model
    |                    |                  `--> loctel-model
+   |                    |--> loctel-rules --> loctel-store, loctel-query, loctel-model
    |                    |--> loctel-ingest
    |                    |--> loctel-store
+   |                    |--> loctel-query  (the `QueryError` of the preview)
    |                    `--> loctel-model
    |--> loctel-ui     (Linux window; owns `menu_text`) --> loctel-engine
    `--> loctel-macos  (macOS only) --> loctel-engine, loctel-ui
@@ -54,7 +56,7 @@ are left out):
  loctel-query   --> loctel-model                      (the store and the rules depend on it; MCP
                                                        will, in Milestone 2)
  loctel-rules   --> loctel-store, loctel-query, loctel-model
-                                                      (the engine will depend on it, in Milestone 2)
+                                                      (the engine depends on it)
 
  loctel-meshgen --> loctel-model                      (test tooling)
  loctel-e2e     --> loctel-engine, loctel-meshgen     (+ rmcp's client)
@@ -63,8 +65,9 @@ are left out):
 
 ## Data flow
 
-The Milestone 1 shape. Everything runs on Linux except the macOS status item,
-which is written and type-checked but has never run:
+The shape since Milestone 2: the discard rules sit between the sink and the
+store. Everything runs on Linux except the macOS status item, which is written
+and type-checked but has never run:
 
 ```
  services (Docker or bare metal)
@@ -74,9 +77,11 @@ which is written and type-checked but has never run:
         |
         |  Sink::spans / Sink::logs
         v
- loctel-engine ---- EngineSink: paused? drop. Otherwise meter the rate and
-     |    |          hand the batch to the store. Also: settings, status,
-     |    |          shutdown; owns the runtime.
+ loctel-engine ---- EngineSink: paused? drop. Otherwise, under one lock:
+     |    |          loctel-rules (RuleSet) judges the batch, what the store holds
+     |    |          of dropped traces and spans is removed, then the survivors
+     |    |          are metered and handed to the store. Also: settings, rules.toml
+     |    |          and its reload, status, shutdown; owns the runtime.
      |    v
      |  loctel-store -- assembles traces, marks complete, finds failed-in span,
      |    |             keeps logs and the service map, evicts oldest whole trace
@@ -93,8 +98,8 @@ The UI gets the `EngineHandle` and asks it for the status. The MCP server gets
 the store and a `StatusSource` that the engine implements, so `get_status` and
 `EngineHandle::status()` read the same state.
 
-Telemetry is never persisted. Only `settings.toml` (and discard rules from
-Milestone 2) is written to disk.
+Telemetry is never persisted. Only `settings.toml` and `rules.toml` (the discard
+rules) are written to disk.
 
 ## Domain model
 
@@ -264,6 +269,11 @@ What other crates rely on:
 - **`preview(&spec, &store, since)`** says what one rule would have dropped of the
   stored data (`Preview`: traces, spans, logs, and how many of them had errors),
   or the parser's `QueryError`.
+- **The engine runs it** (`loctel-engine`, "Engine" above): each batch the
+  receivers accept goes receivers, then sink, then rules, then store, and
+  `EngineHandle::{rules, set_rules, set_rule_enabled, preview_rule}` is the API
+  the menu, the window and, later, the rules screen use. MCP cannot change
+  rules.
 
 ## Ingest
 
@@ -328,13 +338,16 @@ What other crates rely on:
 ## Engine
 
 `loctel-engine` depends on `loctel-model`, `loctel-store`, `loctel-ingest`,
-`loctel-mcp`, `tokio`, `toml`, `serde`, `dirs` and `anyhow`. It is the one object the menu
+`loctel-mcp`, `loctel-rules`, `loctel-query`, `tokio`, `toml`, `serde`, `dirs`,
+`parking_lot` and `anyhow`. It is the one object the menu
 bar, the window and the headless binary hold, so none of them knows how the
 store and the receivers are put together. Decisions and reasons:
-[`decisions/0004-engine-lifecycle-and-settings.md`](decisions/0004-engine-lifecycle-and-settings.md).
+[`decisions/0004-engine-lifecycle-and-settings.md`](decisions/0004-engine-lifecycle-and-settings.md)
+and, for the rules,
+[`decisions/0018-engine-rules-choices.md`](decisions/0018-engine-rules-choices.md).
 
-- **Starting.** `Engine::start(EngineConfig { bind_ip, settings, store })`
-  returns an `EngineHandle`. It builds the `Store` (with `SystemClock`), a
+- **Starting.** `Engine::start(EngineConfig { bind_ip, settings, store,
+  rules_path })` returns an `EngineHandle`. It builds the `Store` (with `SystemClock`), a
   multi-thread tokio runtime on threads named `loctel-engine`, the OTLP
   receivers on `bind_ip` and the ports in `Settings` (loopback by default), and
   the MCP server on `127.0.0.1` at `mcp_port`, **always loopback whatever
@@ -346,20 +359,34 @@ store and the receivers are put together. Decisions and reasons:
 - **The handle.** `EngineHandle` is `Clone`, and every clone is the same
   engine: `store()`, `status()`, `set_paused`, `is_paused`, `mcp_url()`
   (`http://127.0.0.1:{port}/mcp` with the port really bound, `None` when the MCP
-  port could not be bound) and `shutdown()`. `shutdown` is idempotent and safe
+  port could not be bound), the rules calls (`rules()`, `rules_path()`,
+  `set_rules`, `set_rule_enabled`, `preview_rule`; see "Discard rules" below) and
+  `shutdown()`. `shutdown` is idempotent and safe
   from any thread, including inside a runtime (where it does not wait). The
   engine also stops when the last handle is dropped.
 - **Pause.** `EngineSink` is the receivers' `Sink`. While paused it drops
-  every batch before it reaches the store or the rate meters, and the receivers
-  keep answering success, so exporters neither buffer nor retry (design §4).
-  Dropped items are not counted anywhere, and they are not recoverable on
-  resume.
+  every batch before it reaches the rules, the store or the rate meters, and the
+  receivers keep answering success, so exporters neither buffer nor retry
+  (design §4). Dropped items are not counted anywhere (no rule counter moves),
+  and they are not recoverable on resume.
+- **Rules at ingest.** After the pause check, every batch goes through the
+  discard rules (`loctel-rules`) before the store, under one `parking_lot` mutex
+  so that batches from the gRPC and HTTP receivers apply in order: for spans
+  `RuleSet::filter_spans`, then `remove_dropped` (the store loses what the
+  verdict condemns, and the rules count it), then `ingest_spans(keep)`; for logs
+  `filter_logs`, then `ingest_logs`. `EngineConfig::rules_path` is where
+  `rules.toml` lives (`None`, the default, means in memory only); the engine
+  writes a file holding no rules when there is none, loads it, and a background
+  task polls it every `RULES_POLL` (2 s) and reloads it on a change, keeping the
+  previous rules and setting `rules_file_error` when the file is bad. The
+  details are in [`areas/rules.md`](areas/rules.md) ("In the engine").
 - **Rates.** `EngineStatus::spans_per_sec` and `logs_per_sec` come from two
   `RateMeter`s: the count over the last 5 seconds divided by 5, in 100 ms
-  buckets. Time is passed in, never read, so tests need no sleeping. The
-  first 5 seconds after start understate the rate.
+  buckets, of what the rules **accepted**. Time is passed in, never read, so
+  tests need no sleeping. The first 5 seconds after start understate the rate.
 - **Status.** `EngineStatus { paused, listeners, spans_per_sec, logs_per_sec,
-  stats }` is a snapshot by value. Callers poll it (the UI) or print it (the
+  stats, rules, rules_file_error, dropped_spans, dropped_logs, dropped_fraction }`
+  is a snapshot by value. Callers poll it (the UI) or print it (the
   headless binary). `listeners` is `otlp-grpc`, `otlp-http`, `mcp`, in that
   order. The same state, behind `StatusSource`, answers the MCP `get_status`
   tool, so the two cannot disagree.
@@ -382,7 +409,7 @@ what the end-to-end tests, the release smoke test and agents on Linux use.
 
 ```
 loctel [--headless] [--grpc-port N] [--http-port N] [--mcp-port N]
-       [--settings PATH] [--completeness-ms N]
+       [--settings PATH] [--rules PATH] [--completeness-ms N]
 ```
 
 - **Configuration.** Settings come from `--settings PATH`, else the per-user
@@ -390,14 +417,20 @@ loctel [--headless] [--grpc-port N] [--http-port N] [--mcp-port N]
   replaced by the defaults for this run. The port flags win over the file.
   `--completeness-ms` sets how long a trace must be quiet to count as complete
   (tests use small values). Port 0 picks a free port. The file is only read:
-  headless mode never writes it.
+  headless mode never writes it. The discard rules are in `--rules PATH`, else
+  `rules.toml` in the directory of the settings file (so beside a scratch
+  `--settings` file, and in the per-user folder otherwise). Unlike the settings,
+  that file is created when it is missing (holding no rules), and rewritten
+  when the rules change through the handle.
 - **Output.** Stdout carries one JSON line per listener (`otlp-grpc`,
-  `otlp-http`, `mcp`, in that order), once, when the engine is up, and nothing
-  else:
+  `otlp-http`, `mcp`, in that order) and then one line for the rules, once, when
+  the engine is up, and nothing else:
   `{"event":"listener","name":"otlp-grpc","state":"listening","address":"127.0.0.1:4317"}`
-  or `{"event":"listener","name":"otlp-http","state":"failed","error":"..."}`.
-  A script that starts loctel with ports 0 reads its real ports from these
-  lines. Logs and warnings go to stderr (quiet by default, `RUST_LOG` to
+  or `{"event":"listener","name":"otlp-http","state":"failed","error":"..."}`,
+  then `{"event":"rules","path":"/.../rules.toml","count":0,"error":null}` (how
+  many rules the file holds, and why it could not be used, if so).
+  A script that starts loctel with ports 0 reads its real ports from the
+  listener lines. Logs and warnings go to stderr (quiet by default, `RUST_LOG` to
   change).
 - **Lifetime.** The signal handlers are installed before the lines are
   printed, so a signal sent as soon as a line is read is never lost. SIGINT or
@@ -405,12 +438,13 @@ loctel [--headless] [--grpc-port N] [--http-port N] [--mcp-port N]
   process runs with what it could bind. An unknown flag exits 2, and an
   engine that cannot start exits 1.
 - **Without `--headless`** on Linux the binary opens the status window (see
-  "UI" below) and prints the same listener lines; with no display it says so
-  on stderr and runs headless. On macOS it is the menu bar app (see "macOS
-  shell" below), and prints the same lines. On any other OS it does the same as
+  "UI" below) and prints the same lines (listeners, then rules); with no display
+  it says so on stderr and runs headless. On macOS it is the menu bar app (see
+  "macOS shell" below), and prints the same lines. On any other OS it does the same as
   headless.
 - **Tests.** `crates/loctel-app/tests/headless.rs` runs the built binary:
-  the lines, SIGTERM and SIGINT, a taken port, settings file and flags.
+  the lines (the rules line included), SIGTERM and SIGINT, a taken port,
+  settings file and flags.
 
 ## UI
 

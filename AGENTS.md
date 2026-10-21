@@ -34,7 +34,7 @@ All from the repository root. The sections below say what each one is for.
 |---|---|
 | set up a Linux machine (once; idempotent) | `bash script/setup-linux.sh` |
 | run the quality gate | `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` |
-| run loctel with no window | `cargo run -p loctel-app -- --headless --grpc-port 0 --http-port 0 --mcp-port 0 --settings /tmp/loctel-settings.toml` |
+| run loctel with no window | `cargo run -p loctel-app -- --headless --grpc-port 0 --http-port 0 --mcp-port 0 --settings /tmp/loctel-settings.toml --rules /tmp/loctel-rules.toml` |
 | send it fake traffic (meshgen) | `cargo run -p loctel-meshgen -- --scenario checkout-failure --transport http-json --endpoint http://127.0.0.1:4318` |
 | see the real window | `cargo xtask run-shot`, then open `target/run-shot.png` |
 | rewrite the screenshot references | `cargo xtask screenshots --update` (view every changed PNG) |
@@ -65,13 +65,16 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-Run the app headless (no window; prints one JSON line per listener and runs
-until SIGINT or SIGTERM). Port 0 picks a free port, and the lines say which.
-Point `--settings` at a scratch file so you never touch the real one:
+Run the app headless (no window; prints one JSON line per listener and one for
+the discard rules, and runs until SIGINT or SIGTERM). Port 0 picks a free port,
+and the lines say which. Point `--settings` and `--rules` at scratch files so you
+never touch the real ones (`--rules` defaults to `rules.toml` beside the settings
+file, and a new rules file holds no rules: nothing is discarded unless you write
+a rule, see [`docs/areas/rules.md`](docs/areas/rules.md)):
 
 ```bash
 cargo run -p loctel-app -- --headless --grpc-port 0 --http-port 0 --mcp-port 0 \
-  --settings /tmp/loctel-settings.toml
+  --settings /tmp/loctel-settings.toml --rules /tmp/loctel-rules.toml
 ```
 
 The run also serves MCP (the `mcp` line it prints has the address; the default
@@ -101,7 +104,7 @@ base URL); `--repeat N --interval-ms M` sends it again and again with fresh IDs
 scenarios. `cargo run -p loctel-meshgen -- --help` has them all.
 
 See the app, and the screenshot tests. Without `--headless`, Linux opens the
-status window and prints the same listener lines (with no display it says so
+status window and prints the same startup lines (with no display it says so
 and runs headless), so the real window runs under Xvfb. The first command
 writes `target/run-shot.png`; open it with the Read tool. The screenshot tests
 run with the rest of `cargo test --workspace`; the second command rewrites

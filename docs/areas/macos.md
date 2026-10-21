@@ -27,7 +27,7 @@ the project lives here.
 | `icon::template_icon()` | the two PNGs as one template `NSImage` |
 
 `loctel-app` without `--headless` on macOS (`run_menu_bar` in `main.rs`) starts
-the engine, prints the listener lines like headless mode, sets
+the engine, prints the startup lines (listeners, then the rules line) like headless mode, sets
 `QuitMode::Explicit` and, in `Application::run`, `ActivationPolicy::Accessory`,
 calls `install` and opens no window. `--headless` is unchanged.
 

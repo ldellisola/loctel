@@ -137,8 +137,8 @@ repo skill `update-screenshots` has the steps, and how to read a CI failure.
 ## The real window
 
 `loctel` without `--headless` on Linux opens the status view in a window and
-prints the same listener lines as headless mode (so a script that passed port 0
-finds the ports). Closing the window quits. With no `DISPLAY` or
+prints the same startup lines as headless mode (the listeners, then the rules
+line), so a script that passed port 0 finds the ports. Closing the window quits. With no `DISPLAY` or
 `WAYLAND_DISPLAY` it says so on stderr and runs headless: GPUI would otherwise
 hand out windows that draw nothing.
 

@@ -102,7 +102,7 @@ meshgen --scenario <checkout-failure|checkout-success|health-checks|late-out-of-
 Try it by hand (Linux, no window):
 
 ```bash
-cargo run -p loctel-app -- --headless --completeness-ms 500 --settings /tmp/loctel-settings.toml &
+cargo run -p loctel-app -- --headless --completeness-ms 500 --settings /tmp/loctel-settings.toml --rules /tmp/loctel-rules.toml &
 cargo run -p loctel-meshgen -- --scenario checkout-failure --transport http-json --endpoint http://127.0.0.1:4318
 # sent 15 spans and 7 logs (trace ...)
 kill %1

@@ -1,6 +1,6 @@
 [package]
 name = "loctel-engine"
-description = "The loctel engine: wires the store and the receivers, owns the runtime, settings, pause and rates"
+description = "The loctel engine: wires the store and the receivers, owns the runtime, settings, pause, rates and the discard rules at ingest"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,13 +11,18 @@ loctel-model.workspace = true
 loctel-store.workspace = true
 loctel-ingest.workspace = true
 loctel-mcp.workspace = true
+loctel-query.workspace = true
+loctel-rules.workspace = true
 anyhow.workspace = true
+parking_lot.workspace = true
 dirs.workspace = true
 serde.workspace = true
 tokio.workspace = true
 toml.workspace = true
 
 [dev-dependencies]
+# The rules tests send the fake mesh's health checks and checkout over HTTP.
+loctel-meshgen.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 # A real MCP client, to read the engine's status the way an agent does.

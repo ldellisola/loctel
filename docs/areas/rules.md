@@ -8,17 +8,20 @@ languages) and §8 (MCP can see rules, not change them).
 
 Status (Milestone 2): this crate is implemented: the model, `rules.toml`, the
 ingest filter (`RuleSet`) and the preview. The engine runs every batch through
-it, reloads the file and reports the counts in Task 6, MCP shows the rules in
-`get_status` in Task 7, and the menu and status window show the rules line in
-Task 8 (see the M2 plan, `superpowers/plans/2026-10-21-loctel-m2-query-rules.md`).
-The rules screen is Milestone 4. This page grows with them.
+it, reloads the file and reports the counts (Task 6, "In the engine" below). MCP
+shows the rules in `get_status` in Task 7, and the menu and status window show
+the rules line in Task 8 (see the M2 plan,
+`superpowers/plans/2026-10-21-loctel-m2-query-rules.md`). The rules screen is
+Milestone 4. This page grows with them.
 
 The crate depends on `loctel-model`, `loctel-query` and `loctel-store` (to read
 and remove stored data), plus `serde`, `toml`, `dirs`, `anyhow` and
 `parking_lot`. It has no engine, UI or network code, and builds and tests on
 Linux. The choices and their reasons are in
-[`decisions/0016-no-default-discard-rules.md`](../decisions/0016-no-default-discard-rules.md)
-and [`decisions/0017-rules-crate-choices.md`](../decisions/0017-rules-crate-choices.md).
+[`decisions/0016-no-default-discard-rules.md`](../decisions/0016-no-default-discard-rules.md),
+[`decisions/0017-rules-crate-choices.md`](../decisions/0017-rules-crate-choices.md)
+and, for the engine's side,
+[`decisions/0018-engine-rules-choices.md`](../decisions/0018-engine-rules-choices.md).
 
 ## There are no default rules
 
@@ -69,7 +72,7 @@ query = '{ name = "MGET" }'
   `Ok(Some(rules))` otherwise. Bad TOML, an unknown `language` or `scope`, a wrong
   type, or a rule without `name`, `enabled`, `language` or `query` is an `Err`
   whose one-line text names the file and, for TOML syntax, the line. The caller
-  keeps the rules it had (the engine, Task 6).
+  keeps the rules it had (the engine does, see "In the engine").
 - **A bad query is not a file error.** The file loads, and the rule with the typo
   is reported by `RuleSet` (`RuleStatus::error`, the parser's text with its
   column) and does nothing, while the other rules apply. One typo in a hand-edited
@@ -237,7 +240,74 @@ logs are those at or after it.
 - All of it runs under one lock, so the gRPC and HTTP receivers see each other's
   drops; `statuses()` waits for a batch in progress.
 
+## In the engine
+
+`loctel-engine` runs the rules (`crates/loctel-engine/src/{sink.rs,
+rules_watch.rs}`). The reasons are in decision 0018.
+
+- **Where the file is.** `EngineConfig::rules_path`: `Some(path)` for the app,
+  `None` (the default) for tests, where the rules live in memory and start empty.
+  `loctel` takes it from `--rules PATH`; without the flag it is `rules.toml` in
+  the directory of the settings file, so the per-user
+  `RulesFile::default_path()` normally, and `rules.toml` beside a scratch
+  `--settings` file when one is given (a run on scratch settings never touches the
+  real rules). `EngineHandle::rules_path()` says which.
+- **At start.** With a path and no file, the engine writes the empty file
+  (`RulesFile::write_empty`) and has no rules. With a file, it loads it. With a
+  file that cannot be read or parsed it starts with **no rules and
+  `EngineStatus::rules_file_error` set**, and leaves the file as it is: it never
+  rewrites a file it could not read. Where even the empty file cannot be written
+  (a read-only folder) the error is set too. None of these stops the engine.
+- **Every batch goes through the rules** in the receivers' sink, after the pause
+  check and before the store, under one lock so batches apply in order: for spans
+  `filter_spans`, then `remove_dropped` (what the store holds of the condemned
+  traces and spans goes, and is credited to the rule that dropped it), then
+  `ingest_spans(keep)`; for logs `filter_logs`, then `ingest_logs`. A paused
+  engine drops the batch before the rules see it, so no counter moves.
+- **Rates and the dropped fraction count what was accepted.** `spans_per_sec` and
+  `logs_per_sec` count what the rules let through. `dropped_spans` and
+  `dropped_logs` are `RuleSet::totals()`, since launch. `dropped_fraction` is
+  dropped divided by dropped plus accepted, spans and logs together, since launch
+  (0 when nothing has arrived). It counts a stored item that a later drop removed
+  on both sides, which for a ratio shown as a whole percent is not worth a
+  correction.
+- **Reload.** A task on the engine's runtime looks at the file every
+  `RULES_POLL` (2 s). It reads the file when its modification time or its length
+  differs from what the engine last saw. On success the rules are replaced (an
+  unchanged rule keeps its ID and counters) and the error clears. On a failure
+  (bad TOML, a wrong key or value) **the current rules stay** and
+  `rules_file_error` holds the one-line text, until a good file arrives. A bad
+  *query* is no file error: that one rule shows its error in `status().rules` and
+  the others apply. The engine's own writes update what it last saw, so they do
+  not reload. A file that disappears changes nothing: the rules in memory stay
+  and nothing is written over the gap (an editor that saves by renaming leaves
+  none for a moment); the next change through the handle writes the file again.
+- **The handle.** `rules()` (the same list as `status().rules`),
+  `rules_path()`, `set_rules(specs)`, `set_rule_enabled(id, enabled)` and
+  `preview_rule(&spec)`.
+  - `set_rules` and `set_rule_enabled` save the file first (when there is a path)
+    and then apply, so that a failed write is an `Err` that changes nothing. They
+    clear a file error, since the file has just been written over. Invalid
+    queries are allowed (a draft); they show as that rule's error. Hand-written
+    comments in the file do not survive a save, the header does.
+  - `set_rule_enabled` with an ID that is not in the list is an `Err`.
+  - `preview_rule` runs `preview` over the last `PREVIEW_WINDOW` (5 minutes) of
+    stored data, ignoring `enabled` and the other rules.
+- **Status.** `EngineStatus` carries `rules` (`Vec<RuleStatus>`),
+  `rules_file_error`, `dropped_spans`, `dropped_logs` and `dropped_fraction`.
+- **Headless output.** `loctel` prints one JSON line about the rules after the
+  listener lines: `{"event":"rules","path":"...","count":N,"error":null}`. `count`
+  is how many rules the file holds, enabled or not, and `error` is the file's
+  error text or `null`. `path` is `null` when the rules live in memory only (the
+  app always has one).
+
 ## Tests
+
+`crates/loctel-engine/tests/rules.rs` runs the engine on real sockets with the
+fake mesh (the file at start, health checks dropped, a trace whose root arrives
+last, live reload, a broken file, the handle API, the preview, the dropped
+fraction, rates and pause), `rules_watch.rs` has unit tests for the file polling,
+and `crates/loctel-app/tests/headless.rs` checks the `rules` line of the binary.
 
 `crates/loctel-rules/tests/`: `file.rs` (the file: missing, round trip, defaults,
 the empty file and its example, errors), `filter.rs` (the filter with a
@@ -254,7 +324,5 @@ arrives last is `whole_trace_drop_covers_stored_and_late_spans`, and
 
 ## Not here
 
-The engine's side (rules at ingest, reloading the file when it changes, the
-status and the handle API) is Task 6 of the M2 plan, the MCP view of the rules is
-Task 7, and the menu and window rules line is Task 8. Prefilling a rule from a log
-line and the rules screen are M4.
+The MCP view of the rules is Task 7, and the menu and window rules line is Task
+8. Prefilling a rule from a log line and the rules screen are M4.

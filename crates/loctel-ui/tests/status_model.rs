@@ -35,6 +35,11 @@ fn from_status_maps_listening_and_failed_listeners() {
             spans_received: 500,
             logs_received: 2_000,
         },
+        rules: vec![],
+        rules_file_error: None,
+        dropped_spans: 0,
+        dropped_logs: 0,
+        dropped_fraction: 0.0,
     };
 
     let model = StatusModel::from_status(&status);
