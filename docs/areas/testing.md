@@ -119,8 +119,9 @@ reference screenshots and the e2e expectations in the same change, and the
 table in `crates/loctel-meshgen/tests/scenarios.rs`, which pins it field by
 field. The TraceQL evaluator's tests
 (`crates/loctel-query/tests/traceql_eval.rs`) name its spans by row number and
-work out each expected answer from this table, so they change with it. It is
-one trace and one batch, with no delay.
+work out each expected answer from this table, and the LogQL tests
+(`crates/loctel-query/tests/logql.rs`) count its 7 logs by service, level and
+body, so they change with it. It is one trace and one batch, with no delay.
 
 Offsets are milliseconds from `base_unix_nano`.
 

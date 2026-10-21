@@ -8,9 +8,11 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use loctel_ingest::spans_from_request;
+use loctel_ingest::{logs_from_request, spans_from_request};
 use loctel_meshgen::{Scenario, generate};
-use loctel_model::{AttrValue, Resource, Span, SpanId, SpanKind, StatusCode, TraceId};
+use loctel_model::{
+    AttrValue, LogRecord, Resource, Severity, Span, SpanId, SpanKind, StatusCode, TraceId,
+};
 use loctel_query::traceql::{self, TraceView};
 
 /// The base time the fixtures generate at (1 s after the epoch, in
@@ -129,4 +131,68 @@ pub fn with_resource_attr(mut span: Span, key: &str, value: AttrValue) -> Span {
 /// `span` emitted by `service`.
 pub fn in_service(span: Span, service: &str) -> Span {
     with_resource_attr(span, "service.name", AttrValue::Str(service.to_owned()))
+}
+
+// ---- logs ------------------------------------------------------------------
+
+/// The log records of every logs export in `scenario`, converted by the real
+/// OTLP conversion code, in the order the batches carry them.
+pub fn scenario_logs(scenario: &Scenario) -> Vec<LogRecord> {
+    generate(scenario, SEED, BASE_UNIX_NANO)
+        .batches
+        .into_iter()
+        .filter_map(|batch| batch.logs)
+        .flat_map(|request| logs_from_request(request).items)
+        .collect()
+}
+
+/// The 7 log records of the fixed `CheckoutFailure` scenario (the log table in
+/// Task 8 of the M1 plan), in time order: 3 from `orders-api` (on span 4), 4
+/// from `payments-api` (on span 10).
+pub fn checkout_failure_logs() -> Vec<LogRecord> {
+    let mut logs = scenario_logs(&Scenario::CheckoutFailure);
+    logs.sort_by_key(|log| log.time_unix_nano);
+    logs
+}
+
+/// A hand-made `Info` log with `body`: no attributes, no trace context, an
+/// unnamed service and an empty scope name.
+pub fn mk_log(body: &str) -> LogRecord {
+    LogRecord {
+        time_unix_nano: BASE_UNIX_NANO,
+        observed_unix_nano: BASE_UNIX_NANO,
+        severity: Severity::Info,
+        severity_text: "INFO".to_owned(),
+        body: body.to_owned(),
+        attributes: Vec::new(),
+        trace_id: None,
+        span_id: None,
+        resource: Arc::new(Resource::default()),
+        scope_name: String::new(),
+    }
+}
+
+/// `log` with one more log attribute.
+pub fn log_with_attr(mut log: LogRecord, key: &str, value: AttrValue) -> LogRecord {
+    log.attributes.push((key.to_owned(), value));
+    log
+}
+
+/// `log` with one more attribute on its resource.
+pub fn log_with_resource_attr(mut log: LogRecord, key: &str, value: AttrValue) -> LogRecord {
+    let mut resource = (*log.resource).clone();
+    resource.attributes.push((key.to_owned(), value));
+    log.resource = Arc::new(resource);
+    log
+}
+
+/// `log` emitted by `service`.
+pub fn log_in_service(log: LogRecord, service: &str) -> LogRecord {
+    log_with_resource_attr(log, "service.name", AttrValue::Str(service.to_owned()))
+}
+
+/// How many of `logs` the LogQL `query` matches. Panics if it does not parse.
+pub fn count_logs(query: &str, logs: &[LogRecord]) -> usize {
+    let parsed = loctel_query::logql::parse(query).unwrap_or_else(|err| panic!("{query}: {err}"));
+    logs.iter().filter(|log| parsed.matches(log)).count()
 }

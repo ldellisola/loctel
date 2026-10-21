@@ -148,6 +148,7 @@ that matches before you start:
 | `run-and-screenshot` | you need to see loctel run: headless with meshgen data, or the real window under Xvfb with a PNG |
 | `update-screenshots` | a view's pixels change on purpose, you add a screenshot test, or one fails locally or in CI |
 | `add-mcp-tool` | an agent-facing capability changes: a new tool, argument or result field |
+| `add-query-feature` | TraceQL or LogQL gains syntax or semantics, a feature leaves the "not supported yet" list, or a query pasted from Grafana behaves differently from Grafana |
 | `investigate-ci` | CI is red (the gate on a PR, a screenshot diff, or the release job after a merge): find the failing step, reproduce it, fix the cause |
 
 ## How a change ships

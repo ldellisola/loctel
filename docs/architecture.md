@@ -24,7 +24,7 @@ updates this table and the diagram below it.
 |---|---|---|---|
 | `loctel-model` | core | Domain types (spans, logs, resources, IDs, severity), independent of OTLP | implemented (see "Domain model" below) |
 | `loctel-store` | core | In-memory store: trace assembly, completeness, dedup, eviction, failure semantics, search, logs, service map | implemented: assembly, completeness, dedup, eviction, failure semantics, trace summaries and search, logs, service map and services list (see "Store" below) |
-| `loctel-query` | core | TraceQL and LogQL lexers, parsers and evaluators, with errors that carry the position in the query. Pure: depends only on `loctel-model` (and `regex`) | in progress (Milestone 2): `QueryError`, `Pattern`, duration literals and the TraceQL lexer, parser and evaluator (`TraceView`, `evaluate`, `matches_span`); LogQL comes in the next task (see "Query languages" below) |
+| `loctel-query` | core | TraceQL and LogQL lexers, parsers and evaluators, with errors that carry the position in the query. Pure: depends only on `loctel-model` (and `regex`) | in progress (Milestone 2): `QueryError`, `Pattern`, duration literals, the TraceQL lexer, parser and evaluator (`TraceView`, `evaluate`, `matches_span`) and LogQL (`logql::parse`, `LogQuery::matches`, `logql::labels`); the store, rules and MCP use them in the next tasks (see "Query languages" below) |
 | `loctel-ingest` | core | OTLP gRPC and HTTP receivers, protobuf and JSON to model conversion | implemented: gRPC and HTTP receivers, gzip, conversion, `partial_success` (see "Ingest" below) |
 | `loctel-mcp` | core | MCP server (rmcp, Streamable HTTP), tools and their DTOs | implemented: nine read-only tools, the `Origin` check, both protocol generations (see "MCP" below) |
 | `loctel-engine` | core | Wires store, ingest and MCP; settings, pause, rates; owns threads and runtime | implemented: store, OTLP receivers and MCP server, `settings.toml`, pause, rates (see "Engine" below) |
@@ -174,8 +174,9 @@ details (API, rules and the reasons) are in
 tests on Linux with no UI and nothing else in the workspace is needed to use
 it. The details (the supported subset, precedence, what is not supported and
 why) are in [`areas/query.md`](areas/query.md); the choices and their reasons
-are in [`decisions/0012-traceql-parser-choices.md`](decisions/0012-traceql-parser-choices.md)
-and [`decisions/0013-traceql-evaluator-choices.md`](decisions/0013-traceql-evaluator-choices.md).
+are in [`decisions/0012-traceql-parser-choices.md`](decisions/0012-traceql-parser-choices.md),
+[`decisions/0013-traceql-evaluator-choices.md`](decisions/0013-traceql-evaluator-choices.md)
+and [`decisions/0014-logql-choices.md`](decisions/0014-logql-choices.md).
 What other crates rely on:
 
 - **Grafana's languages, not ours.** TraceQL follows Tempo (`expr.y`) and LogQL
@@ -200,6 +201,17 @@ What other crates rely on:
   false.
   The semantics, and where they are narrower than Tempo's, are in
   `areas/query.md` and decision 0013.
+- **`logql::parse(text) -> LogQuery`**, and **`LogQuery::matches(&LogRecord) ->
+  bool`**, which cannot fail. **`LogQuery::service_hint()`** is the value of an
+  exact `service_name="..."` selector matcher: every log the query matches is
+  from that service, so the store can use it to skip the others. **`logql::labels(&LogRecord)`**
+  (also `loctel_query::labels`) is the label set a query reads: resource and log
+  attributes with dots turned into `_`, `service_name`, `level`, `scope_name`,
+  `trace_id`, `span_id`; a label with an empty value does not exist. The
+  selector reads it straight from the record and the full set is built only when
+  `| json` or `| logfmt` runs. The semantics, the parsers, and where loctel
+  differs from Loki (checked against Loki's own pipeline) are in `areas/query.md`
+  and decision 0014.
 
 ## Ingest
 

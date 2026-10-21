@@ -10,11 +10,12 @@ pasted from Grafana should work unchanged. Where loctel does not support a
 feature, the parser says so with the feature's name and position, and never
 gives results that quietly differ from Grafana's.
 
-Status (Milestone 2, in progress): the shared pieces and the **TraceQL lexer,
-parser and evaluator** (`TraceView`, `evaluate`, `matches_span`) are
-implemented. LogQL and the rules that use them follow (the M2 plan,
-`superpowers/plans/2026-10-21-loctel-m2-query-rules.md`, Tasks 3 to 7). This
-page grows with each of them.
+Status (Milestone 2, in progress): the shared pieces, the **TraceQL lexer,
+parser and evaluator** (`TraceView`, `evaluate`, `matches_span`) and **LogQL**
+(lexer, parser, label set and evaluator: `logql::parse`, `LogQuery::matches`,
+`logql::labels`) are implemented. The store filters and the rules that use
+them follow (the M2 plan, `superpowers/plans/2026-10-21-loctel-m2-query-rules.md`,
+Tasks 4 to 7). This page grows with each of them.
 
 ## Shared pieces
 
@@ -328,3 +329,259 @@ root fields, `matches_span` against `evaluate`, orphans, loops, duplicate IDs,
 an empty trace, a chain of 100,000 spans, and the structural operators against
 a brute-force check on a 2,000-span trace. Run it with
 `cargo test -p loctel-query --test traceql_eval`.
+
+## LogQL (`loctel_query::logql`)
+
+```rust
+use loctel_query::logql;
+
+let query = logql::parse(r#"{service_name="payments-api"} |= "card" | json | status >= 500"#)?;
+query.service_hint();                  // Some("payments-api"): a prefilter for the store
+query.matches(&log);                   // log: &LogRecord
+let labels = logql::labels(&log);      // the label set the query reads, sorted by name
+```
+
+`parse(text) -> Result<LogQuery, QueryError>`. `matches` cannot fail: once a
+query has parsed, a comparison that makes no sense (a number filter on a label
+that is not a number) is simply false. The AST (`LogQuery { matchers, stages }`,
+`Stage`, `LineFilter`, `LabelFilter`, `StringMatcher`, `NumberOp`) is public so
+later tooling can walk it, but it promises nothing beyond the plan. `,`, a
+space and `and` between label filters are all `LabelFilter::And` in the tree,
+parentheses leave no node, and every regex is compiled while parsing (so a bad
+one is an error at the pattern, and a rule with one is disabled with the error).
+`logql::labels` is also exported as `loctel_query::labels`.
+
+`service_hint()` is the value of an exact `service_name="..."` selector matcher
+(`=`, not `=~`, not `!=`), or `None`. Every log the query matches comes from
+that service, so the store can skip every other one without evaluating
+anything.
+
+### What is supported
+
+```
+query        = [ "(" ]... selector stage* [ ")" ]...       (parentheses around the whole query)
+selector     = "{" matcher ( "," matcher )* "}"             (at least one matcher; no trailing comma)
+matcher      = label ( "=" | "!=" | "=~" | "!~" ) string
+stage        = ( "|=" | "!=" | "|~" | "!~" ) string          line filter, on the body
+             | "|" "json"
+             | "|" "logfmt"
+             | "|" label_expr
+label_expr   = label_expr ( "and" | "or" | "," | (nothing) ) label_expr
+             | "(" label_expr ")"
+             | label ( "=" | "!=" | "=~" | "!~" ) string
+             | label ( "==" | "=" | "!=" | ">" | ">=" | "<" | "<=" ) number
+             | label ( "==" | "=" | "!=" | ">" | ">=" | "<" | "<=" ) duration
+```
+
+- **Strings** are `"..."` or `` `...` ``. Double-quoted ones take Go's escapes
+  (`\a \b \f \n \r \t \v \\ \"`, `\ooo` and `\xHH` for ASCII, `\uHHHH`,
+  `\UHHHHHHHH`), and `"\d"` is an error as in Go; backticks are raw, which keeps
+  regexes readable (`` |~ `\d+ items` ``).
+- **Labels** are letters, digits and `_` (`service_name`, not `service.name`):
+  a dotted name is an error that says how loctel spells it
+  (`` invalid label name `deployment.environment`: ... (loctel writes it `deployment_environment`) ``).
+- **Numbers** are decimals with an optional sign and exponent (`500`, `-1.5`,
+  `.5`, `1e-3`); **durations** are `500ms`, `1.5s`, `1h30m` (units `ns us µs ms s
+  m h`, signed). `label = 5` and `label == 5` are the numeric comparison;
+  `label = "5"` compares text.
+- `#` starts a comment that runs to the end of the line. Keywords (`json`, `and`,
+  `or`) are case-insensitive, as in Loki.
+- A query may be wrapped in parentheses, as Loki allows (`({a="b"} |= "x")`).
+- A label named like a function (`ip`, `rate`, `count`, `sum`) is a label:
+  functions are only recognised before `(`.
+
+### The label set
+
+What a query reads. Built from the log record (`logql::labels(&log)`, sorted by
+name, one entry per name), following design §6.2:
+
+| Label | Value |
+|---|---|
+| every resource attribute | its key with each character outside `[A-Za-z0-9_]` turned into `_` (`loki_label_name`), and its display string (numbers and booleans as text, bytes as hex, arrays and maps as compact JSON) |
+| every log attribute | the same |
+| `service_name` | the service (`unknown_service` when the resource has no name) |
+| `level` | the severity: `trace`, `debug`, `info`, `warn`, `error`, `fatal`, or `unknown` |
+| `scope_name` | the instrumentation scope's name, when it has one |
+| `trace_id`, `span_id` | the lowercase hex IDs, when the log has them |
+
+- **Clashes:** the five computed labels win over an attribute of the same mapped
+  name (a log attribute called `level` is hidden by the severity; `| json` can
+  still reach a `level` field of the body, see below); a resource attribute wins
+  over a log attribute; of two attributes with one mapped name the first wins.
+  (An attribute called `trace_id` stays when the log has no trace context.)
+- **A label with an empty value does not exist**, as in Prometheus and Loki. This
+  is why a missing label compares as the empty string, and why an attribute with
+  an empty value is skipped before the first-wins rule.
+- The selector reads these straight from the record, with no allocation for string
+  attributes. The whole set is built once per `matches` call, as a copy, only
+  when `| json` or `| logfmt` runs, so one log's extraction never reaches the next
+  and a rule such as `{service_name="web"} |= "GET /health"` allocates nothing.
+  The test `selector_lookup_agrees_with_the_label_set` fails if the two drift.
+
+### Evaluation
+
+`matches(log)`: every selector matcher holds, and the log gets through every
+stage, in order.
+
+| Construct | Meaning |
+|---|---|
+| `{label = "x"}`, `!=` | exact text; **a missing label is the empty string**, so `{foo=""}` matches a log without `foo` and `{foo!="x"}` matches it too |
+| `=~`, `!~` (selector and label filters) | **fully anchored**: `^(?:re)$`. `{service_name=~"orders"}` does not match `orders-api`. `!~` is exactly the opposite |
+| `\|= "x"`, `!= "x"` | the body contains the text, case-sensitively; `\|= ""` matches every line and `!= ""` none |
+| `\|~ "re"`, `!~ "re"` | **unanchored**: matches anywhere in the line (`\|~ "attempt"` matches `retrying (attempt 2 of 2)`) |
+| line filters after `\| json` | still see the original body, not a parsed field |
+| `\| label = "x"`, `!=`, `=~`, `!~` | as the selector, on the label set plus what the parsers extracted so far |
+| `\| label > 5` (number) | the label's text is read as a number (Go's `ParseFloat`: a sign, an exponent, `_` between digits, `inf` and `nan`); **a missing label, or one that is not a number, makes the filter false**, `!=` included |
+| `\| label > 10ms` (duration) | the label's text is read as a Go duration (`12ms`, `1.5s`, `1h30m`, signed, a bare `0`), and compared in nanoseconds; **missing or not a duration is false**. A number literal does not read `12ms`, and a duration literal does not read `500` |
+| `a and b`, `a, b`, `a b` | both; `a or b` either; see "Label filter precedence" |
+| separate stages | each must hold: `\| a \| b` is `a and b` |
+| `\| json`, `\| logfmt` | never drop a log; see "The parsers" |
+
+### The parsers
+
+Both add labels on top of the log's own. Names that are already labels of the log
+get `_extracted` after them (a `level` field in the body is `level_extracted`,
+because `level` is the severity), as in Loki. **The first value extracted for a
+name stays**, within one line and across parsers (`a=1 a=2` gives `a="1"`); an
+empty value is no label.
+
+- **`| json`.** The body must be one JSON object. String, number and boolean
+  fields become labels named by their key, with nesting flattened by `_`
+  (`{"user":{"id":42}}` gives `user_id="42"`). Keys are made into label names like
+  attribute keys (each odd character `_`, a leading digit gets a `_` in front, a
+  blank key leaves no mark on the name). Arrays and nulls are skipped. Numbers
+  keep the text they have in the body (`129.00` stays `129.00`, it is not
+  re-formatted). A body that is not a JSON object, or is cut off, adds
+  `__error__="JSONParserErr"` (the labels read before the problem stay) and the
+  log is kept; `| json | __error__ = ""` drops those. Loki's scanner is lenient in
+  places, and loctel follows it so a half-JSON body gives the labels it gives
+  there: anything after the closing `}` is ignored, a trailing comma is fine,
+  arrays are skipped by matching brackets (not read), a number is whatever runs
+  to the next delimiter, and a string with a bad escape is a field with an empty
+  value (so no label, and no error). Nesting deeper than **128** objects is an
+  error (a hostile body must not overflow the stack).
+- **`| logfmt`.** Loki's decoder in its default, lenient mode, ported:
+  `key=value` pairs separated by whitespace; a value is `"quoted"` (escapes
+  `\" \\ \/ \' \b \f \n \r \t \uXXXX`) or runs to the next whitespace; a key with
+  no value or an empty one is skipped. A pair that breaks the format is dropped
+  together with the rest of its word, and the line goes on: an empty key (`=x`), a
+  quote in a key or in an unquoted value, an `=` in an unquoted value
+  (`path=/a?x=1` gives no `path`), an escape that does not exist inside quotes. A
+  quote that never closes drops the rest of the line. A line that is not logfmt
+  adds nothing and is no error.
+
+### Label filter precedence
+
+Loki's `syntax.y` declares `%left OR` below `%left AND UNLESS` and gives `,` and
+plain juxtaposition no precedence at all, so yacc **shifts** wherever it cannot
+compare. That makes `and` bind tighter than `or` (both left to right), and makes
+a comma or a space an `and` that reaches to the right: whatever follows it is
+grouped first, even an `or`. The result is not what "comma means and" suggests:
+
+| Written | Is read as |
+|---|---|
+| `a or b and c` | `a or (b and c)` |
+| `a and b or c` | `(a and b) or c` |
+| `a, b or c` and `a b or c` | `a and (b or c)` |
+| `a or b, c` and `a or b c` | `a or (b and c)` |
+| `a and b, c or d` | `a and b and (c or d)` |
+| `(a or b), c` | `(a or b) and c` |
+| `a \| b` (two stages) | `a and b` |
+
+The parser (`label_chain` in `logql/parser.rs`) is a shift-reduce loop that
+reduces the join on top of its stack only for `and` before `and` or `or`, and for
+`or` before `or`; every other case shifts. This was checked three ways: by reading
+the grammar, by running its label filter rules through goyacc with a toy lexer,
+and by running Loki's own parser over the same queries (it prints the tree, and
+`a and b, c or d` comes out `a , (b , (c or d))`). `tests/logql.rs` pins all of
+them with truth tables over four labels.
+
+### What is not supported
+
+Each of these is recognised and gives `"<feature> is not supported yet"` at the
+feature's position (the word itself, not the `|` before it), for example
+`at column 22: line_format is not supported yet`. A parse error the grammar gives
+is a plain syntax error (`expected a string, found `}``).
+
+| Feature | Error says |
+|---|---|
+| a metrics query: starts with `rate(`, `count_over_time(`, `bytes_rate(`, `sum(`, `sum by (`, `topk(`, `label_replace(`, ... (every Loki range, vector and label function) | `metrics queries are not supported yet`, at the function |
+| `\| line_format`, `\| label_format`, `\| unwrap`, `\| decolorize`, `\| drop`, `\| keep`, `\| unpack`, `\| pattern "..."`, `\| regexp "..."` | the word, e.g. `line_format is not supported yet` |
+| `\| json a="b.c"`, `\| json a` (label extraction expressions) | `json label extraction` |
+| `\| logfmt a`, `\| logfmt a="b"` | `logfmt label extraction` |
+| `\| logfmt --strict`, `--keep-empty` | `a logfmt flag` |
+| `\|= ip("...")`, `!= ip(...)`, `\| addr = ip(...)` | `ip` |
+| `\|> "pattern"`, `!> "pattern"` | `` the pattern filter `\|>` `` |
+| `\|= "a" or "b"` (several strings in one line filter) | `or between line filters` |
+| a byte-size literal, `\| size > 10MB` | `a byte size` |
+
+### Where loctel differs from Loki
+
+Found by running 120,000 random and 5,000 hand-written (query, line, labels)
+rows through Loki's own pipeline (v3.7.9) and loctel's side by side (the recipe is
+in `.claude/skills/add-query-feature/loki-differential.md`). Everything else agreed.
+
+**Different on purpose, and why:**
+
+- **A number or duration filter that cannot read its label is false.** Loki keeps
+  the line and sets `__error__="LabelFilterErr"` (so `| json | status >= 500`
+  keeps a plain-text line that has no `status` to read, and an `or` with it is
+  true). The plan fixes false for loctel, which is also the safe way round for a
+  discard rule: a rule must not delete a line because the line is not what the
+  rule expected. A missing label is false in both.
+- **A label filter before `| json` or `| logfmt` does not see what the parser
+  extracts.** Loki pushes every single-label filter of the pipeline into the
+  parsers, so `| x != "1" | logfmt` is also tested against the `x` that `logfmt`
+  extracts, and drops the line when it is `1`. That is an optimisation leaking
+  into the semantics. loctel runs the stages in order, as the language documents
+  it: the filter sees the labels that exist at its stage, so a pipeline written
+  that way matches less here, never more.
+- **An empty regex in a label filter matches only an empty label.** `| level =~ ""`
+  is true for every line in Loki (a line-filter simplification that forgets the
+  anchoring); here it is `^(?:)$`, as in Prometheus and in Loki's own selectors.
+
+**Looser than Loki** (loctel accepts what Loki rejects; the answers for what both
+accept do not differ):
+
+- `{app=~".*"}`, `{app=""}`, `{app!="x"}`: Loki wants at least one matcher that is
+  not "empty-compatible", because it has an index to protect. loctel has none, so
+  only `{}` is an error (the plan's rule).
+- Words that are keywords in Loki (`json`, `by`, `and`) can be label names in a
+  selector, and `and` can be a label name after `|`.
+
+**Narrower than Loki** (an error here, never a different answer):
+
+- The units `d`, `w` and `y` in a duration literal (`1d`): the shared
+  `parse_duration` has `ns us µs ms s m h`. A label's text is read with Go's
+  `time.ParseDuration`, which has no `d` either.
+- A number literal that overflows (`1e999`), and `\x` or octal escapes above
+  `\x7f` (Go makes them raw bytes, and loctel's strings are UTF-8).
+- `__error_details__` is not set; `__error__` is (`JSONParserErr`).
+- `--strict` logfmt, and the features in the table above.
+
+### Limits
+
+The label filter parser recurses only on parentheses and refuses past **64**
+levels (`query is too deeply nested`), including parentheses around the whole
+query. It also refuses more than **1000** operators (`and`, `or`, `,` and
+juxtaposition) in one query, because a chain of them is a tree as deep as it is
+long and the evaluator, `Clone`, `PartialEq` and `Drop` walk it recursively. The
+chain itself is parsed with an explicit stack, not recursion. A rules file edited
+by hand must never be able to overflow the stack, so these are errors, not
+crashes (the tests run the deepest allowed tree on a 1 MiB stack). Line filters
+and selector matchers are lists, with no limit.
+
+### Tests
+
+`crates/loctel-query/tests/logql.rs` (with the log builders in
+`tests/fixtures.rs`, which turns the `CheckoutFailure` scenario's 7 logs into
+`LogRecord`s through meshgen and the real OTLP conversion): the plan's table of
+counts over those logs, every unsupported feature (message and column) and a
+table of syntax errors (each pointing at "the text the error is at", so nobody
+counts columns), what parses, the syntax tree of a query, strings and escapes,
+the label set (clashes, mapped names, display strings, empty values) with the
+selector's direct lookup checked against it, missing labels, numeric and
+duration comparisons, label filter precedence as truth tables, both parsers
+including the bad input Loki's scanner and decoder are lenient about, the limits
+on a small stack, every truncation of every query (no panics) and 20,000 random
+strings.

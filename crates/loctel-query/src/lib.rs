@@ -14,13 +14,17 @@
 //!   label matchers) or not (LogQL line filters).
 //! - [`parse_duration`]: duration literals such as `500ms` and `1h30m`.
 //!
-//! and the language modules, starting with [`traceql`].
+//! and the language modules: [`traceql`] for traces and [`logql`] for logs.
 
 mod duration;
 mod error;
+pub mod logql;
 mod pattern;
 pub mod traceql;
 
 pub use duration::parse_duration;
 pub use error::QueryError;
+// The label set of a log record, which is what LogQL queries read. It lives in
+// `logql`; the plan lists it beside the module, so it is reachable from both.
+pub use logql::labels;
 pub use pattern::Pattern;
