@@ -20,10 +20,12 @@ in [`docs/milestones/roadmap.md`](docs/milestones/roadmap.md).
 
 ## Crate map
 
-A Cargo workspace (`crates/*` plus `xtask`). The core (model, store, ingest,
-MCP, engine) has no UI or graphics dependency and builds and tests on Linux
-alone. The GPUI layer is thin. macOS-only code lives in its own small crate.
-Which crates exist today, what each owns and how data flows between them:
+A Cargo workspace (`crates/*` plus `xtask`). The core (model, store, query,
+rules, ingest, MCP, engine) has no UI or graphics dependency and builds and
+tests on Linux alone. `loctel-query` holds the TraceQL and LogQL parsers and
+evaluators and `loctel-rules` the discard rules that use them at ingest. The
+GPUI layer is thin. macOS-only code lives in its own small crate. Which crates
+exist today, what each owns and how data flows between them:
 [`docs/architecture.md`](docs/architecture.md).
 
 ## Commands

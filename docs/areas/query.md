@@ -10,7 +10,7 @@ pasted from Grafana should work unchanged. Where loctel does not support a
 feature, the parser says so with the feature's name and position, and never
 gives results that quietly differ from Grafana's.
 
-Status (Milestone 2, in progress): the shared pieces, the **TraceQL lexer,
+Status (Milestone 2): the shared pieces, the **TraceQL lexer,
 parser and evaluator** (`TraceView`, `evaluate`, `matches_span`) and **LogQL**
 (lexer, parser, label set and evaluator: `logql::parse`, `LogQuery::matches`,
 `logql::labels`) are implemented, and the store uses both as search filters
@@ -18,8 +18,9 @@ parser and evaluator** (`TraceView`, `evaluate`, `matches_span`) and **LogQL**
 filters"). The discard rules use them too (`loctel-rules`; see
 [`rules.md`](rules.md)), and so does MCP: `search_traces` and `search_logs` take
 a `query` argument (see [`mcp.md`](mcp.md), "`query`"), parse it with these
-parsers and show the error with its column as a tool error. This page grows
-with each of them.
+parsers and show the error with its column as a tool error. The path from OTLP
+to an agent's `query` is tested end to end in `crates/loctel-e2e/tests/query.rs`
+(a structural TraceQL query, LogQL, and the errors).
 
 ## Shared pieces
 

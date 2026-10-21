@@ -15,22 +15,24 @@ crate.
 ## Crate map
 
 Status says what is in the repository now. The Milestone 1 set, from
-`superpowers/plans/2026-10-21-loctel-m1-core.md`, all exists. Milestone 2
-(`superpowers/plans/2026-10-21-loctel-m2-query-rules.md`) adds `loctel-query`
-and `loctel-rules`. The change that adds a crate updates this table and the
-diagram below it.
+`superpowers/plans/2026-10-21-loctel-m1-core.md`, all exists, and so does what
+Milestone 2 (`superpowers/plans/2026-10-21-loctel-m2-query-rules.md`) added:
+`loctel-query` and `loctel-rules`, and the changes they brought to the store,
+MCP, engine, UI and macOS crates. Everything Mac-only in it is unverified until
+the milestone check (`milestones/mac-checklist.md`). The change that adds a
+crate updates this table and the diagram below it.
 
 | Crate | Layer | Owns | Status |
 |---|---|---|---|
 | `loctel-model` | core | Domain types (spans, logs, resources, IDs, severity), independent of OTLP | implemented (see "Domain model" below) |
 | `loctel-store` | core | In-memory store: trace assembly, completeness, dedup, eviction, failure semantics, search (with TraceQL and LogQL filters), logs, removal and scans, service map | implemented: assembly, completeness, dedup, eviction, failure semantics, trace summaries and search, logs, service map and services list, and (Milestone 2) query filters with matched spans, `remove_trace`, `remove_spans`, `with_trace_spans` and the scans (see "Store" below) |
-| `loctel-query` | core | TraceQL and LogQL lexers, parsers and evaluators, with errors that carry the position in the query. Pure: depends only on `loctel-model` (and `regex`) | in progress (Milestone 2): `QueryError`, `Pattern`, duration literals, the TraceQL lexer, parser and evaluator (`TraceView`, `evaluate`, `matches_span`) and LogQL (`logql::parse`, `LogQuery::matches`, `logql::labels`); the store, the rules and MCP (the `query` arguments of `search_traces` and `search_logs`) use them (see "Query languages" below) |
+| `loctel-query` | core | TraceQL and LogQL lexers, parsers and evaluators, with errors that carry the position in the query. Pure: depends only on `loctel-model` (and `regex`) | implemented (Milestone 2): `QueryError`, `Pattern`, duration literals, the TraceQL lexer, parser and evaluator (`TraceView`, `evaluate`, `matches_span`) and LogQL (`logql::parse`, `LogQuery::matches`, `logql::labels`); the store, the rules and MCP (the `query` arguments of `search_traces` and `search_logs`) use them (see "Query languages" below) |
 | `loctel-rules` | core | Discard rules: the rule model and `rules.toml`, `RuleSet` (the ingest filter for spans and logs, with a bounded memory of what was dropped), and the preview | implemented (Milestone 2): `RuleSpec`, `RulesFile`, `RuleSet`, `preview`; the engine runs it at ingest (see "Discard rules" and "Engine" below) |
 | `loctel-ingest` | core | OTLP gRPC and HTTP receivers, protobuf and JSON to model conversion | implemented: gRPC and HTTP receivers, gzip, conversion, `partial_success` (see "Ingest" below) |
 | `loctel-mcp` | core | MCP server (rmcp, Streamable HTTP), tools and their DTOs | implemented: nine read-only tools, the `Origin` check, both protocol generations and, from Milestone 2, the TraceQL and LogQL `query` arguments, the discard rules in `get_status` and the answer size budget (see "MCP" below) |
 | `loctel-engine` | core | Wires store, ingest, MCP and the discard rules; settings, pause, rates; owns threads and runtime | implemented: store, OTLP receivers and MCP server, `settings.toml`, pause, rates, and (Milestone 2) the discard rules at ingest with live reload of `rules.toml` and the handle API (see "Engine" below) |
 | `loctel-meshgen` | test tooling | Fake microservice mesh scenarios (library and `meshgen` binary) | implemented: six scenarios and a sender over gRPC, HTTP protobuf and HTTP JSON (see "Test tooling" below) |
-| `loctel-e2e` | test tooling | End-to-end tests through real OTLP and a real MCP client (`publish = false`) | implemented: a `Harness` over a real engine and six tests (see "Test tooling" below) |
+| `loctel-e2e` | test tooling | End-to-end tests through real OTLP and a real MCP client (`publish = false`) | implemented: a `Harness` over a real engine (with or without a rules file) and the tests of the transports, assembly, service map, agent flow, pause, release fixture, discard rules and queries (see "Test tooling" below) |
 | `loctel-ui` | UI | GPUI views and the headless screenshot harness | implemented: the status view (with the discard rules line, from Milestone 2), the shared menu text, the theme, and `testing::{render_png, assert_snapshot}` behind the `screenshot` feature (see "UI" below) |
 | `loctel-macos` | macOS | Status item, activation policy, login item (`cfg(target_os = "macos")`) | implemented, never run: the menu bar item and its menu (with the discard rules line and Edit discard rules…), the login item and the first-launch step; empty off macOS apart from three plain-Rust modules that the Linux tests cover (see "macOS shell" below) |
 | `loctel-app` | binary | The `loctel` binary: headless mode and GUI, bundle metadata | implemented: headless mode, on Linux the status window and on macOS the menu bar app (see "Headless mode", "UI" and "macOS shell" below); `[package.metadata.bundle]` and `bundle/` hold what goes into `loctel.app` (see "Release pipeline" below) |
@@ -97,6 +99,13 @@ Readers (MCP, UI) read the store directly; the engine is not in the read path.
 The UI gets the `EngineHandle` and asks it for the status. The MCP server gets
 the store and a `StatusSource` that the engine implements, so `get_status` and
 `EngineHandle::status()` read the same state.
+
+A query takes two roads, and both end in `loctel-query`. An agent's `query`
+argument is parsed by `loctel-mcp` and runs inside the store as one more filter
+(on the way out). A discard rule's query is parsed by `loctel-rules` and runs on
+the batch as it comes in (on the way in), over what the store already holds when
+the query needs the whole trace. The two cannot disagree about what a query
+means.
 
 Telemetry is never persisted. Only `settings.toml` and `rules.toml` (the discard
 rules) are written to disk.
@@ -536,14 +545,19 @@ generates is valid and reaches the right verdict. The scenarios, the frozen
   can feed several scenarios into the same loctel.
 
 `loctel-e2e` is the proof that the pieces work together. It depends on the
-engine, `loctel-meshgen` and rmcp's client, and has no code of its own beyond
-the harness: a `Harness` starts an `Engine` (every port 0, a short completeness
-time), sends meshgen scenarios to its real OTLP ports over gRPC, HTTP protobuf
-and HTTP JSON, and reads the answer through an rmcp client over Streamable HTTP,
-the way an agent does. Tests cover each transport, late-span assembly, the
-service map, the marker flow, health checks and pause. See "End-to-end tests"
-in [`areas/testing.md`](areas/testing.md) and
-[`decisions/0007-e2e-harness-choices.md`](decisions/0007-e2e-harness-choices.md).
+engine, `loctel-meshgen` and rmcp's client (and `tempfile`, for its tests), and
+has no code of its own beyond the harness: a `Harness` starts an `Engine` (every
+port 0, a short completeness time, and with `start_with_rules` a `rules.toml` the
+test wrote), sends meshgen scenarios to its real OTLP ports over gRPC, HTTP
+protobuf and HTTP JSON, and reads the answer through an rmcp client over
+Streamable HTTP, the way an agent does. Tests cover each transport, late-span
+assembly, the service map, the marker flow, health checks stored without rules,
+pause, and, from Milestone 2, the health-check rule from the rules file (and
+its edit while running), the late spans of a dropped trace, TraceQL structural
+queries, LogQL queries and the errors for queries that do not parse. See
+"End-to-end tests" in [`areas/testing.md`](areas/testing.md) and
+[`decisions/0007-e2e-harness-choices.md`](decisions/0007-e2e-harness-choices.md)
+and [`decisions/0020-e2e-rules-and-query-tests.md`](decisions/0020-e2e-rules-and-query-tests.md).
 
 ## Release pipeline
 

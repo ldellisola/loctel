@@ -15,6 +15,10 @@
 //! let failures = harness.tool("recent_failures", json!({})).await;
 //! ```
 //!
+//! `Harness::start_with_rules` is the same on a `rules.toml` the test wrote,
+//! for the discard rules (which a plain `start` has none of, as in the engine's
+//! tests: loctel never decides what to discard).
+//!
 //! Nothing here asserts on what loctel says: that is the tests' job. The
 //! harness only fails (with a panic that says why) when it cannot do its own,
 //! such as an engine that will not start, a tool that errors where success
@@ -24,6 +28,7 @@
 use std::fmt::{self, Display};
 use std::net::SocketAddr;
 use std::panic;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -80,7 +85,8 @@ pub struct Harness {
 impl Harness {
     /// Starts an engine on loopback with every port 0 and the store's
     /// `completeness_quiet` set to `completeness` (a trace is complete once no
-    /// span has arrived for that long).
+    /// span has arrived for that long). It has no discard rules: nothing is
+    /// dropped, and the rules cannot be edited from a file.
     ///
     /// Callable from sync code and from inside a tokio runtime (every test is
     /// `#[tokio::test]`): the engine owns its runtime and refuses to start
@@ -91,6 +97,22 @@ impl Harness {
     ///
     /// If the engine does not start or a listener cannot bind.
     pub fn start(completeness: Duration) -> Harness {
+        Harness::start_engine(completeness, None)
+    }
+
+    /// [`Harness::start`], with the discard rules in the file at `rules_path`,
+    /// the way `loctel --rules PATH` runs them: the engine loads the file if
+    /// it is there (a test writes it first), creates one holding no rules if
+    /// it is not, and reloads it within a few seconds of an edit.
+    ///
+    /// # Panics
+    ///
+    /// As [`Harness::start`].
+    pub fn start_with_rules(completeness: Duration, rules_path: impl Into<PathBuf>) -> Harness {
+        Harness::start_engine(completeness, Some(rules_path.into()))
+    }
+
+    fn start_engine(completeness: Duration, rules_path: Option<PathBuf>) -> Harness {
         let config = EngineConfig {
             settings: Settings {
                 otlp_grpc_port: 0,
@@ -102,6 +124,7 @@ impl Harness {
                 completeness_quiet: completeness,
                 ..StoreConfig::default()
             },
+            rules_path,
             ..EngineConfig::default()
         };
         let engine = thread::scope(|scope| scope.spawn(|| Engine::start(config)).join())

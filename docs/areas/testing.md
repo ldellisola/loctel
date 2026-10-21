@@ -311,7 +311,8 @@ let failures = harness.tool("recent_failures", json!({ "since": marker })).await
 
 | | |
 |---|---|
-| `Harness::start(completeness)` | an engine with every port 0 (so tests never collide with each other or with a running loctel) and the store's `completeness_quiet` set to `completeness`. Callable from `#[tokio::test]`: the engine refuses to start inside a runtime, so it is started on a thread of its own. Dropping the harness shuts the engine down |
+| `Harness::start(completeness)` | an engine with every port 0 (so tests never collide with each other or with a running loctel) and the store's `completeness_quiet` set to `completeness`. It has no discard rules (`rules_path` is `None`). Callable from `#[tokio::test]`: the engine refuses to start inside a runtime, so it is started on a thread of its own. Dropping the harness shuts the engine down |
+| `Harness::start_with_rules(completeness, rules_path)` | the same, with the discard rules in the file at `rules_path`, as `loctel --rules PATH` runs them: the engine loads the file if the test wrote one first (`RulesFile::EXAMPLE_RULE` is a ready-made file holding the health-check rule), writes one holding no rules if there is none, and reloads it within about 2 s of an edit. Give each test a `tempfile::tempdir()` of its own |
 | `otlp(kind) -> Transport` | where `TransportKind::{Grpc, HttpProtobuf, HttpJson}` is received, for `loctel_meshgen::send` (`TransportKind::ALL` lists the three) |
 | `send(&Scenario, kind, seed, time_scale) -> Generated` | generates the scenario dated now and sends it; panics if delivery fails or loctel rejects an item. `Generated::trace_ids` identify what was sent |
 | `mcp() -> McpClient` | an rmcp client over Streamable HTTP (connects on first use, clones share the connection); `McpClient::call` returns a `ToolOutcome { is_error, structured, text }` for tests of tool errors |
@@ -324,7 +325,9 @@ The harness asserts nothing about what loctel says. It runs the same
 `Engine::start` the `loctel` binary runs, in the test process, which is faster
 and lets a test pause it; the binary's own start, stop and output lines are
 tested in `crates/loctel-app/tests/headless.rs`. See
-[`decisions/0007-e2e-harness-choices.md`](../decisions/0007-e2e-harness-choices.md).
+[`decisions/0007-e2e-harness-choices.md`](../decisions/0007-e2e-harness-choices.md)
+(and [`0020`](../decisions/0020-e2e-rules-and-query-tests.md) for the tests of the
+rules and the queries).
 
 ### The tests
 
@@ -334,8 +337,14 @@ tested in `crates/loctel-app/tests/headless.rs`. See
 | `tests/assembly.rs` | `late_spans_assemble_into_one_trace` | `LateOutOfOrder` with its real pauses is one complete trace of 14 spans, the root (sent last) present, no orphans |
 | `tests/map.rs` | `service_map_matches_mockup_topology` | the nine nodes with their kinds, `orders-api` to `payments-api` red, and the message goes through `rabbitmq`, never straight to the worker |
 | `tests/agent_flow.rs` | `agent_flow_since_marker` | marker, then a success and a failure: `recent_failures(since)` is exactly 1 failed and 0 errors-inside, `search_traces(since)` is 2, and the earlier failure is left out |
-| `tests/agent_flow.rs` | `health_checks_are_visible` | until the discard rules of Milestone 2 exist, health checks are stored and listed among the real traces |
+| `tests/agent_flow.rs` | `health_checks_are_visible` | with no discard rules (the default, decision 0016), health checks are stored and listed among the real traces |
 | `tests/pause.rs` | `paused_engine_stores_nothing` | paused over every transport: success to the exporter, nothing held, nothing found; after resuming only the new trace is there |
+| `tests/rules.rs` | `health_rule_silences_health_checks_over_otlp` | `rules.toml` holding `EXAMPLE_RULE`, `HealthChecks{5}` over gRPC and a failing checkout over HTTP JSON: `search_traces` has the checkout and no `GET /health`, `search_logs` its 7 logs and no `GET /health 200`, and `get_status` has one rule with `dropped_traces` 25 (5 probes of each of 5 services), 25 spans and 25 logs dropped, and `dropped_fraction` 50/72 |
+| `tests/rules.rs` | `late_spans_of_dropped_trace_never_appear` | a rule on the root's name and `LateOutOfOrder`, whose root arrives last: the 13 spans stored before it go with it (1 trace, 14 spans, 6 logs dropped). Replayed with the root first and the rest straggling in one request at a time, nothing is stored after any batch, and the trace is still counted once |
+| `tests/rules.rs` | `disabling_rule_in_file_restores_flow` | with the example rule on, health checks are dropped; the test edits `enabled = false` in the file, and within a few seconds `get_status` shows the rule off with no restart, new health checks are stored, and the rule keeps its count |
+| `tests/query.rs` | `traceql_structural_query_over_mcp` | the Grafana-style `{ resource.service.name = "web-bff" } >> { name = "POST /charges" }` finds both checkouts and `matched_span_ids` is the `POST /charges` span (checked with `get_span`); the reversed query finds nothing, without an error; `>> { status = error }` finds only the failing one with 6 matched spans; `count()` pipelines and the other filters combine with `query` |
+| `tests/query.rs` | `logql_query_over_mcp` | selectors, `level` labels, regex label matchers (anchored), a substring line filter, a regex line filter (unanchored) and `service` beside `query` give the counts and messages the frozen `CheckoutFailure` table implies |
+| `tests/query.rs` | `invalid_query_is_tool_error` | a query that does not parse is `isError: true` with no structured content and the text `invalid TraceQL: at column N: ...` (or `invalid LogQL`), including `select()`, `line_format` and metric queries "not supported yet"; the session answers the next call |
 | `tests/release_fixture.rs` | `one_span_fixture_is_accepted_and_stored` | `fixtures/one-span.json`, the request the release job posts to the built app, gets a success over HTTP JSON with no rejected span, and the trace (one span of `release-smoke`) is complete and visible through `get_trace`. The job's `curl -f` cannot see a `partial_success` rejection, so this test guards the file (see [`release.md`](release.md)) |
 
 ### Writing one
@@ -345,7 +354,15 @@ tested in `crates/loctel-app/tests/headless.rs`. See
   that, not for 10 s. Tests in a file run in parallel on their own engines.
 - **Give every send its own seed.** The same scenario with the same seed is
   the same trace, which the store keeps once (see "Scenarios never share
-  IDs" above); different scenarios can share a seed.
+  IDs" above); different scenarios can share a seed. (The one exception is
+  deliberate: a test of the discard rules sends a dropped trace again to see
+  that its late spans are still dropped. Say so in the test.)
+- **A test of the rules writes its own `rules.toml`** in a `tempfile::tempdir()`
+  and starts with `Harness::start_with_rules`. A plain `Harness::start` has no
+  rules, because loctel has no default ones: a test that expects a fresh engine
+  to drop health checks is a bug in the test. To send one batch of a scenario
+  at a time (late spans), build a `Generated` of that one batch and give it to
+  `loctel_meshgen::send` with `harness.otlp(kind)`; `tests/rules.rs` does.
 - **To ask "what happened since", take `marker()` first**, then send, then
   pass the marker as `since`. `send` dates the scenario at the real time, so
   its traces start after the marker. (`since` filters on when a trace

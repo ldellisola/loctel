@@ -3563,6 +3563,7 @@ dependencies = [
  "reqwest",
  "rmcp",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 

@@ -169,8 +169,8 @@ and a failure goes in `docs/decisions/` or an issue:
 ## Unverified until the M2 Mac check
 
 Milestone 2 added the rules line and the edit item. Nobody has run them either;
-the M2 section of the Mac checklist (`docs/milestones/mac-checklist.md`, written
-with the milestone's last task) should confirm:
+the Milestone 2 section of the Mac checklist (`docs/milestones/mac-checklist.md`,
+items 1 to 4) should confirm:
 
 - **`Edit discard rules…`** opens `rules.toml` in a text editor: through
   `NSWorkspace` `openURL` when the Mac has an app for `.toml` (which app is the

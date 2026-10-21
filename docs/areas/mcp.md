@@ -304,14 +304,17 @@ To add a tool, follow `.claude/skills/add-mcp-tool/SKILL.md`.
 - `crates/loctel-e2e/tests/`: the tools through real OTLP, as an agent calls
   them: `recent_failures` after a failing checkout over each transport, the
   marker flow (`get_marker`, then `since`), `get_trace` on a late-assembled
-  trace, `get_service_map`, `search_traces` and `get_status` under pause. See
-  [`testing.md`](testing.md).
+  trace, `get_service_map`, `search_traces` and `get_status` under pause, and
+  from Milestone 2 the `query` arguments (`tests/query.rs`: a structural TraceQL
+  query finding the failing checkout and its matched spans, LogQL, and the tool
+  errors for queries that do not parse) and the rules in `get_status` after a
+  `rules.toml` edit (`tests/rules.rs`). See [`testing.md`](testing.md).
 - Unit tests in `src/since.rs`, `src/origin.rs`, `src/dto.rs` and
   `src/trace_view.rs`.
 
 ## Not yet
 
-- An end-to-end check of `query` over real OTLP (a structural TraceQL query
-  from Grafana finding the failing checkout) comes with Task 9 of Milestone 2.
-  That Claude Code can use the `query` arguments is **unverified** until a real
-  Mac runs it.
+- That Claude Code itself can use the `query` arguments is **unverified** until
+  a real Mac runs it (items 5 and 6 of the Milestone 2 Mac checklist). The tools
+  are checked over real OTLP and a real MCP client in `crates/loctel-e2e`, which
+  speaks the same protocol but is not Claude Code.

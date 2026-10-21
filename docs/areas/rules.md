@@ -6,14 +6,15 @@ match. Whatever an enabled rule matches is **dropped for good**: it is never
 stored or shown. Design references: §7 (discard rules), §6 (the query
 languages) and §8 (MCP can see rules, not change them).
 
-Status (Milestone 2): this crate is implemented: the model, `rules.toml`, the
+Status (Milestone 2): implemented end to end: the model, `rules.toml`, the
 ingest filter (`RuleSet`) and the preview. The engine runs every batch through
-it, reloads the file and reports the counts (Task 6, "In the engine" below). MCP
-shows the rules in `get_status` (Task 7, "In MCP" below), and the menu and
-status window show the rules line and the macOS menu opens the file for editing
-(Task 8, "In the menu and the window" below; see the M2 plan,
+it, reloads the file and reports the counts ("In the engine" below). MCP shows
+the rules in `get_status` ("In MCP" below), and the menu and status window show
+the rules line and the macOS menu opens the file for editing ("In the menu and
+the window" below; see the M2 plan,
 `superpowers/plans/2026-10-21-loctel-m2-query-rules.md`). The rules screen is
-Milestone 4. This page grows with them.
+Milestone 4. What no one has seen run is the Mac side (the menu), which the
+Milestone 2 Mac checklist covers.
 
 The crate depends on `loctel-model`, `loctel-query` and `loctel-store` (to read
 and remove stored data), plus `serde`, `toml`, `dirs`, `anyhow` and
@@ -309,6 +310,14 @@ fake mesh (the file at start, health checks dropped, a trace whose root arrives
 last, live reload, a broken file, the handle API, the preview, the dropped
 fraction, rates and pause), `rules_watch.rs` has unit tests for the file polling,
 and `crates/loctel-app/tests/headless.rs` checks the `rules` line of the binary.
+
+`crates/loctel-e2e/tests/rules.rs` is the whole path: a `rules.toml` holding
+`RulesFile::EXAMPLE_RULE` (so the example in a new file is proved to work as
+written), health checks over gRPC and a failing checkout over HTTP JSON, and
+a real MCP client reading what is left and what `get_status` says was dropped;
+a trace whose root arrives last, replayed with its late spans arriving after the
+drop; and an edit of `enabled` in the file that takes effect on a running
+engine. See [`testing.md`](testing.md), "End-to-end tests".
 
 `crates/loctel-rules/tests/`: `file.rs` (the file: missing, round trip, defaults,
 the empty file and its example, errors), `filter.rs` (the filter with a
