@@ -21,7 +21,7 @@ the task that creates a crate changes its row.
 | Crate | Layer | Owns | Status |
 |---|---|---|---|
 | `loctel-model` | core | Domain types (spans, logs, resources, IDs, severity), independent of OTLP | implemented (see "Domain model" below) |
-| `loctel-store` | core | In-memory store: trace assembly, completeness, dedup, eviction, failure semantics, search, logs, service map | partly implemented: assembly, completeness, dedup, eviction (see "Store" below); the rest planned |
+| `loctel-store` | core | In-memory store: trace assembly, completeness, dedup, eviction, failure semantics, search, logs, service map | partly implemented: assembly, completeness, dedup, eviction, failure semantics, trace summaries and search (see "Store" below); logs and the service map planned |
 | `loctel-ingest` | core | OTLP gRPC and HTTP receivers, protobuf and JSON to model conversion | planned |
 | `loctel-mcp` | core | MCP server (rmcp, Streamable HTTP), tools and their DTOs | planned |
 | `loctel-engine` | core | Wires store, ingest and MCP; settings, pause, rates; owns threads and runtime | planned |
@@ -110,6 +110,16 @@ details (API, rules and the reasons) are in
   computed on read from arrival time, never from span timestamps.
 - **Eviction.** Past `max_traces` the oldest trace by first arrival goes
   whole, after the whole batch has been applied.
+- **Failure semantics.** Design §9.4 is implemented once, in the pure
+  `classify`: `Failed` (root erroring), `ErrorsInside` (another span erroring,
+  or errors while the root is missing) or `Ok`, plus the failed-in span (the
+  earliest-starting erroring span with no erroring descendant, "+N more"). An
+  exception event alone never makes a span erroring. Every trace view (the
+  snapshot, summaries, MCP, the UI) takes its answer from it, computed on
+  read.
+- **Summaries and search.** `Store::summary` and `Store::search_traces` give
+  one-row `TraceSummary` values, newest first, filtered by time, service,
+  errors and duration, with an opaque keyset cursor (`Page`, `PageRequest`).
 
 ## Platform
 

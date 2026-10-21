@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use loctel_model::{AttrValue, Resource, Span, SpanId, SpanKind, StatusCode, TraceId};
+use loctel_model::{AttrValue, Resource, Span, SpanEvent, SpanId, SpanKind, StatusCode, TraceId};
 use loctel_store::{ManualClock, Store, StoreConfig};
 
 /// Where the manual clock starts: well away from 0 so that "now minus
@@ -61,6 +61,44 @@ pub fn span(
 /// The same span with status `Error`.
 pub fn error(mut span: Span) -> Span {
     span.status = StatusCode::Error;
+    span
+}
+
+/// The same span with kind `kind`.
+pub fn with_kind(mut span: Span, kind: SpanKind) -> Span {
+    span.kind = kind;
+    span
+}
+
+/// The same span with one more string attribute.
+pub fn with_attr(mut span: Span, key: &str, value: &str) -> Span {
+    span.attributes
+        .push((key.to_string(), AttrValue::Str(value.to_string())));
+    span
+}
+
+/// The same span with an `exception` event carrying the three
+/// `exception.*` attributes. The span's status is left alone: an exception
+/// event alone does not make a span erroring.
+pub fn with_exception(mut span: Span, type_name: &str, message: &str) -> Span {
+    span.events.push(SpanEvent {
+        time_unix_nano: span.start_unix_nano,
+        name: "exception".to_string(),
+        attributes: vec![
+            (
+                "exception.type".to_string(),
+                AttrValue::Str(type_name.to_string()),
+            ),
+            (
+                "exception.message".to_string(),
+                AttrValue::Str(message.to_string()),
+            ),
+            (
+                "exception.stacktrace".to_string(),
+                AttrValue::Str(format!("at {}", span.name)),
+            ),
+        ],
+    });
     span
 }
 

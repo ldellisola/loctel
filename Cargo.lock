@@ -50,6 +50,7 @@ dependencies = [
  "loctel-model",
  "parking_lot",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -1,5 +1,6 @@
 //! The in-memory store.
 
+use std::cmp::Reverse;
 use std::collections::{HashMap, VecDeque, hash_map::Entry};
 use std::sync::Arc;
 
@@ -8,6 +9,9 @@ use parking_lot::RwLock;
 
 use crate::clock::{Clock, saturating_nanos};
 use crate::config::StoreConfig;
+use crate::failure::TraceStatus;
+use crate::page::{Page, PageRequest};
+use crate::summary::{TraceFilter, TraceSummary, decode_cursor, encode_cursor};
 use crate::trace::{TraceEntry, TraceSnapshot};
 
 /// Counts of what the store holds and has received.
@@ -79,12 +83,84 @@ impl Store {
     }
 
     /// The trace as it stands now, or `None` if it is unknown or evicted.
+    /// Its `status` and `failed_in` are worked out now, from the spans held.
     pub fn trace(&self, id: TraceId) -> Option<TraceSnapshot> {
         let inner = self.shared.inner.read();
         let entry = inner.traces.get(&id)?;
         let now = self.shared.clock.now_unix_nano();
-        let quiet = saturating_nanos(self.shared.config.completeness_quiet);
-        Some(entry.snapshot(id, entry.quiet_for(now) >= quiet))
+        Some(entry.snapshot(id, self.shared.is_complete(entry, now)))
+    }
+
+    /// The trace in one row, or `None` if it is unknown or evicted.
+    pub fn summary(&self, id: TraceId) -> Option<TraceSummary> {
+        let inner = self.shared.inner.read();
+        let entry = inner.traces.get(&id)?;
+        let now = self.shared.clock.now_unix_nano();
+        Some(entry.summary(id, self.shared.is_complete(entry, now)))
+    }
+
+    /// The traces matching `filter`, newest first by trace start (a tie goes
+    /// to the higher trace ID), one page at a time.
+    ///
+    /// The cursor is a keyset: `"{start_unix_nano}-{trace_id}"` of the last
+    /// item, so the next page continues right after it even if newer traces
+    /// arrive meanwhile. `next_cursor` is `None` on the last page. A cursor
+    /// that this method did not produce gives an empty page, which ends a
+    /// reader's loop instead of restarting it.
+    pub fn search_traces(&self, filter: &TraceFilter, page: &PageRequest) -> Page<TraceSummary> {
+        let after = match page.cursor.as_deref() {
+            None => None,
+            Some(text) => match decode_cursor(text) {
+                Some(position) => Some(position),
+                None => return Page::empty(),
+            },
+        };
+        if page.limit == 0 {
+            return Page::empty();
+        }
+
+        let inner = self.shared.inner.read();
+        let now = self.shared.clock.now_unix_nano();
+
+        // The cheap conditions first: they need only the trace's start and
+        // duration, which the entry keeps, not a pass over its spans.
+        let mut candidates: Vec<(u64, TraceId, &TraceEntry)> = inner
+            .traces
+            .iter()
+            .filter_map(|(&id, entry)| {
+                let start = entry.start_unix_nano();
+                let wanted = filter.since_unix_nano.is_none_or(|since| start >= since)
+                    && filter
+                        .min_duration_nanos
+                        .is_none_or(|min| entry.duration_nanos() >= min)
+                    && after.is_none_or(|position| (start, id) < position);
+                wanted.then_some((start, id, entry))
+            })
+            .collect();
+        candidates.sort_unstable_by_key(|&(start, id, _)| Reverse((start, id)));
+
+        let mut items: Vec<TraceSummary> = Vec::new();
+        let mut next_cursor = None;
+        for (_, id, entry) in candidates {
+            if let Some(service) = &filter.service
+                && !entry.has_service(service)
+            {
+                continue;
+            }
+            let summary = entry.summary(id, self.shared.is_complete(entry, now));
+            if filter.errors_only && summary.status == TraceStatus::Ok {
+                continue;
+            }
+            if items.len() == page.limit {
+                // One more match exists, so there is a next page.
+                next_cursor = items
+                    .last()
+                    .map(|last| encode_cursor(last.start_unix_nano, last.trace_id));
+                break;
+            }
+            items.push(summary);
+        }
+        Page { items, next_cursor }
     }
 
     pub fn stats(&self) -> StoreStats {
@@ -104,6 +180,13 @@ impl Store {
         inner.traces.clear();
         inner.arrival_order.clear();
         inner.span_count = 0;
+    }
+}
+
+impl Shared {
+    /// No new span for `completeness_quiet` as of `now`.
+    fn is_complete(&self, entry: &TraceEntry, now: u64) -> bool {
+        entry.quiet_for(now) >= saturating_nanos(self.config.completeness_quiet)
     }
 }
 

@@ -246,12 +246,12 @@ fn clock_stepping_backwards_never_panics_and_is_not_complete() {
     assert!(!store.trace(tid(1)).unwrap().complete);
 }
 
-// --- placeholders for Task 4 ---
+// --- the failure types (classification is tested in `failure.rs`) ---
 
 #[test]
 fn status_and_failed_in_types_are_declared() {
-    // Task 4 computes these on read. Task 3 only declares them, so a
-    // snapshot always carries a value of each type.
+    // Task 3 declared these types and Task 4 fills them on read. Whatever
+    // they hold, a snapshot always carries a value of each type.
     let (store, _c) = store_with_manual_clock();
     let mut erroring = span(1, 1, None, "a", "x", 0, 1);
     erroring.status = StatusCode::Error;

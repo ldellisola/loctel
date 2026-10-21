@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use loctel_model::{Span, SpanId, TraceId};
 
-use crate::failure::{FailedIn, TraceStatus};
+use crate::failure::{FailedIn, TraceStatus, classify};
 
 /// A trace as of the moment it was read: a copy, so later ingest never
 /// changes it.
@@ -21,7 +21,10 @@ pub struct TraceSnapshot {
     pub orphans: Vec<SpanId>,
     /// No new span has arrived for `completeness_quiet`.
     pub complete: bool,
+    /// Did the request work (design 9.4)? Computed when the snapshot is
+    /// taken, so a late span can change it.
     pub status: TraceStatus,
+    /// The span that explains the failure, when any span is erroring.
     pub failed_in: Option<FailedIn>,
 }
 
@@ -46,6 +49,20 @@ pub(crate) struct TraceEntry {
     index: HashMap<SpanId, usize>,
     /// Clock time at which the last new span arrived.
     last_arrival: u64,
+    /// The earliest span start: the trace's start. `u64::MAX` while empty.
+    min_start: u64,
+    /// The latest span end, each end counted no earlier than its own span's
+    /// start (so clock skew never makes a trace end before it begins).
+    max_end: u64,
+}
+
+/// The root of `spans` (in any order): the parentless span that started
+/// first, a tie going to the lowest span ID.
+pub(crate) fn root_span(spans: &[Span]) -> Option<&Span> {
+    spans
+        .iter()
+        .filter(|span| span.parent_span_id.is_none())
+        .min_by_key(|span| (span.start_unix_nano, span.span_id))
 }
 
 impl TraceEntry {
@@ -54,6 +71,8 @@ impl TraceEntry {
             spans: Vec::new(),
             index: HashMap::new(),
             last_arrival: now,
+            min_start: u64::MAX,
+            max_end: 0,
         }
     }
 
@@ -69,9 +88,29 @@ impl TraceEntry {
             return false;
         }
         self.index.insert(span.span_id, self.spans.len());
+        self.min_start = self.min_start.min(span.start_unix_nano);
+        self.max_end = self
+            .max_end
+            .max(span.end_unix_nano.max(span.start_unix_nano));
         self.spans.push(span);
         self.last_arrival = now;
         true
+    }
+
+    /// The spans, in arrival order.
+    pub(crate) fn spans(&self) -> &[Span] {
+        &self.spans
+    }
+
+    /// When the trace started: its earliest span start.
+    pub(crate) fn start_unix_nano(&self) -> u64 {
+        self.min_start
+    }
+
+    /// From the earliest span start to the latest span end (0 if they are
+    /// out of order).
+    pub(crate) fn duration_nanos(&self) -> u64 {
+        self.max_end.saturating_sub(self.min_start)
     }
 
     /// Nanoseconds since the last new span arrived (0 if the clock stepped
@@ -83,11 +122,7 @@ impl TraceEntry {
     pub(crate) fn snapshot(&self, trace_id: TraceId, complete: bool) -> TraceSnapshot {
         let mut spans = self.spans.clone();
         spans.sort_by_key(|span| (span.start_unix_nano, span.span_id));
-        // Sorted, so the first parentless span is the earliest-starting one.
-        let root = spans
-            .iter()
-            .find(|span| span.parent_span_id.is_none())
-            .map(|span| span.span_id);
+        let root = root_span(&spans).map(|span| span.span_id);
         let orphans = spans
             .iter()
             .filter(|span| {
@@ -96,15 +131,15 @@ impl TraceEntry {
             })
             .map(|span| span.span_id)
             .collect();
+        let (status, failed_in) = classify(&spans, root);
         TraceSnapshot {
             trace_id,
             spans,
             root,
             orphans,
             complete,
-            // Failure classification fills these in on read later.
-            status: TraceStatus::Ok,
-            failed_in: None,
+            status,
+            failed_in,
         }
     }
 }
