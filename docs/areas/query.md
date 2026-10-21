@@ -15,9 +15,10 @@ parser and evaluator** (`TraceView`, `evaluate`, `matches_span`) and **LogQL**
 (lexer, parser, label set and evaluator: `logql::parse`, `LogQuery::matches`,
 `logql::labels`) are implemented, and the store uses both as search filters
 (`TraceFilter::query`, `LogFilter::query`; see [`store.md`](store.md), "Query
-filters"). The rules and MCP that use them follow (the M2 plan,
-`superpowers/plans/2026-10-21-loctel-m2-query-rules.md`, Tasks 5 to 7). This
-page grows with each of them.
+filters"). The discard rules use them too (`loctel-rules`; see
+[`rules.md`](rules.md)). MCP follows (the M2 plan,
+`superpowers/plans/2026-10-21-loctel-m2-query-rules.md`, Task 7). This page grows
+with each of them.
 
 ## Shared pieces
 

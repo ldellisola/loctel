@@ -16,6 +16,7 @@ loctel-ingest = { path = "crates/loctel-ingest" }
 loctel-mcp = { path = "crates/loctel-mcp" }
 loctel-engine = { path = "crates/loctel-engine" }
 loctel-query = { path = "crates/loctel-query" }
+loctel-rules = { path = "crates/loctel-rules" }
 loctel-meshgen = { path = "crates/loctel-meshgen" }
 loctel-ui = { path = "crates/loctel-ui" }
 loctel-macos = { path = "crates/loctel-macos" }

@@ -17,14 +17,15 @@ crate.
 Status says what is in the repository now. The Milestone 1 set, from
 `superpowers/plans/2026-10-21-loctel-m1-core.md`, all exists. Milestone 2
 (`superpowers/plans/2026-10-21-loctel-m2-query-rules.md`) adds `loctel-query`
-and, later in the milestone, `loctel-rules`. The change that adds a crate
-updates this table and the diagram below it.
+and `loctel-rules`. The change that adds a crate updates this table and the
+diagram below it.
 
 | Crate | Layer | Owns | Status |
 |---|---|---|---|
 | `loctel-model` | core | Domain types (spans, logs, resources, IDs, severity), independent of OTLP | implemented (see "Domain model" below) |
 | `loctel-store` | core | In-memory store: trace assembly, completeness, dedup, eviction, failure semantics, search (with TraceQL and LogQL filters), logs, removal and scans, service map | implemented: assembly, completeness, dedup, eviction, failure semantics, trace summaries and search, logs, service map and services list, and (Milestone 2) query filters with matched spans, `remove_trace`, `remove_spans`, `with_trace_spans` and the scans (see "Store" below) |
-| `loctel-query` | core | TraceQL and LogQL lexers, parsers and evaluators, with errors that carry the position in the query. Pure: depends only on `loctel-model` (and `regex`) | in progress (Milestone 2): `QueryError`, `Pattern`, duration literals, the TraceQL lexer, parser and evaluator (`TraceView`, `evaluate`, `matches_span`) and LogQL (`logql::parse`, `LogQuery::matches`, `logql::labels`); the store uses them as search filters, and rules and MCP will in the next tasks (see "Query languages" below) |
+| `loctel-query` | core | TraceQL and LogQL lexers, parsers and evaluators, with errors that carry the position in the query. Pure: depends only on `loctel-model` (and `regex`) | in progress (Milestone 2): `QueryError`, `Pattern`, duration literals, the TraceQL lexer, parser and evaluator (`TraceView`, `evaluate`, `matches_span`) and LogQL (`logql::parse`, `LogQuery::matches`, `logql::labels`); the store and the rules use them, and MCP will in a later task (see "Query languages" below) |
+| `loctel-rules` | core | Discard rules: the rule model and `rules.toml`, `RuleSet` (the ingest filter for spans and logs, with a bounded memory of what was dropped), and the preview | implemented (Milestone 2, Task 5): `RuleSpec`, `RulesFile`, `RuleSet`, `preview`; the engine does not run it yet (Task 6) (see "Discard rules" below) |
 | `loctel-ingest` | core | OTLP gRPC and HTTP receivers, protobuf and JSON to model conversion | implemented: gRPC and HTTP receivers, gzip, conversion, `partial_success` (see "Ingest" below) |
 | `loctel-mcp` | core | MCP server (rmcp, Streamable HTTP), tools and their DTOs | implemented: nine read-only tools, the `Origin` check, both protocol generations (see "MCP" below) |
 | `loctel-engine` | core | Wires store, ingest and MCP; settings, pause, rates; owns threads and runtime | implemented: store, OTLP receivers and MCP server, `settings.toml`, pause, rates (see "Engine" below) |
@@ -50,8 +51,10 @@ are left out):
    |--> loctel-ui     (Linux window; owns `menu_text`) --> loctel-engine
    `--> loctel-macos  (macOS only) --> loctel-engine, loctel-ui
 
- loctel-query   --> loctel-model                      (the store depends on it; rules and MCP
+ loctel-query   --> loctel-model                      (the store and the rules depend on it; MCP
                                                        will, in Milestone 2)
+ loctel-rules   --> loctel-store, loctel-query, loctel-model
+                                                      (the engine will depend on it, in Milestone 2)
 
  loctel-meshgen --> loctel-model                      (test tooling)
  loctel-e2e     --> loctel-engine, loctel-meshgen     (+ rmcp's client)
@@ -222,6 +225,44 @@ What other crates rely on:
   `| json` or `| logfmt` runs. The semantics, the parsers, and where loctel
   differs from Loki (checked against Loki's own pipeline) are in `areas/query.md`
   and decision 0014.
+
+## Discard rules
+
+`loctel-rules` depends on `loctel-model`, `loctel-query`, `loctel-store`,
+`serde`, `toml`, `dirs`, `anyhow` and `parking_lot`, and nothing else in the
+workspace, so it builds and tests on Linux. The details (the file format, the
+semantics, the memory, the counting, the preview) are in
+[`areas/rules.md`](areas/rules.md); the choices and their reasons are in
+[`decisions/0016-no-default-discard-rules.md`](decisions/0016-no-default-discard-rules.md)
+and [`decisions/0017-rules-crate-choices.md`](decisions/0017-rules-crate-choices.md).
+What other crates rely on:
+
+- **No default rules.** A missing `rules.toml` is created holding no rules, only a
+  comment header with the health-check example commented out
+  (`RulesFile::write_empty`, `RulesFile::EXAMPLE_RULE`). loctel never decides what
+  to discard.
+- **`RuleSpec`** (`name`, `enabled`, `language`, `query`, `scope`) is a rule as
+  saved, and **`RulesFile`** reads and writes `rules.toml` next to
+  `settings.toml`: `load` gives `None` for a missing file and a one-line error for
+  a bad one, `save` writes through a temporary file and a rename. A bad *query* is
+  not a file error: the rule is kept and reported with its error, and the other
+  rules apply.
+- **`RuleSet::filter_spans(spans, &store) -> SpanVerdict`** and
+  **`filter_logs(logs)`** judge a batch on its way into the store. The verdict
+  lists the spans to keep and what the store holds that must go (`drop_traces`,
+  `drop_spans`); the caller removes it with **`remove_dropped(&verdict, &store)`**
+  and then stores `keep`, as one step per batch. A trace-scope match drops the
+  whole trace (stored spans, later spans and logs, for `DROPPED_TTL`); a
+  span-scope match drops the matched spans and their descendants. Queries that
+  need the whole trace are evaluated over the stored spans plus the batch.
+- **`replace(specs)`** keeps a rule's `RuleId` and counters when its
+  `(name, language, query, scope)` is unchanged, and keeps the memory of dropped
+  data. **`statuses()`** gives `RuleStatus` (spec, query error, dropped spans,
+  logs and traces) in file order, and **`totals()`** what the rules dropped since
+  launch.
+- **`preview(&spec, &store, since)`** says what one rule would have dropped of the
+  stored data (`Preview`: traces, spans, logs, and how many of them had errors),
+  or the parser's `QueryError`.
 
 ## Ingest
 

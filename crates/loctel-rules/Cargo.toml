@@ -1,0 +1,27 @@
+[package]
+name = "loctel-rules"
+description = "Discard rules for loctel: the rule model and rules.toml, the ingest filter (whole-trace and span drops, with a bounded memory of what was dropped) and the preview"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+loctel-model.workspace = true
+loctel-query.workspace = true
+loctel-store.workspace = true
+anyhow.workspace = true
+dirs.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+# The tests drive the rules with the fake mesh (CheckoutFailure, HealthChecks,
+# LateOutOfOrder), converted by the real OTLP conversion code.
+loctel-meshgen.workspace = true
+loctel-ingest.workspace = true
+
+[lints]
+workspace = true

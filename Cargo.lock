@@ -3677,6 +3677,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "loctel-rules"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dirs 7.0.0",
+ "loctel-ingest",
+ "loctel-meshgen",
+ "loctel-model",
+ "loctel-query",
+ "loctel-store",
+ "parking_lot",
+ "serde",
+ "tempfile",
+ "toml 1.1.8+spec-1.1.0",
+]
+
+[[package]]
 name = "loctel-store"
 version = "0.1.0"
 dependencies = [

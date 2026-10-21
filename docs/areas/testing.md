@@ -121,7 +121,11 @@ field. The TraceQL evaluator's tests
 (`crates/loctel-query/tests/traceql_eval.rs`) name its spans by row number and
 work out each expected answer from this table, and the LogQL tests
 (`crates/loctel-query/tests/logql.rs`) count its 7 logs by service, level and
-body, so they change with it. It is one trace and one batch, with no delay.
+body, so they change with it. So do the discard rules' tests
+(`crates/loctel-rules/tests/filter.rs` and `preview.rs`), which name spans of it
+(`MGET`, `POST /charges`, `GET /stock/{sku}`), count its 15 spans and 7 logs
+(3 at error level) and use `HealthChecks` and `LateOutOfOrder` beside it. It is
+one trace and one batch, with no delay.
 
 Offsets are milliseconds from `base_unix_nano`.
 
