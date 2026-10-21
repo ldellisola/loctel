@@ -154,10 +154,12 @@ all context, and the automated checks are the only quality gate (section 10).
 - **Reachability:** services on the Mac and in Docker containers (reaching
   the host as `host.docker.internal` under Docker Desktop for Mac) must both
   work without any setup beyond the exporter endpoint.
-  - Prefer binding to loopback if that satisfies Docker Desktop. Otherwise
-    bind to all interfaces.
-  - The builder must verify this on a real Mac and record the result in the
-    decision log.
+  - Start by binding to loopback. Docker Desktop for Mac is expected to
+    route `host.docker.internal` to the host's loopback.
+  - Agents can't test Docker Desktop, so the first milestone's Mac
+    checklist (section 10.4) includes "a container can send to loctel". If
+    that fails, switch the default to all interfaces and record the result
+    in the decision log.
 - **Ports** are configurable in Settings. If a port is taken, loctel keeps
   the other endpoints running and shows the problem in the menu bar popover
   and the sidebar status box (my call).
@@ -600,15 +602,22 @@ is protected so only green PRs merge, and no human approval is required.
     can't be measured on software rendering. Measure render-side
     regressions where reliable (for example, frame build times on the macOS
     runner), and keep the absolute fps targets in the docs.
-- **macOS** (GitHub `macos-26` arm64 runner):
-  - build the app bundle
-  - run a smoke test: launch, check the endpoints and MCP answer, quit
-  - run any macOS-only unit tests
-
-  macOS-specific code (glass, status item, login item) can only be checked
-  here, so keep it small and isolated.
-- **Release:** every merge to main builds the `.app` and an unsigned `.dmg`,
-  and publishes a **GitHub release** with a new version number.
+- **macOS: use the Mac CI runner as little as possible.** The user finds it
+  very slow. Pull requests run **no macOS job by default**.
+  - Keep macOS-specific code small and isolated in its own crate.
+  - Guard it on Linux where possible, e.g. by type-checking that crate for
+    `aarch64-apple-darwin`, if its build scripts allow it.
+  - Only if that's impossible, run a macOS job on PRs that touch macOS-only
+    paths.
+  - The `macos-26` runner is otherwise used only by the release job on main
+    (below).
+- **Release:** every merge to main builds the `.app` and an unsigned `.dmg`
+  on the `macos-26` runner, and publishes a **GitHub release** with a new
+  version number.
+  - The job also runs a short smoke test: launch, check the endpoints and
+    MCP answer, quit.
+  - The agent that merged waits for this job. If it fails, the agent fixes
+    it before finishing, because nobody else is watching.
   - Versioning: semver, patch bump per merge unless the PR says otherwise
     (my call).
   - Sign the bundle ad-hoc (`codesign --force --deep --sign -`), as Zed does
@@ -621,7 +630,34 @@ is protected so only green PRs merge, and no human approval is required.
     Anyway** (or `xattr -dr com.apple.quarantine /Applications/loctel.app`).
     The user accepted this.
 
-### 10.4 Known gotchas from the spike (2026-10-21)
+### 10.4 Checks on a real Mac: milestones
+
+Some things can only be judged on a real Mac with a screen and Docker
+Desktop:
+
+- real glass rendering
+- the popover opening under the menu bar icon
+- Dock and ⌘-Tab behaviour
+- start at login
+- Docker containers reaching loctel
+- real startup times and frame rates
+- the overall native feel
+
+The user decided to **check releases at set milestones**:
+
+- The implementation plan is split into **milestones**. Each ends with a
+  release whose notes include a short **"Check on your Mac" checklist**:
+  what to try and what "right" looks like.
+- The user tries that release and reports the results in a new chat. That
+  session records them in `docs/decisions/` (or as GitHub issues, the
+  builder's call) and fixes what's wrong.
+- Until a milestone check confirms them, Mac-only features count as
+  **unverified**. The docs must say so, so later agents don't treat them as
+  proven.
+- Between milestones, agents don't wait on the user. They keep building on
+  Linux-verifiable work.
+
+### 10.5 Known gotchas from the spike (2026-10-21)
 
 - The crates.io `gpui` 0.2.2 is a year old. It has no headless screenshot
   API, and its window stays black under Xvfb unless an X event "nudges" it
@@ -690,8 +726,8 @@ Cargo workspace:
 - histogram bucketing, and how long a dropped trace ID is remembered
 - exact performance budgets beyond the targets given here, and where each is
   measured
-- loopback vs all-interfaces binding for OTLP, decided by testing Docker
-  Desktop
+- the milestone boundaries, and each milestone's Mac checklist
+  (section 10.4)
 
 ## 13. Risks
 
@@ -703,10 +739,16 @@ Cargo workspace:
   known deadlock pitfall. Keep it isolated, with the Blurred fallback.
 - **TraceQL/LogQL scope:** two languages to implement. Start with the subset
   in section 6 and grow it test-first.
-- **macOS-only code is invisible to Linux tests.** The macOS CI smoke test is
-  its only guard.
-- **CI cost:** if the repository is private, macOS runner minutes are billed
-  at a premium. Every PR runs a macOS build.
+- **macOS-only code is invisible to Linux tests,** and PRs skip the Mac
+  runner. A broken macOS build can merge and only show up in the release
+  job. Mitigations:
+  - keep that code tiny and isolated
+  - type-check it from Linux if possible
+  - the merging agent watches the release job
+  - the user's milestone checks (section 10.4)
+- **CI cost and speed:** if the repository is private, macOS runner minutes
+  are billed at a premium, and the runner is slow. Hence macOS runs only on
+  main.
 - **Docker networking:** depends on Docker Desktop behaviour (section 4).
   Other runtimes (OrbStack, Colima) are not a requirement.
 
