@@ -59,6 +59,10 @@ changes rules.
    - `crates/loctel-mcp/tests/http.rs`: add the name to `EXPECTED_TOOLS`, and fix
      the counts that say nine (`serves_2025_11_25_clients_with_a_session`).
      `there_are_exactly_nine_read_only_tools` in `tools.rs` is the other one.
+   - `crates/loctel-e2e/tests/`: only when the change alters what an agent sees
+     in a whole flow (the failure answer, the marker and `since`, the service
+     map, pause). Use `Harness::tool` and extend the matching test; see "End-to-end
+     tests" in `docs/areas/testing.md`. A new tool needs no e2e test of its own.
    - Write the test first and watch it fail.
 7. **The docs.** The tools table in `docs/areas/mcp.md` (and its DTO list,
    conventions and sizing rules when you changed them), and the sentence in the

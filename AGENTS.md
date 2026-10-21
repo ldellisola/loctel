@@ -73,6 +73,11 @@ cargo run -p loctel-meshgen -- --scenario checkout-failure \
   --transport http-json --endpoint http://127.0.0.1:4318
 ```
 
+The end-to-end tests (real OTLP in, a real MCP client out, driven by the same
+fake mesh) run with the rest of `cargo test --workspace`, and alone with
+`cargo test -p loctel-e2e` (a few seconds). Read the "End-to-end tests" section
+of [`docs/areas/testing.md`](docs/areas/testing.md) before adding one.
+
 Commits use the conventional style (`feat(store): ...`, `fix(mcp): ...`,
 `docs: ...`, `chore: ...`).
 

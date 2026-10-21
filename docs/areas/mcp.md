@@ -200,6 +200,11 @@ To add a tool, follow `.claude/skills/add-mcp-tool/SKILL.md`.
   an rmcp client reading `get_status` and the stored traces through the engine.
 - `crates/loctel-app/tests/headless.rs`: the `mcp` line on stdout and a request
   to the printed address.
+- `crates/loctel-e2e/tests/`: the tools through real OTLP, as an agent calls
+  them: `recent_failures` after a failing checkout over each transport, the
+  marker flow (`get_marker`, then `since`), `get_trace` on a late-assembled
+  trace, `get_service_map`, `search_traces` and `get_status` under pause. See
+  [`testing.md`](testing.md).
 - Unit tests in `src/since.rs`, `src/origin.rs`, `src/dto.rs` and
   `src/trace_view.rs`.
 
@@ -207,4 +212,3 @@ To add a tool, follow `.claude/skills/add-mcp-tool/SKILL.md`.
 
 - `query` arguments (TraceQL for traces, LogQL for logs) and the active rules
   with their drop counts in `get_status` come with Milestone 2.
-- The end-to-end tests (`loctel-e2e`) drive these tools through real OTLP.

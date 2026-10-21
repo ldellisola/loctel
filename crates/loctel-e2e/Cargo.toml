@@ -1,0 +1,24 @@
+[package]
+name = "loctel-e2e"
+description = "End-to-end tests for loctel: real OTLP in, real MCP client out, driven by the fake mesh (tests only)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+# The plan lists these as dev-dependencies, but the harness lives in this
+# crate's library (tests/*.rs share it), and a library cannot use its own
+# dev-dependencies. They are ordinary dependencies of a crate that is never
+# published or depended on.
+[dependencies]
+loctel-engine.workspace = true
+loctel-meshgen.workspace = true
+# The client half of rmcp and its HTTP transport: the harness talks to loctel
+# the way Claude Code does.
+rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
+reqwest.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

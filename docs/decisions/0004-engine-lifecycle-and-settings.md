@@ -72,8 +72,10 @@ later agent might be tempted to "simplify":
 - A later task that wires MCP into `Engine::start` must keep the rules above:
   no blocking inside a runtime in `shutdown`, `mcp_url()` as the one place that
   knows the MCP address, and the `mcp` listener in `EngineStatus::listeners`.
-- The headless line format is a contract for `loctel-e2e` and the release smoke
-  test. Changing a key name breaks them; the unit tests in
-  `crates/loctel-app/src/main.rs` pin the exact bytes.
+- The headless line format is a contract for the release smoke test (and for
+  any script that starts loctel with ports 0). Changing a key name breaks them;
+  the unit tests in `crates/loctel-app/src/main.rs` pin the exact bytes.
+  `loctel-e2e` does not read these lines: it starts the engine in-process (see
+  `0007-e2e-harness-choices.md`).
 - Pause drops data for good. If a "resume and replay" is ever wanted, it is a
   new feature with a buffer, not a bug in the sink.

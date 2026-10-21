@@ -5,8 +5,8 @@ and manual run draws its data from. Design references: §10.1 (the fake mesh),
 §10.3 (the checks, which are the only quality gate) and §9.4 (what "failed"
 means).
 
-Status: the per-crate unit and integration tests and `loctel-meshgen` exist.
-The end-to-end crate (`loctel-e2e`), the screenshot harness and the
+Status: the per-crate unit and integration tests, `loctel-meshgen` and the
+end-to-end crate (`loctel-e2e`) exist. The screenshot harness and the
 performance tests are planned (see `architecture.md`); they will add their own
 sections here and use the scenarios below.
 
@@ -241,8 +241,9 @@ target). Times are distinct, so the store's duplicate check keeps them all.
   `tests/http.rs` there and the MCP tests in `loctel-engine` and `loctel-app`
   talk to the real server with an rmcp client or raw HTTP; see
   [`mcp.md`](mcp.md).
-- **End-to-end tests** (Task 10) start `loctel --headless`, drive these
-  scenarios through real OTLP and assert through an MCP client.
+- **End-to-end tests** (`crates/loctel-e2e`) start the engine, drive these
+  scenarios through real OTLP and assert through a real MCP client; see
+  "End-to-end tests" below.
 - **Screenshot tests** (Task 11 and later) render views from fixed meshgen
   data (a fixed seed and base time), which is why `CheckoutFailure` is frozen.
 - **Benchmarks** (Milestone 5) use `HugeTrace` and `LogFlood`.
@@ -250,3 +251,76 @@ target). Times are distinct, so the store's duplicate check keeps them all.
 Add a scenario by adding a variant to `Scenario`, a module for it, a stream
 constant in `scenario.rs` (so it never shares IDs), a CLI value in `main.rs`,
 tests, and a section above.
+
+## End-to-end tests: `loctel-e2e`
+
+`crates/loctel-e2e` (`publish = false`, tests only) proves the whole path an
+agent depends on: **real OTLP in, real MCP out**, with nothing mocked between.
+Design reference: §10.3 (the end-to-end bullet of the checks). The crate is a
+small harness (`src/lib.rs`) and one test file per concern (`tests/`).
+
+```bash
+cargo test -p loctel-e2e   # a few seconds of test time; the suite must stay under 60 s
+```
+
+### The harness
+
+```rust
+let harness = Harness::start(Duration::from_millis(200));
+let marker = harness.marker().await;
+let sent = harness.send(&Scenario::CheckoutFailure, TransportKind::Grpc, 1, 0.0).await;
+harness.wait_complete(&sent.trace_ids[0]).await;
+let failures = harness.tool("recent_failures", json!({ "since": marker })).await;
+```
+
+| | |
+|---|---|
+| `Harness::start(completeness)` | an engine with every port 0 (so tests never collide with each other or with a running loctel) and the store's `completeness_quiet` set to `completeness`. Callable from `#[tokio::test]`: the engine refuses to start inside a runtime, so it is started on a thread of its own. Dropping the harness shuts the engine down |
+| `otlp(kind) -> Transport` | where `TransportKind::{Grpc, HttpProtobuf, HttpJson}` is received, for `loctel_meshgen::send` (`TransportKind::ALL` lists the three) |
+| `send(&Scenario, kind, seed, time_scale) -> Generated` | generates the scenario dated now and sends it; panics if delivery fails or loctel rejects an item. `Generated::trace_ids` identify what was sent |
+| `mcp() -> McpClient` | an rmcp client over Streamable HTTP (connects on first use, clones share the connection); `McpClient::call` returns a `ToolOutcome { is_error, structured, text }` for tests of tool errors |
+| `tool(name, args) -> Value` | calls a tool through the real transport and returns its `structuredContent`; panics on a tool error, and checks that the text copy is the same JSON |
+| `marker() -> String` | `get_marker`'s `marker`, the `since` of the agent flow |
+| `wait_complete(trace_id)` | polls `get_trace` until `complete`, 10 s at most, and panics with the last answer otherwise |
+| `engine() -> &EngineHandle` | the engine itself: pause it, read its status or its store |
+
+The harness asserts nothing about what loctel says. It runs the same
+`Engine::start` the `loctel` binary runs, in the test process, which is faster
+and lets a test pause it; the binary's own start, stop and output lines are
+tested in `crates/loctel-app/tests/headless.rs`. See
+[`decisions/0007-e2e-harness-choices.md`](../decisions/0007-e2e-harness-choices.md).
+
+### The tests
+
+| File | Test | What it proves |
+|---|---|---|
+| `tests/transports.rs` | `checkout_failure_over_each_transport` | over gRPC, HTTP protobuf and HTTP JSON in turn, `recent_failures(since)` names failed-in `payments-api`, peer `card-gateway`, the exception type, and the trace's logs arrived with it |
+| `tests/assembly.rs` | `late_spans_assemble_into_one_trace` | `LateOutOfOrder` with its real pauses is one complete trace of 14 spans, the root (sent last) present, no orphans |
+| `tests/map.rs` | `service_map_matches_mockup_topology` | the nine nodes with their kinds, `orders-api` to `payments-api` red, and the message goes through `rabbitmq`, never straight to the worker |
+| `tests/agent_flow.rs` | `agent_flow_since_marker` | marker, then a success and a failure: `recent_failures(since)` is exactly 1 failed and 0 errors-inside, `search_traces(since)` is 2, and the earlier failure is left out |
+| `tests/agent_flow.rs` | `health_checks_are_visible` | until the discard rules of Milestone 2 exist, health checks are stored and listed among the real traces |
+| `tests/pause.rs` | `paused_engine_stores_nothing` | paused over every transport: success to the exporter, nothing held, nothing found; after resuming only the new trace is there |
+
+### Writing one
+
+- **One harness per test**, started with `Duration::from_millis(200)` (or
+  less): a trace is complete 200 ms after its last span, so a test waits for
+  that, not for 10 s. Tests in a file run in parallel on their own engines.
+- **Give every send its own seed.** The same scenario with the same seed is
+  the same trace, which the store keeps once (see "Scenarios never share
+  IDs" above); different scenarios can share a seed.
+- **To ask "what happened since", take `marker()` first**, then send, then
+  pass the marker as `since`. `send` dates the scenario at the real time, so
+  its traces start after the marker. (`since` filters on when a trace
+  started, so a marker taken after a trace's `send` does not include it.)
+- **Wait for completeness before asserting on a whole trace** (`wait_complete`):
+  the service map shows an external host only once its trace is complete, and
+  `complete` is part of the trace summary. Failed-in and the counts do not
+  need it.
+- **Assert on the frozen `CheckoutFailure` literally** (service names, the
+  exception type), not through meshgen's constants, so a change to the
+  scenario fails here as it should.
+- **If a test fails because of a bug in another crate**, fix it there and add
+  the regression test in that crate; the end-to-end test then stays as the
+  proof it works through the whole path.
+

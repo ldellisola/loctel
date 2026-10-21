@@ -26,7 +26,7 @@ the task that creates a crate changes its row.
 | `loctel-mcp` | core | MCP server (rmcp, Streamable HTTP), tools and their DTOs | implemented: nine read-only tools, the `Origin` check, both protocol generations (see "MCP" below) |
 | `loctel-engine` | core | Wires store, ingest and MCP; settings, pause, rates; owns threads and runtime | implemented: store, OTLP receivers and MCP server, `settings.toml`, pause, rates (see "Engine" below) |
 | `loctel-meshgen` | test tooling | Fake microservice mesh scenarios (library and `meshgen` binary) | implemented: six scenarios and a sender over gRPC, HTTP protobuf and HTTP JSON (see "Test tooling" below) |
-| `loctel-e2e` | test tooling | End-to-end tests through real OTLP and a real MCP client (`publish = false`) | planned |
+| `loctel-e2e` | test tooling | End-to-end tests through real OTLP and a real MCP client (`publish = false`) | implemented: a `Harness` over a real engine and six tests (see "Test tooling" below) |
 | `loctel-ui` | UI | GPUI views and the headless screenshot harness | planned |
 | `loctel-macos` | macOS | Status item, activation policy, login item (`cfg(target_os = "macos")`) | planned |
 | `loctel-app` | binary | The `loctel` binary: headless mode and GUI, bundle metadata | implemented: headless mode only (see "Headless mode" below); the GUI comes with the UI tasks |
@@ -306,6 +306,16 @@ generates is valid and reaches the right verdict. The scenarios, the frozen
   means updating screenshots and e2e expectations.
 - **Scenarios do not share IDs.** Each reads its own RNG stream, so one seed
   can feed several scenarios into the same loctel.
+
+`loctel-e2e` is the proof that the pieces work together. It depends on the
+engine, `loctel-meshgen` and rmcp's client, and has no code of its own beyond
+the harness: a `Harness` starts an `Engine` (every port 0, a short completeness
+time), sends meshgen scenarios to its real OTLP ports over gRPC, HTTP protobuf
+and HTTP JSON, and reads the answer through an rmcp client over Streamable HTTP,
+the way an agent does. Tests cover each transport, late-span assembly, the
+service map, the marker flow, health checks and pause. See "End-to-end tests"
+in [`areas/testing.md`](areas/testing.md) and
+[`decisions/0007-e2e-harness-choices.md`](decisions/0007-e2e-harness-choices.md).
 
 ## Platform
 

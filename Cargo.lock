@@ -1293,6 +1293,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "loctel-e2e"
+version = "0.1.0"
+dependencies = [
+ "loctel-engine",
+ "loctel-meshgen",
+ "reqwest",
+ "rmcp",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "loctel-engine"
 version = "0.1.0"
 dependencies = [
