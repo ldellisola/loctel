@@ -1,0 +1,16 @@
+# Roadmap
+
+The whole build, by milestone. Each milestone gets its own detailed plan file
+under `docs/superpowers/plans/` when it starts, written from the
+[design](../superpowers/specs/2026-10-21-loctel-design.md) and this roadmap.
+Each one ends with a release whose notes carry a "Check on your Mac" list
+(design §10.4). Until a milestone check confirms them, Mac-only features count
+as unverified.
+
+| # | Milestone | Delivers | Mac checklist highlights |
+|---|---|---|---|
+| **M1** | **Headless core, MCP, menu bar shell, releases** ([plan](../superpowers/plans/2026-10-21-loctel-m1-core.md)) | ingest, assembly, failure semantics, service map data, MCP tools, meshgen, e2e tests, screenshot harness, status item menu, login item, CI, `.dmg` releases | install via Open Anyway; menu bar icon, no Dock icon; Docker container and bare-metal service both reach loctel; Claude Code connects to MCP and answers "why did my last request fail"; start at login |
+| M2 | Query languages and discard rules | TraceQL and LogQL parsers and evaluators (§6); rules engine at ingest with persistence and preview (§7); MCP `query` arguments; rule counts in status | a health-check rule silences real health checks; a TraceQL structural query from Grafana works unchanged |
+| M3 | Main window: Map & traces, Trace view | GPUI Kit UI per Home A and Trace mockups (§9.2), glass sidebar and toolbar (§9.3), Dock/⌘-Tab switching, screenshot tests | glass looks right; window opens fast; Dock/⌘-Tab behaviour |
+| M4 | Logs, Discard rules screen, popover, Settings | remaining screens (§9.2); popover under the icon; settings UI | popover anchoring; settings changes take effect |
+| M5 | Scale | spill-to-disk segment store and 4 GB cap (§5); performance budgets as CI tests (§10.3); light theme | smooth scrolling of the 100k-span trace and 10M logs; startup times |

@@ -1,0 +1,36 @@
+[package]
+name = "loctel-meshgen"
+description = "Deterministic fake microservice mesh for loctel tests: scenarios and a sender (library and `meshgen` binary)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "meshgen"
+path = "src/main.rs"
+
+[dependencies]
+loctel-model.workspace = true
+opentelemetry-proto.workspace = true
+tonic.workspace = true
+reqwest.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+clap.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+prost.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+flate2.workspace = true
+
+[dev-dependencies]
+loctel-ingest.workspace = true
+loctel-store.workspace = true
+
+[lints]
+workspace = true

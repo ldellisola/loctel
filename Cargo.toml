@@ -1,0 +1,88 @@
+[workspace]
+members = ["crates/*", "xtask"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+rust-version = "1.98.1"
+
+# Every crate takes its dependencies from here with `dep.workspace = true`.
+# Exact pins are added by the task that first needs each crate.
+[workspace.dependencies]
+loctel-model = { path = "crates/loctel-model" }
+loctel-store = { path = "crates/loctel-store" }
+loctel-ingest = { path = "crates/loctel-ingest" }
+loctel-mcp = { path = "crates/loctel-mcp" }
+loctel-engine = { path = "crates/loctel-engine" }
+loctel-meshgen = { path = "crates/loctel-meshgen" }
+loctel-ui = { path = "crates/loctel-ui" }
+loctel-macos = { path = "crates/loctel-macos" }
+parking_lot = "0.12.5"
+serde = { version = "1.0.229", features = ["derive", "rc"] }
+serde_json = "1.0.154"
+
+# OTLP ingest (loctel-ingest)
+opentelemetry-proto = { version = "=0.33.1", default-features = false, features = ["gen-tonic", "trace", "logs", "metrics", "with-serde"] }
+tonic = { version = "0.14.6", features = ["server", "gzip"] }
+axum = "0.8.9"
+tower-http = { version = "0.6", features = ["decompression-gzip"] }
+tokio = { version = "1.54.0", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
+prost = "0.14.4"
+flate2 = "1.1.10"
+
+# Engine and app (loctel-engine, loctel-app)
+anyhow = "1.0.104"
+toml = "1.1.8"
+dirs = "7.0.0"
+clap = { version = "4.6.7", features = ["derive"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "env-filter", "ansi"] }
+tempfile = "3.27.0"
+
+# Fake mesh and its sender (loctel-meshgen). reqwest is built without default
+# features on purpose: the default `system-proxy` would send requests for
+# 127.0.0.1 through HTTP(S)_PROXY, and loctel's own endpoints are local.
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "gzip"] }
+rand = { version = "0.10.3", default-features = false }
+rand_chacha = "0.10.0"
+
+# MCP server (loctel-mcp). rmcp is built without its defaults: the server
+# half, the tool macros and the Streamable HTTP server transport are all the
+# crate needs. The client half and its reqwest transport are dev-dependencies
+# of the crates that test through a real MCP client.
+rmcp = { version = "3.6.0", default-features = false, features = ["server", "macros", "transport-streamable-http-server"] }
+schemars = "1.2.3"
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
+tokio-util = "0.7.20"
+jsonschema = { version = "0.59.0", default-features = false }
+
+# UI (loctel-ui, loctel-app). GPUI comes as the weekly `gpui-pre` snapshot,
+# pinned exactly: upgrades are deliberate, in their own PR (decision 0001).
+# The platform crate gets both Linux windowing backends so the dev window
+# works on X11 and Wayland; they compile only on Linux. `image` is the version
+# GPUI's own `capture_screenshot` hands back, so the types match.
+gpui-pre = "=0.3.9"
+gpui-pre-platform = { version = "=0.3.9", features = ["x11", "wayland"] }
+gpui-pre-wgpu = "=0.3.9"
+image = { version = "0.25.1", default-features = false, features = ["png"] }
+
+# macOS shell (loctel-macos, loctel-app on macOS). `gpui-tray` is the status
+# item. It is generic over which GPUI it is built for, and `gpui-kit` is the
+# backend feature for `gpui-pre` (its docs call it "GPUI Kit's `gpui-pre`
+# types"); `menu-state` forwards checkmarks and disabled items, which the menu
+# needs. The objc2 crates are the ones the tray crate already uses, so there is
+# one copy of each.
+gpui-tray = { version = "0.2", default-features = false, features = ["gpui-kit", "menu-state"] }
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSBitmapImageRep", "NSImage", "NSImageRep"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSError", "NSGeometry", "NSString"] }
+objc2-service-management = "0.3.2"
+
+# Line tables only: full debug info made a clean test build about 12 GB of
+# target/, too close to the free disk on CI runners and agent containers.
+# Backtraces still show file and line.
+[profile.dev]
+debug = "line-tables-only"
+
+[workspace.lints.clippy]
+all = "warn"

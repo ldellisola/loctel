@@ -1,0 +1,40 @@
+name: ci
+
+# The Linux quality gate. Runs on every PR and on main. The macOS runner is
+# never used here (see release.yml, main only).
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Linux build and screenshot dependencies
+        run: bash script/setup-linux.sh
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      # The macOS code is compiled out of the Linux build above, so this
+      # type-checks and lints it for aarch64-apple-darwin. No macOS runner.
+      - name: Type-check and lint the macOS code
+        run: bash script/check-macos.sh --all-targets
+      - name: Test
+        run: cargo test --workspace
+      - name: Upload screenshot diffs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshot-diffs
+          path: target/screenshot-diffs/**
+          if-no-files-found: ignore

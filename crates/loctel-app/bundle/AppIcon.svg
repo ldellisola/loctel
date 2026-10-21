@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="loctel">
+  <!-- The app icon: the three-node glyph of the menu bar item
+       (crates/loctel-macos/assets/status-icon.svg, same geometry on its
+       16-unit grid, drawn here at 36 px per unit) on a dark rounded square in
+       the colours of the UI's dark theme. The square is 824 px wide inside
+       the 1024 px canvas, the margin macOS app icons keep. cargo-bundle turns
+       this file into the bundle's .icns. -->
+  <defs>
+    <linearGradient id="ground" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#262932"/>
+      <stop offset="1" stop-color="#15161a"/>
+    </linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="184" fill="url(#ground)"/>
+  <g transform="translate(224 224) scale(36)" fill="none" stroke="#4c9dff" stroke-width="1.5">
+    <circle cx="3.5" cy="8" r="2"/>
+    <circle cx="12.5" cy="3.5" r="2"/>
+    <circle cx="12.5" cy="12.5" r="2"/>
+    <path d="M5.3 7.1 L10.7 4.4 M5.3 8.9 L10.7 11.6"/>
+  </g>
+</svg>

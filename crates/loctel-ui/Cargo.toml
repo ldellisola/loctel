@@ -1,0 +1,36 @@
+[package]
+name = "loctel-ui"
+description = "The loctel GPUI views (the status view in M1), the menu text and the headless screenshot harness"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+# Headless rendering: GPUI's test support plus its software-capable wgpu
+# renderer, which the screenshot tests and `loctel_ui::testing` need. Off in
+# the shipped app. The dev-dependency on this crate below turns it on for
+# every test, clippy and doc build in the workspace, so a plain
+# `cargo test --workspace` runs the screenshot tests too.
+screenshot = [
+    "gpui-pre/test-support",
+    "gpui-pre-platform/test-support",
+    "dep:gpui-pre-wgpu",
+    "gpui-pre-wgpu/test-support",
+]
+
+[dependencies]
+gpui-pre.workspace = true
+gpui-pre-platform.workspace = true
+loctel-engine.workspace = true
+anyhow.workspace = true
+image.workspace = true
+# The software-capable text system the screenshot harness uses (Linux).
+gpui-pre-wgpu = { workspace = true, optional = true }
+
+[dev-dependencies]
+loctel-ui = { path = ".", features = ["screenshot"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true
