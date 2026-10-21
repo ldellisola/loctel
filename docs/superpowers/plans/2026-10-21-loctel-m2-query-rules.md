@@ -83,11 +83,21 @@ travelling with code. M2 adds:
   | `PREVIEW_WINDOW` | 5 minutes |
   | `MATCHED_SPANS_MAX` | 20 |
   | `ANSWER_TEXT_BUDGET` | 24,000 characters (about 6k tokens, under the §8 target of about 8k) |
-- **Default rule** (my call, recorded in `docs/decisions/`): a missing
-  `rules.toml` is created with one enabled rule. The user said they want
-  health-check noise gone. The rule:
-  - `name = "Health checks"`, `language = "traceql"`, `scope = "trace"`
-  - `query = '{ span.url.path =~ "/(health|healthz|alive|livez|ready|readyz)(/.*)?" || span.http.route =~ "/(health|healthz|alive|livez|ready|readyz)(/.*)?" }'`
+- **No default rules** (the user's decision, recorded in `docs/decisions/`):
+  loctel never decides what to discard. A missing `rules.toml` is created
+  holding **no rules**, only the comment header. The header explains the
+  format and shows this example **commented out**:
+
+  ```toml
+  # [[rule]]
+  # name = "Health checks"
+  # enabled = true
+  # language = "traceql"
+  # scope = "trace"
+  # query = '{ span.url.path =~ "/(health|healthz|alive|livez|ready|readyz)(/.*)?" || span.http.route =~ "/(health|healthz|alive|livez|ready|readyz)(/.*)?" }'
+  ```
+
+  Loading such a file gives an empty rule list.
 
 ## Review Focus
 
@@ -579,7 +589,7 @@ docs/milestones/mac-checklist.md (M1 section kept + M2 section), roadmap.md
 - Create: `crates/loctel-rules/src/{lib.rs, spec.rs, file.rs, set.rs, memory.rs, preview.rs}`
 - Test: `crates/loctel-rules/tests/{file.rs, filter.rs, preview.rs}`
 - Create: `docs/areas/rules.md`, plus
-  `docs/decisions/00NN-default-health-check-rule.md` (the next free number)
+  `docs/decisions/00NN-no-default-discard-rules.md` (the next free number)
 
 **Interfaces:**
 - Produces:
@@ -597,8 +607,13 @@ docs/milestones/mac-checklist.md (M1 section kept + M2 section), roadmap.md
       `Ok(None)` if the file is missing.
     - `save(path: &Path, rules: &[RuleSpec]) -> anyhow::Result<()>`: an
       atomic write, like `Settings::save`.
-    - `default_rules() -> Vec<RuleSpec>`: exactly the one rule from Global
-      Constraints.
+    - `pub const EXAMPLE_RULE: &str`: the example rule from Global
+      Constraints, *uncommented* (a `[[rule]]` table as TOML text). The
+      header writes it with every line prefixed by `# `, and tests parse
+      it.
+    - `write_empty(path: &Path) -> anyhow::Result<()>`: writes the comment
+      header (format, a link to `docs/areas/rules.md`, and the commented-out
+      example) with no rules. `load` of that file gives `Ok(Some(vec![]))`.
 
     The file format is TOML: an array of tables `[[rule]]` holding
     `name`, `enabled`, `language`, `query` and `scope`. A comment header at
@@ -667,10 +682,12 @@ docs/milestones/mac-checklist.md (M1 section kept + M2 section), roadmap.md
     - `missing_file_is_none`
     - `roundtrip`
     - `scope_defaults_to_trace`
-    - `default_rules_contents`: the name, the exact query and `enabled`
-    - `default_health_rule_matches_health_paths_only`: it parses. Against
-      `HealthChecks` traces it matches every span. Against CheckoutFailure
-      it matches nothing.
+    - `empty_file_has_no_rules_and_shows_the_example`: `write_empty`, then
+      `load`, gives `Some(vec![])`. The file text contains every line of
+      `EXAMPLE_RULE` prefixed by `# `.
+    - `example_rule_matches_health_paths_only`: `EXAMPLE_RULE` parses as one
+      `RuleSpec`, and its query parses. Against `HealthChecks` traces it
+      matches every span; against CheckoutFailure, nothing.
   - `tests/filter.rs`, using `ManualClock` and a `Store`:
     - `per_span_rule_drops_matching_trace`
     - `whole_trace_drop_covers_stored_and_late_spans`. Steps and expected
@@ -716,7 +733,8 @@ docs/milestones/mac-checklist.md (M1 section kept + M2 section), roadmap.md
     - memory and its limits
     - the counting rules
     - preview
-  - The decision file for the default rule.
+  - The decision file: no default rules. The user decides what to discard;
+    the file only carries a commented-out example.
   - Add the crate to `docs/architecture.md`.
 - [ ] **Step 6: Commit.** Message: `feat(rules): discard rules model, file,
   ingest filter and preview`.
@@ -738,8 +756,8 @@ docs/milestones/mac-checklist.md (M1 section kept + M2 section), roadmap.md
     rules live in memory only and start empty; `Default` is `None` for
     tests. The app passes `Some(path)`.
   - **Start:**
-    - with `Some(path)` and no file, write `RulesFile::default_rules()` to
-      it and use them
+    - with `Some(path)` and no file, call `RulesFile::write_empty` and start
+      with no rules
     - with an existing file, load it
     - with a file that can't be read or parsed, start with no rules and set
       `rules_file_error`
@@ -782,10 +800,13 @@ docs/milestones/mac-checklist.md (M1 section kept + M2 section), roadmap.md
 
 - [ ] **Step 1: Write the failing tests** in `tests/rules.rs`, each with a
   temp dir, ports 0 and `Some(path)`:
-  - `first_start_writes_default_rules`
-  - `health_checks_are_dropped_end_to_end_in_process`: post HealthChecks
-    and CheckoutFailure over HTTP JSON. The store holds only the checkout,
-    and `status().rules[0].dropped_traces` equals the health traces.
+  - `first_start_writes_empty_rules_file`: the file exists, holds the
+    commented example, and `status().rules` is empty. Health checks posted
+    now are stored.
+  - `health_checks_are_dropped_end_to_end_in_process`: `set_rules` with
+    `EXAMPLE_RULE`, then post HealthChecks and CheckoutFailure over HTTP
+    JSON. The store holds only the checkout, and
+    `status().rules[0].dropped_traces` equals the health traces.
   - `file_edit_is_picked_up`: set `enabled = false` in the file, wait up to
     5 s, and health checks are stored again.
   - `broken_rules_file_keeps_previous_rules`: write invalid TOML. The rules
@@ -945,8 +966,9 @@ docs/milestones/mac-checklist.md (M1 section kept + M2 section), roadmap.md
 - [ ] **Step 1: Write the end-to-end tests.** Each runs through real OTLP
   and a real MCP client.
   - `tests/rules.rs`:
-    - `default_rule_silences_health_checks_over_otlp`: send HealthChecks{5}
-      over gRPC, plus CheckoutFailure over HTTP JSON.
+    - `health_rule_silences_health_checks_over_otlp`: write a rules file
+      holding `EXAMPLE_RULE`, then start the harness on it. Send
+      HealthChecks{5} over gRPC, plus CheckoutFailure over HTTP JSON.
       - `search_traces` has no `GET /health`
       - `search_logs` has no `"GET /health 200"`
       - `get_status.rules[0].dropped_traces == 5 × services`
@@ -966,9 +988,13 @@ docs/milestones/mac-checklist.md (M1 section kept + M2 section), roadmap.md
   yet confirmed. Keep **"Milestone 1"** exactly as it is (the user hasn't
   done it yet), and add a **"Milestone 2"** section. Each item gives the
   steps and what "right" looks like:
-  1. The menu shows `1 discard rule on · …`. **Edit discard rules…** opens
-     `rules.toml` in a text editor, showing the Health checks rule.
-  2. With your service (or `cargo run -p loctel-meshgen -- --scenario health-checks --transport http-json --endpoint http://127.0.0.1:4318`),
+  1. The menu shows `No discard rules on`. **Edit discard rules…** opens
+     `rules.toml` in a text editor. It holds no rules, only an explanation
+     and a commented-out health-check example.
+  2. Write your own rule (or uncomment the example and adjust its paths),
+     and save. Within about 5 seconds the menu shows
+     `1 discard rule on · 0% dropped`. Then, with your service (or
+     `cargo run -p loctel-meshgen -- --scenario health-checks --transport http-json --endpoint http://127.0.0.1:4318`),
      ask Claude to list recent traces through loctel. No `/health` traces
      appear, and the rules line shows a non-zero percentage.
   3. Set `enabled = false` and save. Within about 5 seconds the line reads
