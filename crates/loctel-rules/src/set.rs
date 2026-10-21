@@ -76,6 +76,13 @@ pub struct SpanVerdict {
     /// Stored spans dropped by this batch (their trace stays): the caller must
     /// remove them, and the logs emitted in them.
     pub drop_spans: Vec<(TraceId, SpanId)>,
+    /// Spans of this batch that a span-scope drop took out of it (so they are
+    /// not in `keep`) and that the store does not hold: the caller must remove
+    /// the logs the store already holds for them. A log is exported when it is
+    /// emitted and a span when it ends, so a span's logs normally come first.
+    /// A dropped span the store does hold is in `drop_spans` instead, never
+    /// in both.
+    pub drop_span_logs: Vec<(TraceId, SpanId)>,
 }
 
 /// Everything the rules have dropped since launch, whichever rule dropped it
@@ -333,9 +340,9 @@ impl RuleSet {
     /// Judges a batch of spans (see the module docs for the order), using the
     /// store to see the spans of a trace that arrived earlier. Nothing is
     /// changed in the store: the verdict lists what to store (`keep`) and what
-    /// the store holds that must now go (`drop_traces`, `drop_spans`; the
-    /// caller does that with [`remove_dropped`](Self::remove_dropped), and
-    /// then stores `keep`).
+    /// the store holds that must now go (`drop_traces`, `drop_spans`,
+    /// `drop_span_logs`; the caller does that with
+    /// [`remove_dropped`](Self::remove_dropped), and then stores `keep`).
     ///
     /// The caller must do the three steps for one batch before it judges the
     /// next (the engine's sink holds a lock for that), or a span kept by this
@@ -409,8 +416,9 @@ impl RuleSet {
     }
 
     /// Does what a verdict asks of the store: removes the spans in
-    /// `drop_spans` (and their logs) and the traces in `drop_traces` (spans and
-    /// logs), and credits what was removed to the rule that dropped each
+    /// `drop_spans` (and their logs), the logs the store holds for the spans in
+    /// `drop_span_logs`, and the traces in `drop_traces` (spans and logs), and
+    /// credits what was removed to the rule that dropped each
     /// (found in the memory of dropped data, which the verdict has just
     /// filled). Returns the total removed. The plan's `record_removed` is
     /// this, per rule, for a caller that knows the rule.
@@ -435,7 +443,8 @@ impl RuleSet {
                 .collect();
             let mut spans: Vec<(TraceAndRule, Vec<SpanId>)> = Vec::new();
             let mut position: HashMap<TraceAndRule, usize> = HashMap::new();
-            for &(trace, span) in &verdict.drop_spans {
+            let doomed = verdict.drop_spans.iter().chain(&verdict.drop_span_logs);
+            for &(trace, span) in doomed {
                 let key = (trace, state.spans.peek(&(trace, span)));
                 let at = *position.entry(key).or_insert_with(|| {
                     spans.push((key, Vec::new()));
@@ -486,6 +495,9 @@ struct Pass<'a> {
     live: usize,
     drop_traces: Vec<TraceId>,
     drop_spans: Vec<(TraceId, SpanId)>,
+    /// Incoming spans that a span-scope drop took out of the batch, whose logs
+    /// the store may already hold.
+    drop_span_logs: Vec<(TraceId, SpanId)>,
     /// Stored spans that a rule of this pass has already condemned: later rules
     /// of the pass must not see them, and they are listed once.
     condemned: HashSet<(TraceId, SpanId)>,
@@ -512,6 +524,7 @@ impl<'a> Pass<'a> {
             live,
             drop_traces: Vec::new(),
             drop_spans: Vec::new(),
+            drop_span_logs: Vec::new(),
             condemned: HashSet::new(),
             groups: Groups::default(),
             groups_built: false,
@@ -523,6 +536,7 @@ impl<'a> Pass<'a> {
             keep: self.slots.into_iter().flatten().collect(),
             drop_traces: self.drop_traces,
             drop_spans: self.drop_spans,
+            drop_span_logs: self.drop_span_logs,
         }
     }
 
@@ -711,9 +725,11 @@ impl<'a> Pass<'a> {
     /// below them, among the stored spans of the trace and the batch's.
     /// Incoming ones are dropped now, stored ones go in `drop_spans` for the
     /// caller to remove, and every ID is remembered, so that descendants
-    /// arriving later are dropped too. (A stored span whose parent was not
-    /// known when it arrived is below `roots` once the missing link arrives, so
-    /// the store is searched, not only the batch.)
+    /// arriving later are dropped too. The logs the store holds for an incoming
+    /// one (they come before the span, which is exported when it ends) go in
+    /// `drop_span_logs`, so the caller removes them too. (A stored span whose
+    /// parent was not known when it arrived is below `roots` once the missing
+    /// link arrives, so the store is searched, not only the batch.)
     fn drop_subtrees(&mut self, rule: RuleId, trace: TraceId, roots: &[SpanId]) {
         let condemned = &self.condemned;
         let stored: Vec<(SpanId, Option<SpanId>)> = self
@@ -755,6 +771,11 @@ impl<'a> Pass<'a> {
             if doomed.contains(&id) {
                 self.take_slot(i, rule);
                 self.state.spans.remember((trace, id), rule, self.now);
+                // A span the store holds is already in `drop_spans`, which
+                // removes its logs.
+                if !self.condemned.contains(&(trace, id)) {
+                    self.drop_span_logs.push((trace, id));
+                }
             }
         }
     }

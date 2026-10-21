@@ -440,6 +440,198 @@ fn a_stored_descendant_of_a_late_ancestor_counts_on_the_rule_of_that_ancestor() 
 }
 
 #[test]
+fn span_scope_removes_the_logs_that_arrived_before_the_dropped_span() {
+    // A log is exported when it is emitted and a span when it ends, so a
+    // span's logs normally come first. The matched span is only incoming, so
+    // the store holds none of it but its logs.
+    let w = World::new(vec![span_rule("Cache", r#"{ name = "MGET" }"#)]);
+    w.ingest_spans(vec![span(1, 1, None, "web", "root", 0, 10)]);
+    let stored = w.ingest_logs(vec![
+        in_span(log("web", "in the cache call", 2), 1, 2),
+        in_span(log("web", "in the cache call, again", 3), 1, 2),
+        in_span(log("web", "in the root", 4), 1, 1),
+        in_trace(log("web", "on the trace alone", 5), 1),
+    ]);
+    assert_eq!(stored.len(), 4);
+    assert_eq!(w.store.stats().logs, 4);
+
+    let verdict = w.ingest_spans(vec![span(1, 2, Some(1), "web", "MGET", 1, 5)]);
+
+    assert!(verdict.keep.is_empty());
+    assert!(verdict.drop_traces.is_empty(), "only a span goes");
+    assert!(
+        verdict.drop_spans.is_empty(),
+        "the store holds no such span"
+    );
+    assert_eq!(verdict.drop_span_logs, vec![(tid(1), sid(2))]);
+    let stats = w.store.stats();
+    assert_eq!((stats.traces, stats.spans, stats.logs), (1, 1, 2));
+    // The span, and the two logs that were stored.
+    assert_eq!(w.counts(0), counts(0, 1, 2));
+    assert_eq!(w.rules.totals().spans, 1);
+    assert_eq!(w.rules.totals().logs, 2);
+
+    // Logs that come after go through the memory, and count as well.
+    let kept = w.ingest_logs(vec![
+        in_span(log("web", "late, in the cache call", 6), 1, 2),
+        in_span(log("web", "late, in the root", 6), 1, 1),
+    ]);
+    assert_eq!(kept.len(), 1);
+    assert_eq!(w.counts(0), counts(0, 1, 3));
+}
+
+#[test]
+fn span_scope_removes_the_early_logs_of_every_incoming_span_it_drops() {
+    // `s` matches; `c` below it and `g` below `c` come in the same batch, in
+    // any order. Each had logs stored first. The sibling's logs stay.
+    let w = World::new(vec![span_rule("S", r#"{ name = "s" }"#)]);
+    let (root, s, c, g) = s_c_g();
+    let sibling = span(1, 5, Some(1), "web", "sibling", 1, 5);
+    w.ingest_spans(vec![root.clone(), sibling.clone()]);
+    w.ingest_logs(vec![
+        in_span(log("web", "in s", 2), 1, 2),
+        in_span(log("web", "in c", 3), 1, 3),
+        in_span(log("web", "in g", 4), 1, 4),
+        in_span(log("web", "in the sibling", 5), 1, 5),
+    ]);
+    assert_eq!(w.store.stats().logs, 4);
+
+    let verdict = w.ingest_spans(vec![g, c, s]);
+
+    assert!(verdict.keep.is_empty());
+    assert!(verdict.drop_spans.is_empty());
+    let mut listed = verdict.drop_span_logs.clone();
+    listed.sort_by_key(|&(_, id)| id.0);
+    assert_eq!(
+        listed,
+        vec![(tid(1), sid(2)), (tid(1), sid(3)), (tid(1), sid(4))]
+    );
+    let stats = w.store.stats();
+    assert_eq!((stats.spans, stats.logs), (2, 1));
+    let left: Vec<String> = {
+        let mut bodies = Vec::new();
+        w.store.scan_logs(0, |l| bodies.push(l.body.clone()));
+        bodies
+    };
+    assert_eq!(left, ["in the sibling"]);
+    // Three spans and their three logs.
+    assert_eq!(w.counts(0), counts(0, 3, 3));
+}
+
+#[test]
+fn a_late_descendant_takes_its_early_logs_with_it() {
+    // Step 2 of the semantics: `c` is not matched itself, it is below the
+    // remembered `s`. Its log was stored before it arrived.
+    let w = World::new(vec![span_rule("S", r#"{ name = "s" }"#)]);
+    let (root, s, c, _) = s_c_g();
+    w.ingest_spans(vec![root, s]);
+    assert_eq!(w.counts(0), counts(0, 1, 0));
+    // Nothing of `c` is known yet, so its log passes the memory and is stored.
+    let kept = w.ingest_logs(vec![in_span(log("web", "in c, early", 3), 1, 3)]);
+    assert_eq!(kept.len(), 1);
+    assert_eq!(w.store.stats().logs, 1);
+
+    let verdict = w.ingest_spans(vec![c]);
+
+    assert!(verdict.keep.is_empty());
+    assert!(verdict.drop_spans.is_empty());
+    assert_eq!(verdict.drop_span_logs, vec![(tid(1), sid(3))]);
+    assert_eq!(w.store.stats().logs, 0);
+    // `s` and `c`, and the log in `c`, all on the rule that dropped `s`.
+    assert_eq!(w.counts(0), counts(0, 2, 1));
+}
+
+#[test]
+fn a_dropped_span_the_store_holds_is_listed_once() {
+    // A retry: the span is stored, and arrives again, now matched. It is in
+    // `drop_spans` (the store removes its logs with it), not also in
+    // `drop_span_logs`, and its log counts once.
+    let w = World::new(vec![]);
+    let (root, s, _, _) = s_c_g();
+    w.ingest_spans(vec![root, s.clone()]);
+    w.ingest_logs(vec![in_span(log("web", "in s", 2), 1, 2)]);
+    w.rules.replace(vec![span_rule("S", r#"{ name = "s" }"#)]);
+
+    let verdict = w.ingest_spans(vec![s]);
+
+    assert!(verdict.keep.is_empty());
+    assert_eq!(verdict.drop_spans, vec![(tid(1), sid(2))]);
+    assert!(verdict.drop_span_logs.is_empty());
+    let stats = w.store.stats();
+    assert_eq!((stats.spans, stats.logs), (1, 0));
+    // The retry is a second arrival: incoming, and the stored copy.
+    assert_eq!(w.counts(0), counts(0, 2, 1));
+}
+
+#[test]
+fn a_whole_trace_span_rule_removes_the_early_logs_of_the_matched_span() {
+    // The same through a query that needs the whole trace (so it is judged
+    // once per trace over the stored spans and the batch), with the log of the
+    // matched span stored before any span of the trace.
+    let w = World::new(vec![span_rule(
+        "Cache under a server",
+        r#"{ kind = server } >> { name = "MGET" }"#,
+    )]);
+    let spans = checkout_failure();
+    let trace = spans[0].trace_id;
+    let mget = named(&spans, "MGET").clone();
+    w.ingest_logs(vec![
+        in_ids(
+            log("inventory-api", "in the cache call", 1),
+            trace,
+            mget.span_id,
+        ),
+        in_ids(
+            log("inventory-api", "in the cache call, again", 2),
+            trace,
+            mget.span_id,
+        ),
+    ]);
+    assert_eq!(w.store.stats().logs, 2);
+
+    let verdict = w.ingest_spans(spans);
+
+    assert_eq!(verdict.keep.len(), 14);
+    assert!(verdict.drop_spans.is_empty());
+    assert_eq!(verdict.drop_span_logs, vec![(trace, mget.span_id)]);
+    assert_eq!(w.store.stats().logs, 0);
+    assert_eq!(w.counts(0), counts(0, 1, 2));
+}
+
+#[test]
+fn early_logs_of_a_span_dropped_by_a_span_rule_are_not_credited_to_a_later_trace_rule() {
+    // A (span scope) is first and drops `c`, which is only incoming, with a log
+    // stored before it. B (trace scope) is later and drops the trace through
+    // `root` in the same batch, and sweeps the trace's logs. The log of `c`
+    // is A's: removed with A's spans, before B's sweep.
+    let w = World::new(vec![
+        span_rule("A", r#"{ name = "c" }"#),
+        trace_rule("B", r#"{ name = "root" }"#),
+    ]);
+    w.ingest_logs(vec![
+        in_span(log("web", "in c", 1), 1, 2),
+        in_span(log("web", "in another span", 2), 1, 9),
+    ]);
+    assert_eq!(w.store.stats().logs, 2);
+
+    let verdict = w.ingest_spans(vec![
+        span(1, 2, Some(1), "web", "c", 1, 5),
+        span(1, 1, None, "web", "root", 0, 10),
+    ]);
+
+    assert!(verdict.keep.is_empty());
+    assert_eq!(verdict.drop_traces, vec![tid(1)]);
+    assert!(verdict.drop_spans.is_empty());
+    assert_eq!(verdict.drop_span_logs, vec![(tid(1), sid(2))]);
+    assert_eq!(w.store.stats().logs, 0);
+    // A: `c` and the log in `c`. B: the trace, `root` and the other log.
+    assert_eq!(w.counts(0), counts(0, 1, 1));
+    assert_eq!(w.counts(1), counts(1, 1, 1));
+    assert_eq!(w.rules.totals().spans, 2);
+    assert_eq!(w.rules.totals().logs, 2);
+}
+
+#[test]
 fn span_scope_with_a_structural_rule_drops_only_the_matched_spans() {
     // The matched span is the cache call, which has no descendants.
     let w = World::new(vec![span_rule(

@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use loctel_e2e::{Harness, TransportKind, now_unix_nano};
 use loctel_engine::RulesFile;
-use loctel_meshgen::{Generated, Scenario, generate};
+use loctel_meshgen::{Batch, Generated, Scenario, generate};
 use serde_json::{Value, json};
 
 /// The engine polls the rules file every 2 s; a test waits for a few polls.
@@ -209,6 +209,83 @@ query = '{ name = "POST /api/checkout" }'
         .tool("search_logs", json!({ "trace_id": trace_id }))
         .await;
     assert_eq!(logs["logs"], json!([]), "{logs}");
+}
+
+#[tokio::test]
+async fn span_rule_removes_the_logs_that_arrived_before_its_span() {
+    let dir = tempfile::tempdir().unwrap();
+    // `POST /charges` and the three spans below it go, and with them the four
+    // logs emitted in `POST /charges`. The rest of the trace stays.
+    let path = write_rules(
+        dir.path(),
+        r#"[[rule]]
+name = "Charges"
+enabled = true
+language = "traceql"
+query = '{ name = "POST /charges" }'
+scope = "span"
+"#,
+    );
+    let harness = Harness::start_with_rules(Duration::from_millis(200), path);
+
+    // An exporter sends a log when it is emitted and a span when it ends, so
+    // the logs of the trace arrive first, then its spans.
+    let generated = generate(&Scenario::CheckoutFailure, 1, now_unix_nano());
+    let logs_first = Generated {
+        batches: generated
+            .batches
+            .iter()
+            .filter(|batch| batch.logs.is_some())
+            .map(|batch| Batch {
+                traces: None,
+                logs: batch.logs.clone(),
+                delay_before: Duration::ZERO,
+            })
+            .chain(
+                generated
+                    .batches
+                    .iter()
+                    .filter(|batch| batch.traces.is_some())
+                    .map(|batch| Batch {
+                        traces: batch.traces.clone(),
+                        logs: None,
+                        delay_before: Duration::ZERO,
+                    }),
+            )
+            .collect(),
+        trace_ids: generated.trace_ids.clone(),
+    };
+    let report = loctel_meshgen::send(&logs_first, &harness.otlp(TransportKind::HttpJson), 0.0)
+        .await
+        .expect("the logs and the spans are sent");
+    assert_eq!((report.spans, report.logs), (15, 7));
+    let trace_id = generated.trace_ids[0].to_string();
+    harness.wait_complete(&trace_id).await;
+
+    let status = harness.tool("get_status", json!({})).await;
+    assert_eq!(status["traces_held"], 1, "{status}");
+    assert_eq!(status["spans_held"], 11, "{status}");
+    assert_eq!(status["logs_held"], 3, "{status}");
+    let rule = &status["rules"][0];
+    assert_eq!(rule["scope"], "span", "{rule}");
+    assert_eq!(rule["dropped_traces"], 0, "{rule}");
+    assert_eq!(rule["dropped_spans"], 4, "{rule}");
+    assert_eq!(rule["dropped_logs"], 4, "{rule}");
+
+    let logs = harness
+        .tool("search_logs", json!({ "trace_id": trace_id }))
+        .await;
+    let bodies: Vec<&str> = logs["logs"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no logs in {logs}"))
+        .iter()
+        .map(|log| log["body"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(bodies.len(), 3, "{logs}");
+    assert!(
+        bodies.iter().all(|body| !body.contains("Charg")),
+        "a log of a dropped span is still stored: {bodies:?}"
+    );
 }
 
 #[tokio::test]

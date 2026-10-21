@@ -13,7 +13,7 @@ use loctel_engine::{
     DropScope, Engine, EngineConfig, EngineHandle, ListenerState, RuleId, RuleLanguage, RuleSpec,
     RulesFile, Settings,
 };
-use loctel_meshgen::{Generated, Scenario, SendReport, Transport, generate};
+use loctel_meshgen::{Batch, Generated, Scenario, SendReport, Transport, generate};
 use serde::Deserialize;
 
 /// How long a test waits for the engine to notice an edit of the file (the
@@ -68,14 +68,19 @@ fn send_at(
     base_unix_nano: u64,
 ) -> (Generated, SendReport) {
     let generated = generate(scenario, seed, base_unix_nano);
+    let report = send_generated(engine, &generated);
+    (generated, report)
+}
+
+/// Sends the batches of `generated`, in the order they are in, over HTTP JSON.
+fn send_generated(engine: &EngineHandle, generated: &Generated) -> SendReport {
     let transport = Transport::HttpJson(format!("http://{}", http_addr(engine)));
-    let report = tokio::runtime::Builder::new_current_thread()
+    tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap()
-        .block_on(loctel_meshgen::send(&generated, &transport, 0.0))
-        .unwrap_or_else(|e| panic!("sending {scenario:?} failed: {e:#}"));
-    (generated, report)
+        .block_on(loctel_meshgen::send(generated, &transport, 0.0))
+        .unwrap_or_else(|e| panic!("sending the generated batches failed: {e:#}"))
 }
 
 /// [`send_at`], dated now.
@@ -202,6 +207,83 @@ fn a_trace_whose_root_arrives_last_is_dropped_whole() {
     assert_eq!(rules[0].dropped_logs, report.logs as u64);
     assert_eq!(generated.trace_ids.len(), 1);
     engine.shutdown();
+}
+
+/// `generated` with the logs exports ahead of the trace exports: an exporter
+/// sends a log when it is emitted and a span when it ends, so a span's logs
+/// normally come first.
+fn logs_first(generated: &Generated) -> Generated {
+    let mut batches: Vec<Batch> = generated
+        .batches
+        .iter()
+        .filter(|batch| batch.logs.is_some())
+        .map(|batch| Batch {
+            traces: None,
+            logs: batch.logs.clone(),
+            delay_before: Duration::ZERO,
+        })
+        .collect();
+    batches.extend(
+        generated
+            .batches
+            .iter()
+            .filter(|batch| batch.traces.is_some())
+            .map(|batch| Batch {
+                traces: batch.traces.clone(),
+                logs: None,
+                delay_before: Duration::ZERO,
+            }),
+    );
+    Generated {
+        batches,
+        trace_ids: generated.trace_ids.clone(),
+    }
+}
+
+#[test]
+fn a_span_scope_rule_removes_the_logs_that_arrived_before_its_span() {
+    // `POST /charges` and the three spans below it go; the four logs emitted
+    // in `POST /charges` are the same four whichever of them arrives first.
+    let query = r#"{ name = "POST /charges" }"#;
+    let span_rule = RuleSpec {
+        scope: DropScope::Span,
+        ..rule("Charges", RuleLanguage::TraceQl, query)
+    };
+    let mut counted = Vec::new();
+    for logs_arrive_first in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = start(dir.path());
+        engine.set_rules(vec![span_rule.clone()]).unwrap();
+        let mut generated = generate(&Scenario::CheckoutFailure, 2, now_unix_nano());
+        if logs_arrive_first {
+            generated = logs_first(&generated);
+        }
+
+        let report = send_generated(&engine, &generated);
+
+        assert_eq!((report.spans, report.logs), (15, 7));
+        let stats = engine.store().stats();
+        assert_eq!(
+            (stats.spans, stats.logs),
+            (11, 3),
+            "logs first: {logs_arrive_first}"
+        );
+        let mut stored_logs = Vec::new();
+        engine.store().scan_logs(0, |log| {
+            stored_logs.push(log.body.clone());
+        });
+        assert!(
+            stored_logs.iter().all(|body| !body.contains("Charg")),
+            "{stored_logs:?}"
+        );
+        let status = engine.status();
+        assert_eq!(status.rules[0].dropped_traces, 0);
+        counted.push((status.rules[0].dropped_spans, status.rules[0].dropped_logs));
+        assert_eq!(status.dropped_spans, 4);
+        assert_eq!(status.dropped_logs, 4);
+        engine.shutdown();
+    }
+    assert_eq!(counted, [(4, 4), (4, 4)]);
 }
 
 #[test]

@@ -122,6 +122,29 @@ later agent might be tempted to undo, and the one place the plan was adapted.
   remove it to make a future key "forward compatible": a new key is added to
   `RuleSpec` and the header together, and an older loctel reading a newer file
   should refuse it, not guess.
+- **`SpanVerdict` has a third list, `drop_span_logs`: the incoming spans a
+  span-scope drop took out of the batch, whose logs the store may already
+  hold.** The plan's verdict is `keep`, `drop_traces` and `drop_spans`, and
+  `drop_spans` lists *stored* spans. But a log is exported when it is emitted
+  and a span when it ends, so a span's logs normally reach the store before the
+  span reaches the rules; and a span that is dropped on arrival is never
+  stored, so it was in no list, and its logs stayed for good. A span-scope rule
+  almost never removed the logs of the span it matched (the rule's
+  `dropped_logs` stayed 0 and the preview, which does count them, reported drops
+  that ingest did not make; only a log arriving after the span was dropped,
+  through the memory). The fix is a field of its own rather than incoming IDs in
+  `drop_spans`: that list means "the store holds this span", the tests of the
+  earlier tasks assert it exactly, and a caller that removes `drop_spans` by
+  hand keeps working (it only misses the early logs). `remove_dropped` removes
+  the logs of `drop_span_logs` in the same step as the `drop_spans`, before the
+  traces, and credits them to the rule that dropped the span, so the counting
+  rule of "a log is counted once, on the first rule that dropped it" holds for
+  these logs too. A dropped span the store also holds (a retry) is in
+  `drop_spans` only, so its logs are not counted twice. The new field is the
+  only change to the plan's verdict: `Default` and the three existing fields
+  are as specified. Do not fold the list into `drop_spans`, and do not drop
+  it: the engine's tests send the logs both before and after the spans of a
+  span-scope match and expect the same counts.
 - **The save rewrites the whole file** (header plus tables, through a temporary
   file and a rename, like settings). Hand-written comments do not survive a save
   by loctel; the header does.

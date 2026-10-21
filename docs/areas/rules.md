@@ -145,6 +145,12 @@ A match drops according to the rule's **scope**:
   - Incoming ones are dropped.
   - Stored ones go in `SpanVerdict::drop_spans` for the caller to remove, with
     the logs emitted in them.
+  - Incoming ones that the store does not hold go in
+    `SpanVerdict::drop_span_logs`, so that the caller removes the logs the
+    store already holds for them. A log is exported when it is emitted and a
+    span when it ends, so a span's logs normally arrive first: without this
+    list a span-scope rule would almost never remove the logs of the spans it
+    drops. A dropped span is in one of the two lists, never both.
   - Every ID is remembered, so descendants that arrive later are dropped
     on arrival. A descendant that arrived *earlier* than the span that links it
     to the match (its parent unknown at the time, so it was kept) is dropped when
@@ -159,11 +165,12 @@ verdict lists and credits each removal to the rule that dropped it), then
 a span after its trace was removed. `record_removed(rule, Removed)` is the same
 crediting for a caller that already knows the rule.
 
-`remove_dropped` removes the `drop_spans` first and the `drop_traces` after
-them, and the order is load-bearing for the counters: when a span-scope rule
-condemned stored spans of a trace that a later trace-scope rule of the same
-batch dropped whole, the stored spans (and their logs) belong to the first
-rule. Removing the trace first would hand them to the trace rule.
+`remove_dropped` removes the `drop_spans` and the logs in `drop_span_logs`
+first and the `drop_traces` after them, and the order is load-bearing for the
+counters: when a span-scope rule condemned stored spans (or the early logs of
+incoming spans) of a trace that a later trace-scope rule of the same batch
+dropped whole, those spans and logs belong to the first rule. Removing the
+trace first would hand them to the trace rule.
 
 ### Logs (LogQL, and the memory)
 
@@ -175,8 +182,12 @@ responsible:
 - an enabled, valid LogQL rule matches it; the first in file order is credited.
 
 The logs the store already holds for a dropped trace or span are removed by
-`remove_dropped`, together with the spans. So a health check's logs vanish with
-its trace, whichever arrived first.
+`remove_dropped`, together with the spans (`drop_traces`, `drop_spans`, and for
+a span that was only incoming, `drop_span_logs`). So a health check's logs
+vanish with its trace, and the logs of a span a span-scope rule dropped vanish
+with the span, whichever arrived first. Tests send the logs both before and
+after the span (`crates/loctel-rules/tests/filter.rs`, the engine's
+`tests/rules.rs` and the e2e `tests/rules.rs`).
 
 ### Memory and its limits
 
