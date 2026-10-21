@@ -7,6 +7,8 @@
 
 use std::sync::Arc;
 
+use loctel_ingest::{logs_from_request, spans_from_request};
+use loctel_meshgen::{Scenario, generate};
 use loctel_model::{
     AttrValue, LogRecord, Resource, Severity, Span, SpanEvent, SpanId, SpanKind, StatusCode,
     TraceId,
@@ -159,4 +161,30 @@ pub fn store_with_manual_clock() -> (Store, Arc<ManualClock>) {
 pub fn store_with_config(config: StoreConfig) -> (Store, Arc<ManualClock>) {
     let clock = Arc::new(ManualClock::new(CLOCK_START));
     (Store::new(config, clock.clone()), clock)
+}
+
+// ---- the fake mesh -----------------------------------------------------------
+
+/// The spans of every trace export in `scenario`, as the real OTLP conversion
+/// code turns them into model spans, in the order the batches carry them. The
+/// scenario starts at `base_unix_nano`. Two scenarios generated with the same
+/// `seed` share trace and span IDs, so give each trace of a test its own seed.
+pub fn scenario_spans(scenario: &Scenario, seed: u64, base_unix_nano: u64) -> Vec<Span> {
+    generate(scenario, seed, base_unix_nano)
+        .batches
+        .into_iter()
+        .filter_map(|batch| batch.traces)
+        .flat_map(|request| spans_from_request(request).items)
+        .collect()
+}
+
+/// The log records of every logs export in `scenario`, converted like
+/// [`scenario_spans`], in the order the batches carry them.
+pub fn scenario_logs(scenario: &Scenario, seed: u64, base_unix_nano: u64) -> Vec<LogRecord> {
+    generate(scenario, seed, base_unix_nano)
+        .batches
+        .into_iter()
+        .filter_map(|batch| batch.logs)
+        .flat_map(|request| logs_from_request(request).items)
+        .collect()
 }

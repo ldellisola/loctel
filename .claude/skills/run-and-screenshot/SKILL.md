@@ -12,16 +12,34 @@ a tool below is missing (it is idempotent).
 ## 1. Headless: no window, ports and data only
 
 Right for ingest, store, MCP and engine work. Port 0 picks a free port, and
-the listener lines on stdout say which. Point `--settings` at a scratch file so
-you never touch the real one.
+the listener lines on stdout say which (the line after them, `"event":"rules"`,
+says where the discard rules file is and how many rules it holds). Point
+`--settings` and `--rules` at scratch files so you never touch the real ones.
 
 ```bash
 cargo build -p loctel-app -p loctel-meshgen
 target/debug/loctel --headless --grpc-port 0 --http-port 0 --mcp-port 0 \
-  --settings /tmp/loctel-settings.toml > /tmp/loctel-lines.txt &
+  --settings /tmp/loctel-settings.toml --rules /tmp/loctel-rules.toml > /tmp/loctel-lines.txt &
 sleep 1; cat /tmp/loctel-lines.txt        # {"event":"listener","name":"otlp-grpc",...,"address":"127.0.0.1:41727"}
 target/debug/meshgen --scenario checkout-failure --transport grpc --endpoint http://127.0.0.1:41727
 kill %1                                    # SIGTERM or SIGINT: clean exit 0
+```
+
+To see a discard rule work, add one to the rules file (a new file holds no
+rules, only the example commented out; `docs/areas/rules.md`), wait for the
+engine to notice the edit (it looks every 2 seconds), send the `health-checks`
+scenario and look at what is stored. `get_status` over MCP shows the rule counts:
+
+```bash
+cat >> /tmp/loctel-rules.toml <<'RULE'
+[[rule]]
+name = "Health checks"
+enabled = true
+language = "traceql"
+query = '{ span.url.path = "/health" }'
+RULE
+sleep 3
+target/debug/meshgen --scenario health-checks --transport grpc --endpoint http://127.0.0.1:41727
 ```
 
 Scenarios, transports and flags are in `docs/areas/testing.md`. The MCP address

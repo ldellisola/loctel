@@ -15,6 +15,8 @@ loctel-store = { path = "crates/loctel-store" }
 loctel-ingest = { path = "crates/loctel-ingest" }
 loctel-mcp = { path = "crates/loctel-mcp" }
 loctel-engine = { path = "crates/loctel-engine" }
+loctel-query = { path = "crates/loctel-query" }
+loctel-rules = { path = "crates/loctel-rules" }
 loctel-meshgen = { path = "crates/loctel-meshgen" }
 loctel-ui = { path = "crates/loctel-ui" }
 loctel-macos = { path = "crates/loctel-macos" }
@@ -56,6 +58,12 @@ chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 tokio-util = "0.7.20"
 jsonschema = { version = "0.59.0", default-features = false }
 
+# Query languages (loctel-query). The `regex` crate is RE2-compatible, close to
+# Go's `regexp` that Tempo and Loki use. Default features stay on: `\w` and
+# `\d` are Unicode-aware here and ASCII-only in Go, which only matters for
+# non-ASCII text (docs/areas/query.md).
+regex = "1.13.1"
+
 # UI (loctel-ui, loctel-app). GPUI comes as the weekly `gpui-pre` snapshot,
 # pinned exactly: upgrades are deliberate, in their own PR (decision 0001).
 # The platform crate gets both Linux windowing backends so the dev window
@@ -74,8 +82,8 @@ image = { version = "0.25.1", default-features = false, features = ["png"] }
 # one copy of each.
 gpui-tray = { version = "0.2", default-features = false, features = ["gpui-kit", "menu-state"] }
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSBitmapImageRep", "NSImage", "NSImageRep"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSError", "NSGeometry", "NSString"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSBitmapImageRep", "NSImage", "NSImageRep", "NSWorkspace"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSError", "NSGeometry", "NSString", "NSURL"] }
 objc2-service-management = "0.3.2"
 
 # Line tables only: full debug info made a clean test build about 12 GB of

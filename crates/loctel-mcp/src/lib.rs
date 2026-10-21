@@ -7,7 +7,10 @@
 //! store: status, a `since` marker, services, the service map, trace search,
 //! recent failures, one trace, one span and log search. They give compact
 //! summaries by default, with `limit` and `cursor` to page, and return
-//! `structuredContent` with an output schema plus the same JSON as text.
+//! `structuredContent` with an output schema plus the same JSON as text. The
+//! two searches also take a TraceQL or LogQL `query` (parsed with
+//! `loctel-query`), `get_status` lists the discard rules, and every default
+//! answer fits [`ANSWER_TEXT_BUDGET`].
 //!
 //! The tools are on [`LoctelTools`], which can be called without a
 //! connection ([`LoctelTools::call`]). `docs/areas/mcp.md` has the tool
@@ -24,7 +27,7 @@ pub use dto::*;
 pub use server::{McpShutdown, serve};
 pub use since::{SinceError, parse_since};
 pub use tools::{
-    GetSpanArgs, GetTraceArgs, LoctelTools, RecentFailuresArgs, SearchLogsArgs, SearchTracesArgs,
-    SinceArgs, StatusSource,
+    ANSWER_TEXT_BUDGET, GetSpanArgs, GetTraceArgs, LoctelTools, RecentFailuresArgs, SearchLogsArgs,
+    SearchTracesArgs, SinceArgs, StatusSource,
 };
 pub use trace_view::Detail;

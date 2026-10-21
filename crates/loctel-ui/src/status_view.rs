@@ -8,7 +8,7 @@ use gpui::{
 };
 use loctel_engine::{EngineHandle, EngineStatus, ListenerState};
 
-use crate::menu_text::{format_rate, status_line};
+use crate::menu_text::{format_rate, rules_line, status_line};
 use crate::theme::{FONT_FAMILY, Theme, register_fonts};
 
 /// How often the window asks the engine for a fresh status.
@@ -42,6 +42,18 @@ pub struct StatusModel {
     pub logs_per_sec: f64,
     pub traces_held: usize,
     pub logs_held: usize,
+    /// How many discard rules are switched on, whether or not their queries
+    /// parse.
+    pub rules_on: usize,
+    /// How many of those do not parse, so they drop nothing. A rule that is
+    /// switched off is not counted, even with a draft query that has an error.
+    pub rules_with_errors: usize,
+    /// Whether `rules.toml` could not be used the last time it was read (the
+    /// rules in force are then the last good ones). The error's text stays in
+    /// the engine's status: the menu line is fixed words.
+    pub rules_file_error: bool,
+    /// The share of what arrived that the rules dropped, since launch: 0 to 1.
+    pub dropped_fraction: f64,
 }
 
 impl StatusModel {
@@ -73,11 +85,20 @@ impl StatusModel {
             logs_per_sec: status.logs_per_sec,
             traces_held: status.stats.traces,
             logs_held: status.stats.logs,
+            rules_on: status.rules.iter().filter(|rule| rule.spec.enabled).count(),
+            rules_with_errors: status
+                .rules
+                .iter()
+                .filter(|rule| rule.spec.enabled && rule.error.is_some())
+                .count(),
+            rules_file_error: status.rules_file_error.is_some(),
+            dropped_fraction: status.dropped_fraction,
         }
     }
 }
 
-/// The view: a headline, four numbers and the endpoint list. It draws its
+/// The view: a headline, four numbers, the discard rules line and the
+/// endpoint list. It draws its
 /// [`StatusModel`] and nothing else, which is what makes it testable by
 /// screenshot.
 pub struct StatusView {
@@ -178,6 +199,7 @@ impl Render for StatusView {
                         format_rate(model.logs_held as f64),
                     )),
             )
+            .child(rules_row(theme, model))
             .child(endpoints(theme, model))
     }
 }
@@ -243,6 +265,28 @@ fn stat(theme: &Theme, label: &'static str, value: String) -> impl IntoElement {
                 .font_weight(FontWeight::SEMIBOLD)
                 .child(value),
         )
+}
+
+/// The discard rules line, under the rates: the same words as the menu bar's
+/// rules line. A problem is red in the dot and the text, and the words say it
+/// too, so the colour is never the only sign.
+fn rules_row(theme: &Theme, model: &StatusModel) -> impl IntoElement {
+    let problem = model.rules_file_error || model.rules_with_errors > 0;
+    let (dot, text) = if problem {
+        (theme.error, theme.error_text)
+    } else if model.rules_on == 0 {
+        (theme.text_tertiary, theme.text_secondary)
+    } else {
+        (theme.ok, theme.text_secondary)
+    };
+    div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .px_1()
+        .text_color(text)
+        .child(div().size(px(8.0)).rounded_full().bg(dot))
+        .child(rules_line(model))
 }
 
 /// The endpoint list: a row per listener, with the OS error under a failed

@@ -325,6 +325,7 @@ fn filters_combine() {
         errors_only: true,
         min_duration_nanos: Some(100 * MS),
         since_unix_nano: Some(10 * MS),
+        query: None,
     };
     assert_eq!(ids(&search(&store, &filter, 10)), vec![tid(1)]);
 }

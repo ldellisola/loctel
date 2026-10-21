@@ -6,8 +6,8 @@ Milestone 1 has the plain menu below), §10.3 (macOS checks), §10.4 (the Mac
 checks), §11 (technology).
 
 Status: written and type-checked, **never run**. Everything in "Unverified
-until the M1 Mac check" below is a claim from reading the crates, not
-something anyone has seen work.
+until the M1 Mac check" and "Unverified until the M2 Mac check" below is a claim
+from reading the crates, not something anyone has seen work.
 
 ## What is in the crate
 
@@ -27,7 +27,7 @@ the project lives here.
 | `icon::template_icon()` | the two PNGs as one template `NSImage` |
 
 `loctel-app` without `--headless` on macOS (`run_menu_bar` in `main.rs`) starts
-the engine, prints the listener lines like headless mode, sets
+the engine, prints the startup lines (listeners, then the rules line) like headless mode, sets
 `QuitMode::Explicit` and, in `Application::run`, `ActivationPolicy::Accessory`,
 calls `install` and opens no window. `--headless` is unchanged.
 
@@ -39,15 +39,17 @@ menu after every click. The menu, in order:
 | # | Row | Does |
 |---|---|---|
 | 1 | header: `Receiving · 412 spans/s · 1.2k logs/s`, `Paused` or `Port problem: otlp-http (address in use)` | nothing; greyed out. The text is `loctel_ui::menu_text::status_line`, the same function the Linux window uses, so the words cannot drift |
-| 2 | `Copy MCP address` | puts `engine.mcp_url()` on the clipboard. Greyed out while the MCP server is not listening |
-| 3 | `Pause receiving`, or `Resume receiving` while paused | `engine.set_paused(!paused)` |
-| 4 | separator | |
-| 5 | `Start at login` | checkmark from `login_item::is_enabled()`; choosing it flips the login item |
+| 2 | rules header: `No discard rules on`, `1 discard rule on · 31% dropped`, `1 discard rule on · 1 has an error` or `Discard rules file has an error` | nothing; greyed out. The text is `loctel_ui::menu_text::rules_line` (the exact strings and their priority are in [`ui.md`](ui.md)), the same function the Linux window uses |
+| 3 | `Copy MCP address` | puts `engine.mcp_url()` on the clipboard. Greyed out while the MCP server is not listening |
+| 4 | `Pause receiving`, or `Resume receiving` while paused | `engine.set_paused(!paused)` |
+| 5 | `Edit discard rules…` | opens `engine.rules_path()` (`rules.toml`) in the default text editor: `NSWorkspace` `openURL` with the file URL, and if no app handles `.toml`, `open -t <path>`. A failure is printed to stderr. Greyed out when `rules_path()` is `None` (the rules live in memory only; the app always passes a path). The file exists because the engine writes the defaults (no rules, a comment header) at start; saving it in the editor is picked up within about 2 seconds, with no restart |
 | 6 | separator | |
-| 7 | `Quit loctel` | `engine.shutdown()`, removes the icon, quits |
+| 7 | `Start at login` | checkmark from `login_item::is_enabled()`; choosing it flips the login item |
+| 8 | separator | |
+| 9 | `Quit loctel` | `engine.shutdown()`, removes the icon, quits |
 
-Every 2 seconds the state behind the menu (header text, paused, login item, MCP
-address) is read again; only if it differs from what the menu was built from is
+Every 2 seconds the state behind the menu (header text, rules line, paused,
+login item, MCP address, whether there is a rules file) is read again; only if it differs from what the menu was built from is
 the menu rebuilt. A rebuild also happens right after any click, so a toggled
 row is correct at once.
 
@@ -104,6 +106,12 @@ bundle's `.icns` (see [`release.md`](release.md)). Change the glyph in both.
   (no bundle) it fails with the system's message, which is expected during
   development.
 
+The rules line is rebuilt with the rest: its percentage moves while data
+arrives, so an open menu may be replaced about every 2 s like the rates (see
+"The header keeps up" below). The rules header is read from the same
+`EngineStatus` as the Linux window, never from the file, so the two cannot
+disagree.
+
 ## Checking the macOS code from Linux
 
 ```bash
@@ -158,10 +166,33 @@ and a failure goes in `docs/decisions/` or an issue:
   not call the app damaged), its icon looks right in Finder, in the `.dmg` window
   and in Login Items, and `LSUIElement` really keeps the Dock icon away.
 
+## Unverified until the M2 Mac check
+
+Milestone 2 added the rules line and the edit item. Nobody has run them either;
+the Milestone 2 section of the Mac checklist (`docs/milestones/mac-checklist.md`,
+items 1 to 4) should confirm:
+
+- **`Edit discard rules…`** opens `rules.toml` in a text editor: through
+  `NSWorkspace` `openURL` when the Mac has an app for `.toml` (which app is the
+  system's choice, and it might be an unexpected one), and through the
+  `open -t` fallback when it has none. Check both if you can. In the app it is never
+  greyed out (the path is always set), so a greyed item is a bug.
+- **The rules header** is greyed out like the status header, shows
+  `No discard rules on` with the default file, and follows an edit of the file
+  within about 5 seconds (up to 2 s for the engine to reload the file, up to 2 s
+  for the menu to notice): `1 discard rule on · 0% dropped`, then a non-zero
+  percentage once matching traffic arrives, `1 discard rule on · 1 has an error`
+  for a query that does not parse, and `Discard rules file has an error` for
+  broken TOML. Nothing crashes.
+- **Two disabled headers** (both rely on `NSMenuItem.setEnabled:` as the status
+  header does) look right together, and an open menu is not disturbed by the
+  refresh while the percentage moves (the same open question as for the rates).
+
 ## Tests
 
-- `cargo test -p loctel-macos` (runs on Linux): `menu` (the designed order, the
-  Pause/Resume label, the checkmark, the greyed Copy, the header text),
+- `cargo test -p loctel-macos` (runs on Linux): `menu` (the designed order,
+  the rules header and the Edit item, the Pause/Resume label, the checkmark,
+  the greyed Copy and the greyed Edit, the header text),
   `first_launch` (once only, the login-item error, other settings survive, a
   broken file left alone) and `icon` (18 and 36 pixels, black template ink, three
   rings at the mockup's positions).

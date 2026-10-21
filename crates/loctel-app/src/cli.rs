@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::Parser;
-use loctel_engine::{EngineConfig, Settings};
+use loctel_engine::{EngineConfig, RulesFile, Settings};
 
 /// loctel: receive OpenTelemetry traces and logs from services on this
 /// machine, show which service failed, and answer AI agents over MCP.
@@ -34,6 +34,14 @@ pub struct Cli {
     #[arg(long, value_name = "PATH")]
     pub settings: Option<PathBuf>,
 
+    /// Read and write the discard rules in this file instead of the default
+    /// one: `rules.toml` next to the settings file (so the per-user
+    /// `~/Library/Application Support/loctel/rules.toml` on a Mac, unless
+    /// `--settings` names another file). A missing file is created holding no
+    /// rules.
+    #[arg(long, value_name = "PATH")]
+    pub rules: Option<PathBuf>,
+
     /// How long a trace must go without a new span to count as complete, in
     /// milliseconds (default 10000). For tests.
     #[arg(long, value_name = "N")]
@@ -46,8 +54,21 @@ impl Cli {
         self.settings.clone().unwrap_or_else(Settings::default_path)
     }
 
+    /// The rules file: `--rules`, else `rules.toml` in the directory of the
+    /// settings file (the per-user one unless `--settings` names another, so a
+    /// run on a scratch settings file never touches the real rules).
+    pub fn rules_path(&self) -> PathBuf {
+        if let Some(path) = &self.rules {
+            return path.clone();
+        }
+        match &self.settings {
+            Some(settings) => settings.with_file_name("rules.toml"),
+            None => RulesFile::default_path(),
+        }
+    }
+
     /// The engine's configuration: `settings` with the port flags applied on
-    /// top, and the completeness flag on the store.
+    /// top, the rules file, and the completeness flag on the store.
     pub fn engine_config(&self, mut settings: Settings) -> EngineConfig {
         if let Some(port) = self.grpc_port {
             settings.otlp_grpc_port = port;
@@ -60,6 +81,7 @@ impl Cli {
         }
         let mut config = EngineConfig {
             settings,
+            rules_path: Some(self.rules_path()),
             ..EngineConfig::default()
         };
         if let Some(millis) = self.completeness_ms {
@@ -144,6 +166,47 @@ mod tests {
             PathBuf::from("/tmp/x.toml")
         );
         assert_eq!(parse(&[]).settings_path(), Settings::default_path());
+    }
+
+    #[test]
+    fn rules_flag_names_the_file() {
+        let cli = parse(&["--rules", "/tmp/r/rules.toml"]);
+
+        assert_eq!(cli.rules_path(), PathBuf::from("/tmp/r/rules.toml"));
+        assert_eq!(
+            cli.engine_config(Settings::default()).rules_path,
+            Some(PathBuf::from("/tmp/r/rules.toml"))
+        );
+    }
+
+    #[test]
+    fn rules_file_defaults_to_the_per_user_one() {
+        assert_eq!(parse(&[]).rules_path(), RulesFile::default_path());
+        // It is next to the per-user settings file, as the design says.
+        assert_eq!(
+            RulesFile::default_path().parent(),
+            Settings::default_path().parent()
+        );
+        assert_eq!(
+            parse(&[]).engine_config(Settings::default()).rules_path,
+            Some(RulesFile::default_path())
+        );
+    }
+
+    #[test]
+    fn rules_file_defaults_to_beside_a_named_settings_file() {
+        // A scratch `--settings` must not send the rules to the real file.
+        let cli = parse(&["--settings", "/tmp/scratch/settings.toml"]);
+
+        assert_eq!(cli.rules_path(), PathBuf::from("/tmp/scratch/rules.toml"));
+        // And `--rules` still wins.
+        let cli = parse(&[
+            "--settings",
+            "/tmp/scratch/settings.toml",
+            "--rules",
+            "/tmp/elsewhere.toml",
+        ]);
+        assert_eq!(cli.rules_path(), PathBuf::from("/tmp/elsewhere.toml"));
     }
 
     #[test]

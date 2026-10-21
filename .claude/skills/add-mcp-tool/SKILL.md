@@ -15,8 +15,9 @@ changes rules.
 
 1. **Decide the contract before writing code.** Name (snake_case), arguments,
    and what it returns. Defaults must be small: take `limit` and `cursor` if the
-   result is a list, clamp `limit` to a documented cap, and keep the default well
-   under about 8k tokens. If it filters by time, take `since` and use
+   result is a list, clamp `limit` to a documented cap, and keep the default
+   answer under `ANSWER_TEXT_BUDGET` (24,000 characters, about 6k tokens, under
+   the design's 8k; see step 6). If it filters by time, take `since` and use
    `parse_since`.
 2. **The DTO** in `crates/loctel-mcp/src/dto.rs`. Derive `Serialize` and
    `JsonSchema` (the schema becomes the tool's `outputSchema`), and put a doc
@@ -56,6 +57,14 @@ changes rules.
      schema. Add the name to `ALL_TOOLS` and a line to
      `results_have_structured_content_and_text`, and cover the limits, the error
      texts and the empty case.
+   - `crates/loctel-mcp/tests/budget.rs`: add the tool to `default_answers_fit_budget`
+     (a tool that needs IDs gets the worst ones the fixture has). The test
+     calls every tool with default arguments on `CheckoutFailure`,
+     `HealthChecks{50}` and `HugeTrace{10000}` and fails when one answer is
+     over `ANSWER_TEXT_BUDGET`. Lower the tool's default `limit` until it fits,
+     never the budget, and record the new default in `docs/areas/mcp.md` and a
+     decision file. A new field in an existing result needs no new test, but
+     run the file: it can push a default answer over.
    - `crates/loctel-mcp/tests/http.rs`: add the name to `EXPECTED_TOOLS`, and fix
      the counts that say nine (`serves_2025_11_25_clients_with_a_session`).
      `there_are_exactly_nine_read_only_tools` in `tools.rs` is the other one.
@@ -73,6 +82,15 @@ changes rules.
    -- -D warnings`, `cargo test --workspace`. Never skip or loosen a test.
 
 ## Things that go wrong
+
+- **A new field that is sometimes absent** needs `skip_serializing_if`, and for
+  a `Vec` also `#[serde(default)]`: schemars drops only an `Option`'s key from
+  the schema's `required` list, so without `default` every result fails its
+  output schema (`TraceSummaryDto::matched_span_ids` is the example).
+- **A query argument** (`query` on `search_traces` and `search_logs`) is parsed
+  once, as given: a blank one is no query, and a parse error is the tool error
+  `invalid TraceQL: at column N: ...` or `invalid LogQL: at column N: ...`. Do
+  not trim the text before parsing, or the column is wrong.
 
 - **A result must be an object, never a bare array.** MCP 2025-11-25 requires
   `outputSchema.type == "object"` and an object `structuredContent`, and the

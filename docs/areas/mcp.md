@@ -8,7 +8,8 @@ loopback. Design references: §3.2 (the agent flow), §8 (the server), §9.4
 
 Status: all nine tools, the `Origin` check, both protocol generations and the
 engine wiring are implemented and tested on Linux, including through a real
-rmcp client. That **Claude Code connects and answers "why did my last
+rmcp client. Milestone 2 added the `query` arguments (TraceQL and LogQL), the
+discard rules in `get_status` and the answer size budget. That **Claude Code connects and answers "why did my last
 request fail"** is **unverified** until the Milestone 1 check on a real Mac
 (design §10.4); Linux tests cannot run Claude Code.
 
@@ -33,36 +34,43 @@ There is no authentication, and none is needed: the server only listens on
 
 ## The tools
 
-All nine are read-only (no tool clears data, pauses receiving or touches
-rules) and say so in their annotations. Names, arguments and limits are fixed:
+All nine are read-only (no tool clears data, pauses receiving or changes
+rules: `get_status` only reports them) and say so in their annotations. Names, arguments and limits are fixed:
 agents depend on them. Every result carries `structuredContent` that matches
 the tool's output schema, plus the same JSON as text.
 
 | tool | arguments | returns |
 |---|---|---|
-| `get_status` | none | `{paused, listeners:[{name,address,state,error?}], spans_per_sec, logs_per_sec, traces_held, spans_held, logs_held}` |
+| `get_status` | none | `{paused, listeners:[{name,address,state,error?}], spans_per_sec, logs_per_sec, traces_held, spans_held, logs_held, rules:[RuleDto], rules_file_error, dropped_fraction}` |
 | `get_marker` | none | `{marker:"<unix nanos>", time:"<RFC 3339>"}` |
 | `list_services` | `since?` | `{services:[{name, requests, errors, error_rate, last_seen}]}` |
 | `get_service_map` | `since?` | `{nodes:[{id,kind,requests,errors}], edges:[{from,to,calls,errors}]}` |
-| `search_traces` | `since?, service?, errors_only?, min_duration_ms?, limit?=20 (max 100), cursor?` | `{traces:[TraceSummaryDto], next_cursor}` |
+| `search_traces` | `since?, service?, errors_only?, min_duration_ms?, query?, limit?=20 (max 100), cursor?` | `{traces:[TraceSummaryDto], next_cursor}` |
 | `recent_failures` | `since?, limit?=5 (max 20)` | `{failed:[{trace: TraceSummaryDto, failed_in_span: SpanBriefDto, exception?:{type,message,stacktrace}, error_logs:[LogDto]}], errors_inside:[TraceSummaryDto]}` |
 | `get_trace` | `trace_id, detail?="summary"\|"full", limit?=200 (max 2000), cursor?` | `{summary: TraceSummaryDto, spans:[SpanBriefDto], omitted, next_cursor}` |
 | `get_span` | `trace_id, span_id` | `{span:{all fields, attributes, events, resource, exception?}, logs:[LogDto]}` |
-| `search_logs` | `since?, service?, min_level?, contains?, trace_id?, limit?=50 (max 500), cursor?` | `{logs:[LogDto], next_cursor}` |
+| `search_logs` | `since?, service?, min_level?, contains?, trace_id?, query?, limit?=50 (max 500), cursor?` | `{logs:[LogDto], next_cursor}` |
 
 The DTOs (`src/dto.rs`):
 
 - **`TraceSummaryDto`:** `trace_id, root_name, root_service, start, duration_ms,
   span_count, services, status ("ok"|"errors_inside"|"failed"),
   failed_in?:{service, span_name, peer?, span_id, more},
-  first_exception?:{type,message}, complete`. `root_name` and `root_service`
-  are `null` until the root span arrives. `failed_in` is present unless the
-  status is `ok`, and `more` is the "+N more" of §9.4.
+  first_exception?:{type,message}, complete, matched_span_ids?`. `root_name`
+  and `root_service` are `null` until the root span arrives. `failed_in` is
+  present unless the status is `ok`, and `more` is the "+N more" of §9.4.
+  `matched_span_ids` (span IDs, at most 20) is there only in a `search_traces`
+  answer to a `query`, and lists the spans the query matched in that trace.
 - **`SpanBriefDto`:** `span_id, parent_span_id?, name, service, kind,
   start_offset_ms, duration_ms, status, exception_type?`. Offsets count from
   the start of the trace.
 - **`LogDto`:** `time, level, service, message, trace_id?, span_id?`. `level` is
   `unknown`, `trace`, `debug`, `info`, `warn`, `error` or `fatal`.
+- **`StatusDto`** (`get_status`) has, besides the listeners, rates and counts of
+  M1, the discard rules (see "Rules in `get_status`" below): `rules`,
+  `rules_file_error` and `dropped_fraction`.
+- **`RuleDto`:** `name, language ("traceql"|"logql"), scope? ("trace"|"span"),
+  enabled, error?, dropped_spans, dropped_logs, dropped_traces`.
 
 ### Conventions
 
@@ -98,9 +106,90 @@ completeness is judged by, which is why tests can control it.
 `list_services` and `get_service_map` take `since` as the start of their
 window; with none, the window is everything stored.
 
+### `query`
+
+`search_traces` takes a TraceQL `query` and `search_logs` a LogQL one, written as
+in Grafana Tempo and Loki, so a query copied from Grafana works unchanged. The
+languages, the subset loctel supports and the reasons are in
+[`query.md`](query.md). What an agent needs to know:
+
+```jsonc
+// search_traces: the spans named "POST /charges" that have an ancestor from web-bff
+{ "query": "{ resource.service.name = \"web-bff\" } >> { name = \"POST /charges\" }" }
+// search_logs: payments-api errors that mention "declined"
+{ "query": "{service_name=\"payments-api\"} |= \"declined\" | level = \"error\"" }
+```
+
+- **The query is one more filter.** It is parsed once, and a trace or log is
+  kept only if the query matches and `since`, `service`, `errors_only`,
+  `min_duration_ms`, `min_level`, `contains` and `trace_id` all hold. Paging
+  (`limit`, `cursor`) works as without a query.
+- **`matched_span_ids`.** A trace the TraceQL query matches lists the spans it
+  matched (the first 20, in the order the trace holds its spans), so
+  `get_span` can go straight to them. For a query with a pipeline (`| count() >
+  3`) they are the spans the pipeline returned. Without a `query` the key is
+  absent.
+- **Regexes.** TraceQL `=~` and `!~` and LogQL label matchers are anchored (`{
+  name =~ "POST" }` does not match `POST /charges`); LogQL line filters (`|~`,
+  `!~` on the line) are not (`|~ "attempt"` matches inside a line).
+- **Log labels** are the resource and log attributes with every character
+  outside `[A-Za-z0-9_]` turned into `_` (`service.name` is `service_name`),
+  plus `level` (`trace`, `debug`, `info`, `warn`, `error`, `fatal` or
+  `unknown`), `scope_name`, `trace_id` and `span_id`.
+- **A blank query** (`""`, or only white space) is no query, as a blank `service`
+  or `cursor` is: some agents send `""` for "not given".
+- **A query that does not parse is a tool error** (`isError: true`, no
+  `structuredContent`) with the parser's text and the column counted from 1:
+  `invalid TraceQL: at column 22: select is not supported yet` or
+  `invalid LogQL: at column 22: line_format is not supported yet`. Syntax that
+  Grafana has and loctel does not (`select()`, `by()`, metrics functions,
+  `line_format`, `label_format`, metric queries) is always such an error, never
+  a result that quietly differs from Grafana's.
+- **No match is not an error**: a type mismatch (`{ span.http.response.status_code
+  = "500" }` against an int) or an attribute the span lacks gives no match, as
+  in Tempo.
+
+### Rules in `get_status`
+
+`get_status` shows the discard rules (design §7), read-only: an agent can see
+what loctel is discarding, never change it.
+
+- **`rules`** lists every rule in file order, enabled or not, each as a
+  `RuleDto`: `name`, `language`, `scope` (`trace` drops the whole trace, `span`
+  only the matched spans and their descendants; only for `traceql`, a `logql`
+  rule has none), `enabled`, `error` (why the query does not parse, with its
+  column; present only then, and a rule with an error does nothing) and what it
+  has dropped since launch: `dropped_spans`, `dropped_logs` and
+  `dropped_traces`. The list is empty when there are no rules: loctel never
+  decides what to discard (decision 0016). It is not capped, since it is what
+  the user wrote.
+- **`rules_file_error`** is `null`, or why `rules.toml` could not be used the
+  last time it was read (bad TOML). While it is set, `rules` shows the last
+  good ones.
+- **`dropped_fraction`** is the spans and logs the rules dropped divided by
+  those dropped plus those accepted, since launch: 0 to 1, 0 when nothing has
+  arrived. Data dropped because receiving is paused is in neither.
+- A rule's name and error text and `rules_file_error` are cut at 2,000
+  characters like any message.
+
 ### Sizing rules
 
 Answers stay small by default (design §8: well under about 8k tokens).
+
+- **Answer size budget.** The default answer of every tool, as text, is at most
+  `ANSWER_TEXT_BUDGET` (24,000 characters, about 6k tokens, under the 8k target)
+  on the fixtures of `tests/budget.rs`: the failing checkout, `HealthChecks{50}`
+  and a 10,000-span `HugeTrace`. The test calls each tool with default arguments
+  (and, for `get_trace` and `get_span`, the trace and the failed-in span of the
+  fixture) and fails when one grows past it. The largest answer is `get_trace` on
+  the huge trace, 21.5k characters for its first page of 111 spans (the root, 10
+  children and 100 grandchildren), so its default `limit` stays 200: the page
+  holds fewer spans than that. A trace with many more spans at depth 2 or less,
+  or with long span names, can go over the budget: an agent that reads such a
+  trace lowers `limit` (the maximum stays 2000). If a change makes a default
+  bigger than the budget, lower that tool's default `limit` until the test
+  passes (and record the new default here and in a decision file); never raise
+  the budget.
 
 - Limits are clamped, never rejected: a `limit` above the cap gets the cap, and
   0 gets 1. An empty `cursor` means the first page.
@@ -146,6 +235,9 @@ as the only text, with no `structuredContent`. The texts an agent can rely on:
 - `failed to deserialize parameters: ...` for arguments that do not fit (a
   missing required one, an unknown one, the wrong type, an unknown `min_level`).
 - `invalid cursor: ...` and `this cursor belongs to detail=...` from `get_trace`.
+- `invalid TraceQL: at column N: ...` from `search_traces` and
+  `invalid LogQL: at column N: ...` from `search_logs`, for a `query` that does
+  not parse (see "`query`").
 
 ## Protocol and transport
 
@@ -179,7 +271,7 @@ let (listener, shutdown) = loctel_mcp::serve(addr, store, status_source).await;
 
 - `trait StatusSource: Send + Sync + 'static { fn status(&self) -> StatusDto; }`
   is implemented by the engine, which is the only thing that knows whether
-  receiving is paused and the rates. The engine reads the same state for
+  receiving is paused, the rates and the discard rules. The engine reads the same state for
   `EngineHandle::status()`, so the UI and `get_status` cannot disagree.
 - `LoctelTools::new(store, status)` is the tool set. `call(name, args)` runs a
   tool without a connection and returns the rmcp `CallToolResult` (this is how
@@ -187,6 +279,8 @@ let (listener, shutdown) = loctel_mcp::serve(addr, store, status_source).await;
   them. `dispatch` in `src/tools.rs` routes by name and must list every
   `#[tool]` method (a test fails if one is missing).
 - `parse_since(&str) -> Result<u64, SinceError>` is the `since` rule.
+- `ANSWER_TEXT_BUDGET` is the size budget above (24,000), which `tests/budget.rs`
+  holds every default answer to.
 - `src/trace_view.rs` is how `get_trace` chooses and pages spans.
 
 To add a tool, follow `.claude/skills/add-mcp-tool/SKILL.md`.
@@ -197,21 +291,30 @@ To add a tool, follow `.claude/skills/add-mcp-tool/SKILL.md`.
   from `loctel-meshgen` through the real converter, with a manual clock moved
   past the quiet period. Every successful result is validated against its
   tool's output schema.
+- `crates/loctel-mcp/tests/budget.rs`: every tool's default answer fits
+  `ANSWER_TEXT_BUDGET` on the checkout, the health checks and a huge trace.
 - `crates/loctel-mcp/tests/http.rs`: a real rmcp client over HTTP, both
   protocol generations, the `Origin` and `Host` checks, shutdown, a taken port.
 - `crates/loctel-engine/tests/engine.rs`: the `mcp` listener, `mcp_url()`, and
   an rmcp client reading `get_status` and the stored traces through the engine.
+  `tests/rules.rs` there reads the rules, the file error and the dropped
+  fraction from `get_status` the same way.
 - `crates/loctel-app/tests/headless.rs`: the `mcp` line on stdout and a request
   to the printed address.
 - `crates/loctel-e2e/tests/`: the tools through real OTLP, as an agent calls
   them: `recent_failures` after a failing checkout over each transport, the
   marker flow (`get_marker`, then `since`), `get_trace` on a late-assembled
-  trace, `get_service_map`, `search_traces` and `get_status` under pause. See
-  [`testing.md`](testing.md).
+  trace, `get_service_map`, `search_traces` and `get_status` under pause, and
+  from Milestone 2 the `query` arguments (`tests/query.rs`: a structural TraceQL
+  query finding the failing checkout and its matched spans, LogQL, and the tool
+  errors for queries that do not parse) and the rules in `get_status` after a
+  `rules.toml` edit (`tests/rules.rs`). See [`testing.md`](testing.md).
 - Unit tests in `src/since.rs`, `src/origin.rs`, `src/dto.rs` and
   `src/trace_view.rs`.
 
 ## Not yet
 
-- `query` arguments (TraceQL for traces, LogQL for logs) and the active rules
-  with their drop counts in `get_status` come with Milestone 2.
+- That Claude Code itself can use the `query` arguments is **unverified** until
+  a real Mac runs it (items 5 and 6 of the Milestone 2 Mac checklist). The tools
+  are checked over real OTLP and a real MCP client in `crates/loctel-e2e`, which
+  speaks the same protocol but is not Claude Code.

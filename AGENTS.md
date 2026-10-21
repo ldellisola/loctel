@@ -20,10 +20,12 @@ in [`docs/milestones/roadmap.md`](docs/milestones/roadmap.md).
 
 ## Crate map
 
-A Cargo workspace (`crates/*` plus `xtask`). The core (model, store, ingest,
-MCP, engine) has no UI or graphics dependency and builds and tests on Linux
-alone. The GPUI layer is thin. macOS-only code lives in its own small crate.
-Which crates exist today, what each owns and how data flows between them:
+A Cargo workspace (`crates/*` plus `xtask`). The core (model, store, query,
+rules, ingest, MCP, engine) has no UI or graphics dependency and builds and
+tests on Linux alone. `loctel-query` holds the TraceQL and LogQL parsers and
+evaluators and `loctel-rules` the discard rules that use them at ingest. The
+GPUI layer is thin. macOS-only code lives in its own small crate. Which crates
+exist today, what each owns and how data flows between them:
 [`docs/architecture.md`](docs/architecture.md).
 
 ## Commands
@@ -34,7 +36,7 @@ All from the repository root. The sections below say what each one is for.
 |---|---|
 | set up a Linux machine (once; idempotent) | `bash script/setup-linux.sh` |
 | run the quality gate | `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` |
-| run loctel with no window | `cargo run -p loctel-app -- --headless --grpc-port 0 --http-port 0 --mcp-port 0 --settings /tmp/loctel-settings.toml` |
+| run loctel with no window | `cargo run -p loctel-app -- --headless --grpc-port 0 --http-port 0 --mcp-port 0 --settings /tmp/loctel-settings.toml --rules /tmp/loctel-rules.toml` |
 | send it fake traffic (meshgen) | `cargo run -p loctel-meshgen -- --scenario checkout-failure --transport http-json --endpoint http://127.0.0.1:4318` |
 | see the real window | `cargo xtask run-shot`, then open `target/run-shot.png` |
 | rewrite the screenshot references | `cargo xtask screenshots --update` (view every changed PNG) |
@@ -65,13 +67,16 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-Run the app headless (no window; prints one JSON line per listener and runs
-until SIGINT or SIGTERM). Port 0 picks a free port, and the lines say which.
-Point `--settings` at a scratch file so you never touch the real one:
+Run the app headless (no window; prints one JSON line per listener and one for
+the discard rules, and runs until SIGINT or SIGTERM). Port 0 picks a free port,
+and the lines say which. Point `--settings` and `--rules` at scratch files so you
+never touch the real ones (`--rules` defaults to `rules.toml` beside the settings
+file, and a new rules file holds no rules: nothing is discarded unless you write
+a rule, see [`docs/areas/rules.md`](docs/areas/rules.md)):
 
 ```bash
 cargo run -p loctel-app -- --headless --grpc-port 0 --http-port 0 --mcp-port 0 \
-  --settings /tmp/loctel-settings.toml
+  --settings /tmp/loctel-settings.toml --rules /tmp/loctel-rules.toml
 ```
 
 The run also serves MCP (the `mcp` line it prints has the address; the default
@@ -101,7 +106,7 @@ base URL); `--repeat N --interval-ms M` sends it again and again with fresh IDs
 scenarios. `cargo run -p loctel-meshgen -- --help` has them all.
 
 See the app, and the screenshot tests. Without `--headless`, Linux opens the
-status window and prints the same listener lines (with no display it says so
+status window and prints the same startup lines (with no display it says so
 and runs headless), so the real window runs under Xvfb. The first command
 writes `target/run-shot.png`; open it with the Read tool. The screenshot tests
 run with the rest of `cargo test --workspace`; the second command rewrites
@@ -148,6 +153,7 @@ that matches before you start:
 | `run-and-screenshot` | you need to see loctel run: headless with meshgen data, or the real window under Xvfb with a PNG |
 | `update-screenshots` | a view's pixels change on purpose, you add a screenshot test, or one fails locally or in CI |
 | `add-mcp-tool` | an agent-facing capability changes: a new tool, argument or result field |
+| `add-query-feature` | TraceQL or LogQL gains syntax or semantics, a feature leaves the "not supported yet" list, or a query pasted from Grafana behaves differently from Grafana |
 | `investigate-ci` | CI is red (the gate on a PR, a screenshot diff, or the release job after a merge): find the failing step, reproduce it, fix the cause |
 
 ## How a change ships

@@ -20,5 +20,10 @@ reqwest.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 
+[dev-dependencies]
+# The tests of the discard rules write their `rules.toml` in a directory of
+# their own.
+tempfile.workspace = true
+
 [lints]
 workspace = true

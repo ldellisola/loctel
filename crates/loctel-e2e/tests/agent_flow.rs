@@ -64,8 +64,9 @@ async fn agent_flow_since_marker() {
 
 #[tokio::test]
 async fn health_checks_are_visible() {
-    // Until the discard rules of Milestone 2 exist, health checks are simply
-    // stored, among the real traffic.
+    // loctel has no default discard rules (decision 0016): a harness started
+    // without a rules file stores health checks, among the real traffic. The
+    // rule that silences them is in `tests/rules.rs`.
     let harness = Harness::start(Duration::from_millis(200));
     harness
         .send(

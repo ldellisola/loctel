@@ -1,0 +1,20 @@
+[package]
+name = "loctel-query"
+description = "Query languages for loctel: TraceQL and LogQL lexers, parsers and evaluators (pure, depends only on loctel-model)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+loctel-model.workspace = true
+regex.workspace = true
+
+# The evaluator tests (Task 2 onward) build real traces with the fake mesh,
+# converted by the real OTLP conversion code.
+[dev-dependencies]
+loctel-meshgen.workspace = true
+loctel-ingest.workspace = true
+
+[lints]
+workspace = true

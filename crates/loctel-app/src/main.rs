@@ -1,15 +1,16 @@
 //! The `loctel` binary.
 //!
 //! Headless mode (`--headless`) serves OTLP with no window, prints one JSON
-//! line per listener and runs until SIGINT or SIGTERM.
+//! line per listener and one for the discard rules, and runs until SIGINT or
+//! SIGTERM.
 //!
 //! Without `--headless` on macOS it is the product: a menu bar item and no
 //! window, no Dock icon (`loctel_macos::install`), running until the menu's
-//! Quit. It prints the same listener lines as headless mode.
+//! Quit. It prints the same startup lines as headless mode.
 //!
 //! Without `--headless` on Linux it opens one window with the status view
 //! (`loctel_ui::StatusView`), refreshed every second, and prints the same
-//! listener lines; closing the window quits. With no display to open it on, it
+//! startup lines; closing the window quits. With no display to open it on, it
 //! says so and runs headless instead. That window is a development aid.
 //!
 //! On any other OS, running without `--headless` is the same as running with
@@ -18,12 +19,13 @@
 mod cli;
 
 use std::io::{self, Write};
+use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::Context as _;
 use clap::Parser as _;
 use cli::Cli;
-use loctel_engine::{Engine, EngineConfig, ListenerState, ListenerStatus, Settings};
+use loctel_engine::{Engine, EngineConfig, EngineHandle, ListenerState, ListenerStatus, Settings};
 use serde::Serialize;
 use tokio::runtime::Runtime;
 use tokio::signal::unix::{Signal, SignalKind, signal};
@@ -83,7 +85,7 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
     // the handlers exist would kill the process instead of stopping it.
     let signals = ShutdownSignals::install()?;
     let engine = Engine::start(cli.engine_config(settings))?;
-    print_listeners(&engine.status().listeners)?;
+    print_startup(&engine)?;
 
     signals.wait();
     engine.shutdown();
@@ -99,7 +101,7 @@ fn run_menu_bar(config: EngineConfig, settings_path: std::path::PathBuf) -> anyh
     use gpui::{ActivationPolicy, QuitMode};
 
     let engine = Engine::start(config)?;
-    print_listeners(&engine.status().listeners)?;
+    print_startup(&engine)?;
 
     gpui_platform::application()
         .with_quit_mode(QuitMode::Explicit)
@@ -134,7 +136,7 @@ fn run_window(config: EngineConfig) -> anyhow::Result<()> {
     use std::rc::Rc;
 
     let engine = Engine::start(config)?;
-    print_listeners(&engine.status().listeners)?;
+    print_startup(&engine)?;
 
     let failure: Rc<RefCell<Option<anyhow::Error>>> = Rc::new(RefCell::new(None));
     gpui_platform::application().run({
@@ -198,11 +200,44 @@ fn listener_line(listener: &ListenerStatus) -> String {
     serde_json::to_string(&line).expect("a listener line is always valid JSON")
 }
 
-fn print_listeners(listeners: &[ListenerStatus]) -> anyhow::Result<()> {
+/// The discard rules as the one JSON line printed for them, after the listener
+/// lines. Field order is the order of the line.
+#[derive(Serialize)]
+struct RulesLine<'a> {
+    event: &'static str,
+    /// Where the rules file is, `null` when the rules live in memory only
+    /// (the app always has a path).
+    path: Option<String>,
+    /// How many rules there are, enabled or not.
+    count: usize,
+    /// Why the rules file could not be used, `null` when it could.
+    error: Option<&'a str>,
+}
+
+fn rules_line(path: Option<&Path>, count: usize, error: Option<&str>) -> String {
+    let line = RulesLine {
+        event: "rules",
+        path: path.map(|path| path.to_string_lossy().into_owned()),
+        count,
+        error,
+    };
+    serde_json::to_string(&line).expect("a rules line is always valid JSON")
+}
+
+/// What stdout carries once the engine is up: a line per listener, then the
+/// rules line.
+fn print_startup(engine: &EngineHandle) -> anyhow::Result<()> {
+    let status = engine.status();
     let mut stdout = io::stdout().lock();
-    for listener in listeners {
+    for listener in &status.listeners {
         writeln!(stdout, "{}", listener_line(listener)).context("cannot write to stdout")?;
     }
+    let rules = rules_line(
+        engine.rules_path().as_deref(),
+        status.rules.len(),
+        status.rules_file_error.as_deref(),
+    );
+    writeln!(stdout, "{rules}").context("cannot write to stdout")?;
     stdout.flush().context("cannot write to stdout")
 }
 
@@ -247,6 +282,7 @@ impl ShutdownSignals {
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;
+    use std::path::Path;
 
     use super::*;
 
@@ -267,6 +303,34 @@ mod tests {
         assert_eq!(
             line,
             r#"{"event":"listener","name":"otlp-grpc","state":"listening","address":"127.0.0.1:4317"}"#
+        );
+    }
+
+    #[test]
+    fn rules_line_has_the_documented_shape() {
+        let line = rules_line(Some(Path::new("/tmp/loctel/rules.toml")), 2, None);
+        assert_eq!(
+            line,
+            r#"{"event":"rules","path":"/tmp/loctel/rules.toml","count":2,"error":null}"#
+        );
+    }
+
+    #[test]
+    fn rules_line_carries_the_file_error_on_one_line() {
+        let line = rules_line(
+            Some(Path::new("/tmp/r.toml")),
+            0,
+            Some("invalid rules in \"r.toml\" (line 3)"),
+        );
+        assert_eq!(
+            line,
+            r#"{"event":"rules","path":"/tmp/r.toml","count":0,"error":"invalid rules in \"r.toml\" (line 3)"}"#
+        );
+        assert!(!line.contains('\n'));
+        // Rules that live in memory only have no path.
+        assert_eq!(
+            rules_line(None, 0, None),
+            r#"{"event":"rules","path":null,"count":0,"error":null}"#
         );
     }
 

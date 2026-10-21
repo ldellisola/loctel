@@ -88,6 +88,9 @@ pub fn sample_status() -> StatusDto {
         traces_held: 4,
         spans_held: 60,
         logs_held: 28,
+        rules: Vec::new(),
+        rules_file_error: None,
+        dropped_fraction: 0.0,
     }
 }
 

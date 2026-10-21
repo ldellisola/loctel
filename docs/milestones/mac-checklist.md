@@ -1,3 +1,12 @@
+Each section below is one milestone whose Mac side nobody has confirmed yet;
+a section leaves this list once you have. Do Milestone 1 first: Milestone 2
+builds on a loctel that is installed and that Claude Code is connected to
+(Milestone 1, items 1 and 5). This release is Milestone 2's, so its menu has
+two more rows than Milestone 1, item 2 lists (the rules row and **Edit discard
+rules…**, see Milestone 2, item 1): that is not a difference to report.
+
+### Milestone 1
+
 This is Milestone 1: the headless core, MCP, the menu bar app and the release
 pipeline. Nobody has seen any of the Mac side run, so this list is the first
 look. Try each item on a real Mac (macOS 26, Apple Silicon), compare with what
@@ -63,3 +72,67 @@ and fixes what is wrong. Small oddities are worth reporting.
    *Right:* the icon disappears and the process is gone (`pgrep -x loctel`
    prints nothing). The ports are free again: `lsof -nP -iTCP:4317 -iTCP:4318
    -iTCP:4319 -sTCP:LISTEN` prints nothing.
+
+### Milestone 2
+
+This is Milestone 2: TraceQL and LogQL search for agents, and discard rules
+that drop noise (health checks, say) as it arrives. The search runs the same
+on Linux; what nobody has seen is the new menu (the rules line and
+**Edit discard rules…**) and Claude Code using the new `query` arguments.
+loctel never discards anything you did not ask it to: its rules file starts
+with no rules. The file is `~/Library/Application Support/loctel/rules.toml`
+(its folder is next to `settings.toml`). Report what you see, and say which
+item it is.
+
+1. **The rules line and the rules file.** Click the menu bar icon.
+   *Right:* under the status row there is a second greyed-out row reading
+   `No discard rules on`, and the order is: status row, rules row, `Copy MCP
+   address`, `Pause receiving`, `Edit discard rules…`, a line, `Start at
+   login`, a line, `Quit loctel`. Choose **Edit discard rules…**:
+   `rules.toml` opens in a text editor (which one is macOS's choice; say which
+   it was). It holds no rules, only an explanation of the format and a
+   health-check rule shown as a comment (every line starting with `# `).
+2. **A rule that silences health checks.** In `rules.toml`, write your own rule,
+   or take the commented-out example, remove the `# ` from its six lines, adjust
+   its paths if your service names its health route differently, and save.
+   *Right:* within about 5 seconds the rules row reads
+   `1 discard rule on · 0% dropped` (open the menu again if it is already open).
+   Now send health checks: from your service, or from a checkout of this
+   repository, `cargo run -p loctel-meshgen -- --scenario health-checks
+   --transport http-json --endpoint http://127.0.0.1:4318`. Ask Claude, in a
+   session connected to loctel (Milestone 1, item 5), to list the recent traces
+   through loctel. *Right:* no `/health` trace is listed, other traffic still
+   is, and the rules row shows a non-zero percentage. The percentage counts
+   everything since loctel started, so traffic from earlier checks (such as
+   Milestone 1's) keeps it below 100%, and with a busy service of your own it
+   can still round to 0% if health checks are rare.
+3. **Turning the rule off.** Set `enabled = false` in the rule and save.
+   *Right:* within about 5 seconds the rules row reads `No discard rules on`,
+   and the health checks sent from now on appear when you ask Claude for recent
+   traces again (the ones dropped earlier stay gone: dropped data is not kept).
+   Set `enabled = true` and save to turn it on again.
+4. **A mistake in the file.** Break the query: remove one of the double quotes
+   inside it, and save. *Right:* the rules row reads
+   `1 discard rule on · 1 has an error`, the rule drops nothing, and nothing
+   crashes or closes. Fix the quote and save: the row is back to
+   `1 discard rule on · 0% dropped` (or the percentage). Then break the file
+   itself instead (remove the single quote that ends the `query` line): the row
+   reads `Discard rules file has an error`, and loctel keeps applying the
+   rules it had before the mistake. Fix it again and the row recovers.
+5. **A TraceQL query from Grafana.** Ask Claude to run, through loctel, a query
+   you use in Tempo, such as
+   `{ resource.service.name = "<yours>" } >> { status = error }`.
+   *Right:* Claude passes it as the `query` of `search_traces`, and the traces
+   it lists make sense: they contain an erroring span below a span of your
+   service, and the answer names the spans that matched. (No service handy?
+   Send the fake checkout first, with the command in Milestone 1, item 3 and
+   without `--repeat`, and use `web-bff` as the service: Claude should find the
+   failed checkout and its erroring spans in `payments-api`.) Ask for one that
+   loctel does not support, such as one ending in `| select(span.foo)`: Claude
+   reports an error that says it is not supported yet, and where in the query.
+6. **A LogQL query.** Ask Claude for logs with a LogQL query, such as
+   `{service_name="<yours>"} | level = "error"`.
+   *Right:* it passes it as the `query` of `search_logs`, and the logs listed
+   are your service's errors and nothing else. (With the fake checkout:
+   `{service_name="payments-api"} | level = "error"` gives two logs, the card
+   gateway timeout and the charge failure.)

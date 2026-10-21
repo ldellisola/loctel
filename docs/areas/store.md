@@ -4,7 +4,8 @@ The in-memory store behind loctel. It takes spans in any order from any
 service, assembles them into traces, says when a trace has gone quiet, and
 evicts the oldest trace whole when it holds too many. It also holds log
 records, linked to spans by ID, and works out the service map and the services
-list from the traces. Design references: §4 (order and lateness, completeness,
+list from the traces, filters both by TraceQL and LogQL queries, and can
+remove traces, spans and their logs again (for the discard rules). Design references: §4 (order and lateness, completeness,
 logs), §5 (storage, eviction, clear all), §9.2 (the map) and §9.4 (what
 "failed" means).
 
@@ -14,7 +15,9 @@ keep callers away from anything else.
 
 Status: trace assembly, completeness, dedup, eviction, failure
 classification, trace summaries, trace search, logs, the service map and the
-services list are implemented.
+services list are implemented. So are (Milestone 2) the TraceQL and LogQL query
+filters, matched spans, removal and the scans (see "Query filters", "Removal"
+and "Scans" below).
 
 ## API
 
@@ -33,6 +36,11 @@ let map = store.service_map(TimeWindow { since_unix_nano }); // ServiceMap
 let services = store.services(TimeWindow { since_unix_nano }); // Vec<ServiceStats>
 let stats = store.stats();               // StoreStats
 let now = store.now_unix_nano();         // the store's clock, for markers
+let removed = store.remove_trace(trace_id);               // Removed { spans, logs }
+let removed = store.remove_spans(trace_id, &[span_id]);   // Removed { spans, logs }
+let n = store.with_trace_spans(trace_id, |spans| spans.len()); // Option<R>, no copy
+store.scan_traces(since_unix_nano, |id, spans, status| { /* ... */ });
+store.scan_logs(since_unix_nano, |log| { /* ... */ });
 store.clear();
 ```
 
@@ -248,9 +256,11 @@ of every trace list. `search_traces` returns the same values.
 | `status`, `failed_in` | as in the snapshot |
 | `first_exception` | `trace_exception` of the trace |
 | `complete` | no new span for `completeness_quiet` |
+| `matched_span_ids` | the spans a TraceQL query matched (at most `MATCHED_SPANS_MAX`, 20); empty without a query. See "Query filters" |
 
 `TraceSummary` is `Serialize` (status as `snake_case`, IDs as hex), like the
-types it holds.
+types it holds. `matched_span_ids` is left out of the JSON when it is empty, so
+a summary that came with no query serializes exactly as it did before queries.
 
 ## Trace search
 
@@ -265,6 +275,10 @@ hold):
 | `service` | traces in which any span has that service (exact name) |
 | `errors_only` | `Failed` and `ErrorsInside` traces, per §9.4 |
 | `min_duration_nanos` | traces whose duration is at least it (inclusive) |
+| `query` | traces in which the TraceQL query matches at least one span (`Option<Arc<TraceQuery>>`; see "Query filters") |
+
+`TraceFilter` is `Clone + Debug + Default + PartialEq`, but not `Eq`: a query
+holds floats.
 
 Results are **newest first by trace start**; traces that start together go by
 trace ID, descending, so the order is total.
@@ -291,8 +305,8 @@ Paging is keyset-based:
 Cost: the cheap conditions (`since`, `min_duration`, the cursor) use the trace
 start and duration that each entry keeps up to date, so they need no pass over
 the spans. The survivors are sorted, and the remaining work (service
-membership, classification, the summary) is done newest first only until the
-page is full. The read lock is held for the call. M5 replaces this with an
+membership, the query, classification, the summary) is done newest first only
+until the page is full. The read lock is held for the call. M5 replaces this with an
 indexed segment store behind the same API.
 
 ## Logs
@@ -342,6 +356,10 @@ condition that is set must hold; the default keeps everything.
 | `contains` | logs whose **body** contains the text, ignoring case (Unicode lowercase folding). Attributes and service name are not searched. The empty text matches every log |
 | `trace_id` | logs emitted in that trace (with or without a span ID) |
 | `span_id` | logs emitted in a span with that ID, in any trace unless `trace_id` is set too |
+| `query` | logs the LogQL query matches (`Option<Arc<LogQuery>>`; see "Query filters") |
+
+`LogFilter` is `Clone + Debug + Default + PartialEq`, not `Eq`, like
+`TraceFilter`.
 
 Results are **newest first**: by log time, then by arrival (the later arrival
 first). Paging is a keyset, as for traces:
@@ -375,11 +393,104 @@ per-span index, so it costs the number of logs the span has.
 ### How logs are held
 
 A `BTreeMap` keyed by `(time, arrival number)`, a `HashSet` of the dedup keys
-of the held logs, and a per-span index of those keys (kept in time order). The
+of the held logs, and two indexes of those keys, each kept in time order: one
+per span (`logs_for_span`) and one per trace for every log that carries a trace
+ID, with or without a span ID (so a whole trace's logs can be removed without a
+pass over every log). Eviction takes the oldest log, which is at the front of
+both of its indexes; removal keeps them in step. The
 plan suggested a time-ordered `Vec` with an index of positions; positions go
 stale when a late log inserts in the middle, and evicting from the front of a
 `Vec` moves every record each time. The stable key avoids both. See
 [`decisions/0002-log-storage-structure.md`](../decisions/0002-log-storage-structure.md).
+
+## Query filters
+
+`TraceFilter::query` and `LogFilter::query` hold a parsed query behind an
+`Arc` (the caller parses once and shares it; the store never parses). Both are
+ordinary conditions: every other condition that is set must hold too, and
+paging, ordering and cursors are exactly as without a query. The query
+languages are in [`query.md`](query.md).
+
+- **TraceQL.** A trace matches when the query matches at least one of its
+  spans. The store builds a `TraceView` over the spans **as held** (arrival
+  order, no copy) and calls `TraceQuery::evaluate`, so structural operators,
+  `&&` and `||` between spansets, pipeline stages and the trace-level fields
+  (`rootName`, `traceDuration`, ...) all work, judged on the spans the trace
+  has now. The query runs after the cheap conditions and the service test and
+  before the summary is built, so a trace the query rejects costs no summary.
+- **`matched_span_ids`.** The summary of a matching trace lists the IDs of the
+  first `MATCHED_SPANS_MAX` (20) matched spans, **in `evaluate` order**: the
+  matched spans' positions in the held spans, ascending (arrival order, not
+  start order). A trace with 500 matches lists 20. It is empty when the filter
+  has no query, and `summary(id)` never fills it.
+- **LogQL.** A log matches when `LogQuery::matches` is true for it. The exact
+  `service_name="..."` of the selector (`LogQuery::service_hint`) is compared
+  first, so a log of another service is skipped without evaluating the query.
+  The scan order and the `since` cut-off are unchanged, so a query that matches
+  rarely scans every log newer than `since`, like `contains` or `service`.
+
+## Removal
+
+```rust
+store.remove_trace(trace_id)           // -> Removed { spans, logs }
+store.remove_spans(trace_id, &[a, b])  // -> Removed { spans, logs }
+```
+
+`Removed` is `Clone + Copy + Debug + Default + PartialEq + Eq` with `spans` and
+`logs`, the counts actually removed. The discard rules use these to drop stored
+data when a rule matches (the data is gone for good, design §7).
+
+- **`remove_trace`** removes the trace and **every held log that carries that
+  trace ID**, whether or not the log has a span ID. It costs the trace's spans
+  plus its logs, not the size of the store (a per-trace log index and a keyed
+  order of arrival make that so). A trace the store does not hold removes just
+  its logs (logs are stored independently of spans), and a trace with nothing
+  removes nothing (`Removed::default()`).
+- **`remove_spans`** removes those spans of one trace and **the logs emitted
+  in them** (the logs whose trace ID and span ID both match). A span ID the
+  trace does not hold is ignored for the span count, a span listed twice counts
+  once, and the logs of an ID are removed even when the span itself is not held
+  (logs and spans are stored independently, so the span may have been evicted
+  or may never have arrived). A log that names the trace but no span is not any
+  span's log and stays. The trace's start, duration, root and orphans follow
+  the spans that are left: the children of a removed span become orphans until
+  a span with that ID arrives again. Removing the **last span removes the
+  trace** (the trace entry only: its trace-level logs stay). It costs the
+  trace's spans, whatever `ids` holds.
+- **Counters.** `traces`, `spans` and `logs` held go down. `spans_received`
+  and `logs_received` do not change: they count what the store accepted, as
+  with eviction.
+- **Dedup forgets what was removed**, like eviction does: a retry of a removed
+  span or log is accepted as new. Keeping such a retry out is the rules layer's
+  job (its memory of dropped traces and spans).
+- **Order of arrival.** A removed trace leaves the order of first arrival
+  (eviction takes the oldest trace that is *held*), and one that comes back
+  later is the newest.
+
+## Scanning and reading in place
+
+For code that has to look at stored data without copying it (the rules, and the
+preview of a rule):
+
+- **`with_trace_spans(id, f) -> Option<R>`** runs `f` on the spans the store
+  holds for the trace, **in arrival order, not sorted, without copying**, and
+  returns what `f` returns. `None`, and `f` does not run, if the trace is not
+  held. Rules evaluate a whole-trace query over these spans followed by the
+  spans of the batch being filtered.
+- **`scan_traces(since, f)`** calls `f(trace_id, spans, status)` for every held
+  trace whose **start is at or after `since`** (inclusive), in the order the
+  traces first arrived, oldest first. `spans` are as for `with_trace_spans` and
+  `status` is `classify`'s answer for them now (so a failing trace is `Failed`
+  whatever the order the spans came in).
+- **`scan_logs(since, f)`** calls `f(&log)` for every held log whose time (the
+  log's timestamp, or its observed time when that is unset) is at or after
+  `since`, oldest first.
+
+All three run `f` **under the store's read lock**, so keep `f` short, and never
+call the store from inside it: a writer waiting behind the read lock the caller
+holds would deadlock the call. Copy what you need out and act after it returns
+(this is also how a rule removes what it found: collect the IDs in the scan,
+then `remove_trace`).
 
 ## Service map
 
@@ -487,7 +598,10 @@ counts as the map (a test holds the two equal) but skips the dependency work.
 - `fixtures.rs`: `span(...)`, `error(span)`, `with_kind`, `with_attr`,
   `with_exception`, `log(...)`, `with_severity`, `in_span`, `in_trace`,
   `tid(n)`, `sid(n)` and the `store_with_manual_clock()` builders every store
-  test file shares.
+  test file shares, plus `scenario_spans` and `scenario_logs` (the fake mesh's
+  data through the real OTLP conversion, which is why `loctel-meshgen` and
+  `loctel-ingest` are dev-dependencies; give each trace of a test its own seed,
+  because one seed gives every scenario the same IDs).
 - `assembly.rs`: the plan's Task 3 tests. `duplicate_span_is_ignored`
   (exporter retries) and `skewed_child_still_assembles` (clock skew) are the
   review-focus tests this crate owns.
@@ -500,6 +614,14 @@ counts as the map (a test holds the two equal) but skips the dependency work.
 - `search_traces.rs`: the plan's search tests plus paging corners (cursor
   format, equal starts, new traces between pages, garbage cursors) and the
   summary fields.
+- `query_filters.rs`: the plan's Task 4 query tests on the fake mesh
+  (CheckoutFailure and CheckoutSuccess, HugeTrace) plus structural queries,
+  paging past traces a query rejects, the exact cap of 20, combining a query
+  with each other condition (traces and logs), LogQL selectors with and without
+  a service hint, the JSON of `matched_span_ids` and filter equality.
+- `removal.rs`: `remove_trace`, `remove_spans`, the order-of-arrival and log
+  indexes after removal (eviction still works), dedup after removal,
+  `with_trace_spans`, `scan_traces` and `scan_logs`.
 - `logs.rs`: the plan's Task 5 log tests, plus paging (cursor, equal
   timestamps, filters while paging, garbage cursors), late arrivals, the
   observed-time fallback, each filter, the span link, eviction corners

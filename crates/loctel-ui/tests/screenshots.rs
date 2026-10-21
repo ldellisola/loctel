@@ -37,6 +37,10 @@ fn fixed_model() -> StatusModel {
         logs_per_sec: 1234.0,
         traces_held: 128,
         logs_held: 52_340,
+        rules_on: 2,
+        rules_with_errors: 0,
+        rules_file_error: false,
+        dropped_fraction: 0.31,
     }
 }
 
@@ -58,6 +62,10 @@ fn status_view_light_matches_snapshot() {
     model.paused = true;
     model.listeners[1].ok = true;
     model.listeners[1].error = None;
+    // The other readings of the rules line, in words: a rule that does not
+    // parse.
+    model.rules_on = 1;
+    model.rules_with_errors = 1;
     let image = render(model, Theme::light());
     assert_snapshot("status_view_light", &image);
 }

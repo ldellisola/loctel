@@ -3563,6 +3563,7 @@ dependencies = [
  "reqwest",
  "rmcp",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 
@@ -3574,8 +3575,12 @@ dependencies = [
  "dirs 7.0.0",
  "loctel-ingest",
  "loctel-mcp",
+ "loctel-meshgen",
  "loctel-model",
+ "loctel-query",
+ "loctel-rules",
  "loctel-store",
+ "parking_lot",
  "rmcp",
  "serde",
  "serde_json",
@@ -3627,6 +3632,7 @@ dependencies = [
  "loctel-ingest",
  "loctel-meshgen",
  "loctel-model",
+ "loctel-query",
  "loctel-store",
  "reqwest",
  "rmcp",
@@ -3667,10 +3673,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "loctel-query"
+version = "0.1.0"
+dependencies = [
+ "loctel-ingest",
+ "loctel-meshgen",
+ "loctel-model",
+ "regex",
+]
+
+[[package]]
+name = "loctel-rules"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dirs 7.0.0",
+ "loctel-ingest",
+ "loctel-meshgen",
+ "loctel-model",
+ "loctel-query",
+ "loctel-store",
+ "parking_lot",
+ "serde",
+ "tempfile",
+ "toml 1.1.8+spec-1.1.0",
+]
+
+[[package]]
 name = "loctel-store"
 version = "0.1.0"
 dependencies = [
+ "loctel-ingest",
+ "loctel-meshgen",
  "loctel-model",
+ "loctel-query",
  "parking_lot",
  "serde",
  "serde_json",

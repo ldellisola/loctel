@@ -2,12 +2,17 @@
 //! and the MCP tools show.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use loctel_model::{ExceptionInfo, SpanId, TraceId};
+use loctel_query::traceql::{TraceQuery, TraceView};
 use serde::Serialize;
 
 use crate::failure::{FailedIn, TraceStatus, classify, pick_exception};
 use crate::trace::{TraceEntry, root_span};
+
+/// The most spans a [`TraceSummary`] lists in `matched_span_ids`.
+pub const MATCHED_SPANS_MAX: usize = 20;
 
 /// A trace in one row.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -32,11 +37,17 @@ pub struct TraceSummary {
     pub first_exception: Option<ExceptionInfo>,
     /// No new span has arrived for `completeness_quiet`.
     pub complete: bool,
+    /// The spans a TraceQL query matched: the first [`MATCHED_SPANS_MAX`] (20)
+    /// of them, in the order the store holds the spans (the order of
+    /// [`TraceQuery::evaluate`]). Empty unless the summary came from a search
+    /// with a [`TraceFilter::query`]; left out of the JSON then.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub matched_span_ids: Vec<SpanId>,
 }
 
 /// What [`Store::search_traces`](crate::Store::search_traces) keeps. Every
 /// condition that is set must hold; the default keeps everything.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct TraceFilter {
     /// Keep traces that started at or after this time.
     pub since_unix_nano: Option<u64>,
@@ -46,6 +57,10 @@ pub struct TraceFilter {
     pub errors_only: bool,
     /// Keep traces lasting at least this long.
     pub min_duration_nanos: Option<u64>,
+    /// Keep traces in which this TraceQL query matches at least one span. It
+    /// is parsed once by the caller and shared, so a search never re-parses
+    /// it. The matched spans come back in `TraceSummary::matched_span_ids`.
+    pub query: Option<Arc<TraceQuery>>,
 }
 
 impl TraceEntry {
@@ -67,7 +82,25 @@ impl TraceEntry {
             failed_in,
             first_exception,
             complete,
+            matched_span_ids: Vec::new(),
         }
+    }
+
+    /// Runs `query` over the trace's spans, as held. `None` when it matches no
+    /// span, else the first [`MATCHED_SPANS_MAX`] matched spans' IDs.
+    pub(crate) fn matched_span_ids(&self, query: &TraceQuery) -> Option<Vec<SpanId>> {
+        let spans = self.spans();
+        let matched = query.evaluate(&TraceView::new(spans));
+        if matched.is_empty() {
+            return None;
+        }
+        Some(
+            matched
+                .into_iter()
+                .take(MATCHED_SPANS_MAX)
+                .map(|position| spans[position].span_id)
+                .collect(),
+        )
     }
 
     /// Whether any span belongs to `service`.

@@ -5,33 +5,45 @@
 //! server on a runtime of its own, and returns an [`EngineHandle`]: the one
 //! object the menu bar, the window and the headless binary hold. Through it
 //! they read the store, ask for a status snapshot, pause and resume receiving,
-//! find the MCP address and shut everything down. [`Settings`] is the
-//! `settings.toml` the ports and the disk cap come from.
+//! find the MCP address, read and change the discard rules and shut everything
+//! down. [`Settings`] is the `settings.toml` the ports and the disk cap come
+//! from; `rules.toml` holds the discard rules, which every batch the receivers
+//! accept goes through on its way to the store (design §7).
 //!
 //! The engine has no UI or graphics dependency, and its `start` needs no async
 //! `main`: it owns its threads. See `docs/architecture.md` ("Engine" and
 //! "Headless mode") for the data flow.
 
 mod rates;
+mod rules_watch;
 mod settings;
 mod sink;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use anyhow::{Context as _, bail};
 use loctel_ingest::{DEFAULT_MAX_MESSAGE_BYTES, IngestConfig, IngestServers};
-use loctel_mcp::{ListenerDto, McpShutdown, StatusDto, StatusSource};
+use loctel_mcp::{
+    ListenerDto, McpShutdown, RuleDto, RuleLanguageDto, RuleScopeDto, StatusDto, StatusSource,
+};
 use loctel_store::{Clock, SystemClock};
 use tokio::runtime::{Builder, Handle, Runtime};
 
 pub use loctel_ingest::{ListenerState, ListenerStatus};
+pub use loctel_query::QueryError;
+pub use loctel_rules::{
+    DropScope, PREVIEW_WINDOW, Preview, RuleId, RuleLanguage, RuleSpec, RuleStatus, RulesFile,
+};
 pub use loctel_store::{Store, StoreConfig, StoreStats};
 pub use rates::RateMeter;
+pub use rules_watch::RULES_POLL;
 pub use settings::Settings;
 
+use rules_watch::Rules;
 use sink::EngineSink;
 
 /// How long [`EngineHandle::shutdown`] waits for the engine's threads to
@@ -47,6 +59,13 @@ pub struct EngineConfig {
     /// Ports (and the rest of `settings.toml`).
     pub settings: Settings,
     pub store: StoreConfig,
+    /// Where `rules.toml` is. `Some(path)`: the engine writes a file with no
+    /// rules there if there is none, loads it, saves it when the rules change
+    /// through the handle and reloads it when it is edited (every
+    /// [`RULES_POLL`]). `None`: the rules live in memory only and start empty,
+    /// which is what tests want and what [`Default`] gives; the app passes
+    /// `Some`.
+    pub rules_path: Option<PathBuf>,
 }
 
 impl Default for EngineConfig {
@@ -55,6 +74,7 @@ impl Default for EngineConfig {
             bind_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
             settings: Settings::default(),
             store: StoreConfig::default(),
+            rules_path: None,
         }
     }
 }
@@ -72,6 +92,23 @@ pub struct EngineStatus {
     /// Log records accepted per second over the last 5 seconds.
     pub logs_per_sec: f64,
     pub stats: StoreStats,
+    /// Every discard rule, in file order, with its query error (if the query
+    /// does not parse) and what it has dropped.
+    pub rules: Vec<RuleStatus>,
+    /// Why `rules.toml` could not be used the last time it was read, or
+    /// `None`. While it is set the rules in force are the last good ones (none,
+    /// if the file was bad from the start).
+    pub rules_file_error: Option<String>,
+    /// Spans the rules have dropped since launch, whichever rule dropped them
+    /// (including rules since removed): the ones that never got into the store
+    /// and the ones the store held and lost when their trace was dropped.
+    pub dropped_spans: u64,
+    /// Log records the rules have dropped since launch, counted the same way.
+    pub dropped_logs: u64,
+    /// Dropped divided by dropped plus accepted, spans and logs together, since
+    /// launch: 0 when nothing has arrived. Items dropped while paused are in
+    /// neither.
+    pub dropped_fraction: f64,
 }
 
 /// Namespace for [`Engine::start`].
@@ -98,6 +135,7 @@ impl Engine {
             bind_ip,
             settings,
             store,
+            rules_path,
         } = config;
 
         let runtime = Builder::new_multi_thread()
@@ -111,6 +149,10 @@ impl Engine {
         let paused = Arc::new(AtomicBool::new(false));
         let span_rate = Arc::new(RateMeter::new());
         let log_rate = Arc::new(RateMeter::new());
+        let accepted = Arc::new(AtomicU64::new(0));
+        // A rules file that cannot be used is reported in the status, never an
+        // error here: the engine runs without rules.
+        let rules = Arc::new(Rules::open(rules_path, Arc::clone(&clock)));
 
         let sink = Arc::new(EngineSink {
             store: store.clone(),
@@ -118,6 +160,9 @@ impl Engine {
             clock: Arc::clone(&clock),
             span_rate: Arc::clone(&span_rate),
             log_rate: Arc::clone(&log_rate),
+            rules: Arc::clone(&rules),
+            accepted: Arc::clone(&accepted),
+            apply: parking_lot::Mutex::new(()),
         });
         let ingest_config = IngestConfig {
             grpc_addr: SocketAddr::new(bind_ip, settings.otlp_grpc_port),
@@ -136,6 +181,8 @@ impl Engine {
             clock,
             span_rate,
             log_rate,
+            rules: Arc::clone(&rules),
+            accepted,
             otlp: [ingest.grpc.clone(), ingest.http.clone()],
             mcp: OnceLock::new(),
         });
@@ -147,6 +194,11 @@ impl Engine {
             .mcp
             .set(mcp)
             .expect("the MCP status is set once, here");
+
+        // Edits to the rules file are picked up for as long as the engine runs.
+        if rules.path().is_some() {
+            runtime.spawn(rules_watch::watch(rules));
+        }
 
         Ok(EngineHandle {
             shared: Arc::new(Shared {
@@ -191,6 +243,10 @@ struct State {
     clock: Arc<dyn Clock>,
     span_rate: Arc<RateMeter>,
     log_rate: Arc<RateMeter>,
+    /// The discard rules and their file.
+    rules: Arc<Rules>,
+    /// Spans and logs the sink accepted (after the rules) since launch.
+    accepted: Arc<AtomicU64>,
     /// `otlp-grpc` and `otlp-http`.
     otlp: [ListenerStatus; 2],
     /// Set once, right after the MCP server has bound.
@@ -200,12 +256,21 @@ struct State {
 impl State {
     fn snapshot(&self) -> EngineStatus {
         let now = self.clock.now_unix_nano();
+        let dropped = self.rules.set().totals();
         EngineStatus {
             paused: self.paused.load(Ordering::Acquire),
             listeners: self.otlp.iter().chain(self.mcp.get()).cloned().collect(),
             spans_per_sec: self.span_rate.per_sec(now),
             logs_per_sec: self.log_rate.per_sec(now),
             stats: self.store.stats(),
+            rules: self.rules.set().statuses(),
+            rules_file_error: self.rules.error(),
+            dropped_spans: dropped.spans,
+            dropped_logs: dropped.logs,
+            dropped_fraction: dropped_fraction(
+                dropped.spans.saturating_add(dropped.logs),
+                self.accepted.load(Ordering::Relaxed),
+            ),
         }
     }
 
@@ -229,8 +294,46 @@ impl StatusSource for State {
             traces_held: status.stats.traces as u64,
             spans_held: status.stats.spans as u64,
             logs_held: status.stats.logs as u64,
+            rules: status.rules.iter().map(rule_dto).collect(),
+            rules_file_error: status.rules_file_error,
+            dropped_fraction: status.dropped_fraction,
         }
     }
+}
+
+/// A rule as the MCP status tells it. A LogQL rule has no scope: it only ever
+/// drops the log that matched.
+fn rule_dto(rule: &RuleStatus) -> RuleDto {
+    let spec = &rule.spec;
+    let (language, scope) = match spec.language {
+        RuleLanguage::TraceQl => (
+            RuleLanguageDto::TraceQl,
+            Some(match spec.scope {
+                DropScope::Trace => RuleScopeDto::Trace,
+                DropScope::Span => RuleScopeDto::Span,
+            }),
+        ),
+        RuleLanguage::LogQl => (RuleLanguageDto::LogQl, None),
+    };
+    RuleDto {
+        name: spec.name.clone(),
+        language,
+        scope,
+        enabled: spec.enabled,
+        error: rule.error.clone(),
+        dropped_spans: rule.dropped_spans,
+        dropped_logs: rule.dropped_logs,
+        dropped_traces: rule.dropped_traces,
+    }
+}
+
+/// `dropped / (dropped + accepted)`, or 0 when nothing has arrived.
+fn dropped_fraction(dropped: u64, accepted: u64) -> f64 {
+    if dropped == 0 {
+        return 0.0;
+    }
+    // Rounding above 2^53 items is irrelevant to a percentage.
+    dropped as f64 / (dropped as f64 + accepted as f64)
 }
 
 /// A listener as the MCP status tells it: where it listens, or where it was
@@ -273,6 +376,52 @@ impl EngineHandle {
 
     pub fn is_paused(&self) -> bool {
         self.shared.state.paused.load(Ordering::Acquire)
+    }
+
+    /// The discard rules, in file order, with their query errors and what
+    /// each has dropped. The same list as `status().rules`, without the rest of
+    /// the status.
+    pub fn rules(&self) -> Vec<RuleStatus> {
+        self.shared.state.rules.set().statuses()
+    }
+
+    /// Where `rules.toml` is, or `None` when the rules live in memory only.
+    pub fn rules_path(&self) -> Option<PathBuf> {
+        self.shared.state.rules.path()
+    }
+
+    /// Makes `specs` the rules, in that order, and saves `rules.toml` when
+    /// there is a path. A rule that is unchanged (same name, language, query and
+    /// scope) keeps its [`RuleId`] and its counters. A query that does not
+    /// parse is allowed and shows up as that rule's error in the status, so an
+    /// editor can save a draft. Turning a rule on affects data that arrives
+    /// from now on: what is stored stays (design §7).
+    ///
+    /// If the file cannot be written the error comes back and the rules do not
+    /// change.
+    pub fn set_rules(&self, specs: Vec<RuleSpec>) -> anyhow::Result<()> {
+        self.shared.state.rules.set_rules(specs)
+    }
+
+    /// Turns the rule `id` on or off and saves like [`set_rules`](Self::set_rules).
+    /// An `id` that is not in the list is an error.
+    pub fn set_rule_enabled(&self, id: RuleId, enabled: bool) -> anyhow::Result<()> {
+        self.shared.state.rules.set_rule_enabled(id, enabled)
+    }
+
+    /// What `spec` would have dropped of the data stored in the last
+    /// [`PREVIEW_WINDOW`] (5 minutes), ignoring every other rule and whether
+    /// `spec` is enabled. Nothing is changed. The error is the query's, with
+    /// its position.
+    pub fn preview_rule(&self, spec: &RuleSpec) -> Result<Preview, QueryError> {
+        let window = u64::try_from(PREVIEW_WINDOW.as_nanos()).unwrap_or(u64::MAX);
+        let since = self
+            .shared
+            .state
+            .clock
+            .now_unix_nano()
+            .saturating_sub(window);
+        loctel_rules::preview(spec, &self.shared.state.store, since)
     }
 
     /// Where agents reach the MCP server, `http://127.0.0.1:{port}/mcp` with

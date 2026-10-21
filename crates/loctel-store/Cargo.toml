@@ -1,6 +1,6 @@
 [package]
 name = "loctel-store"
-description = "In-memory store for loctel: trace assembly, completeness, dedup, eviction, failure semantics, trace search, logs, service map"
+description = "In-memory store for loctel: trace assembly, completeness, dedup, eviction, failure semantics, trace search (with TraceQL and LogQL filters), logs, removal and scans, service map"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,11 +8,18 @@ publish = false
 
 [dependencies]
 loctel-model.workspace = true
+loctel-query.workspace = true
 parking_lot.workspace = true
 serde.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+# The query and removal tests load the fixed fake-mesh scenarios (CheckoutFailure,
+# HugeTrace), converted by the real OTLP conversion code. meshgen itself has a
+# dev-dependency on this crate, which Cargo allows: dev-dependencies of a
+# dependency are never built.
+loctel-meshgen.workspace = true
+loctel-ingest.workspace = true
 
 [lints]
 workspace = true

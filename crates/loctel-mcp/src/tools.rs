@@ -12,6 +12,8 @@
 use std::sync::Arc;
 
 use loctel_model::{Severity, SpanId, TraceId};
+use loctel_query::logql::{self, LogQuery};
+use loctel_query::traceql::{self, TraceQuery};
 use loctel_store::{
     LogFilter, PageRequest, Store, TimeWindow, TraceFilter, TraceStatus, trace_exception,
 };
@@ -27,7 +29,7 @@ use serde_json::{Map, Value};
 use crate::dto::{
     ExceptionDto, FailureDto, GetSpanResult, GetTraceResult, LogDto, LogLevel, MarkerDto,
     RecentFailuresResult, SearchLogsResult, SearchTracesResult, ServiceDto, ServiceListDto,
-    ServiceMapDto, SpanBriefDto, SpanDetailDto, StatusDto, TraceSummaryDto, rfc3339,
+    ServiceMapDto, SpanBriefDto, SpanDetailDto, StatusDto, TraceSummaryDto, rfc3339, truncate,
 };
 use crate::since::parse_since;
 use crate::trace_view::{self, Detail};
@@ -42,6 +44,13 @@ pub trait StatusSource: Send + Sync + 'static {
 const TRACE_NOT_FOUND: &str = "trace not found";
 /// The text of the error for a span that is not in its trace.
 const SPAN_NOT_FOUND: &str = "span not found";
+
+/// The most characters of text a tool's default answer has, on the fixtures of
+/// `tests/budget.rs` (the failing checkout, 50 rounds of health checks and a
+/// 10,000-span trace): about 6k tokens, under the design's target of about 8k
+/// (section 8). The test fails when a default grows past it; lower the default
+/// `limit` of the tool that did, never this.
+pub const ANSWER_TEXT_BUDGET: usize = 24_000;
 
 // Defaults and caps (design section 8: small answers first).
 const TRACES_DEFAULT: usize = 20;
@@ -87,6 +96,16 @@ pub struct SearchTracesArgs {
     pub errors_only: Option<bool>,
     /// Only traces that lasted at least this many milliseconds.
     pub min_duration_ms: Option<f64>,
+    /// A TraceQL query, written as in Grafana Tempo: only traces in which it
+    /// matches at least one span, each listing those spans in
+    /// `matched_span_ids`. For example, the spans named POST /charges that have
+    /// an ancestor from the service web-bff:
+    /// `{ resource.service.name = "web-bff" } >> { name = "POST /charges" }`.
+    /// Regular expressions (`=~`, `!~`) are anchored, as in Tempo: `{ name =~
+    /// "POST" }` does not match `POST /charges`. Syntax loctel does not
+    /// support yet (select, by, metrics functions) is an error that names the
+    /// column. Combines with the other filters. Blank means no query.
+    pub query: Option<String>,
     /// Most traces to return. Default 20, at most 100.
     pub limit: Option<u32>,
     /// The next_cursor of the previous page.
@@ -145,6 +164,17 @@ pub struct SearchLogsArgs {
     pub contains: Option<String>,
     /// Only logs emitted in this trace: 32 hexadecimal characters.
     pub trace_id: Option<String>,
+    /// A LogQL query, written as in Grafana Loki: a stream selector and then
+    /// filters, such as
+    /// `{service_name="payments-api"} |= "declined" | level = "error"`. The
+    /// labels are the resource and log attributes with every character outside
+    /// `[A-Za-z0-9_]` turned into `_` (`service.name` is `service_name`), plus
+    /// `level` (trace, debug, info, warn, error, fatal or unknown),
+    /// `scope_name`, `trace_id` and `span_id`. Label matchers are anchored;
+    /// line filters (`|~`, `!~`) are not. Syntax loctel does not support yet
+    /// (line_format, label_format, metric queries) is an error that names the
+    /// column. Combines with the other filters. Blank means no query.
+    pub query: Option<String>,
     /// Most logs to return. Default 50, at most 500.
     pub limit: Option<u32>,
     /// The next_cursor of the previous page.
@@ -166,7 +196,9 @@ impl LoctelTools {
     #[tool(
         description = "Is loctel receiving? Whether receiving is paused, each endpoint (OTLP gRPC, \
             OTLP HTTP, MCP) with its address and any error, spans and logs received per second \
-            over the last 5 seconds, and how many traces, spans and logs are held.",
+            over the last 5 seconds, how many traces, spans and logs are held, and the discard \
+            rules (what each drops, and whether its query has an error), whether the rules file \
+            has an error, and the share of what arrived that the rules dropped.",
         annotations(
             title = "loctel status",
             read_only_hint = true,
@@ -176,7 +208,15 @@ impl LoctelTools {
         )
     )]
     fn get_status(&self) -> Result<Json<StatusDto>, String> {
-        Ok(Json(self.status.status()))
+        let mut status = self.status.status();
+        // The rules are the user's text, and the file error is a parser's:
+        // either can be long.
+        for rule in &mut status.rules {
+            rule.name = truncate(&rule.name);
+            rule.error = rule.error.as_deref().map(truncate);
+        }
+        status.rules_file_error = status.rules_file_error.as_deref().map(truncate);
+        Ok(Json(status))
     }
 
     #[tool(
@@ -246,7 +286,14 @@ impl LoctelTools {
         description = "Find traces, newest first, as one-row summaries: root span, services, \
             start, duration, span count, status (ok, errors_inside, failed), where it failed, and \
             the first exception. Filter by `since`, `service`, `errors_only` and \
-            `min_duration_ms`. Pages: `limit` (default 20, at most 100) and `cursor`.",
+            `min_duration_ms`, or search with a TraceQL `query`, with the syntax of Grafana Tempo, \
+            for example { resource.service.name = \"web-bff\" } >> { name = \"POST /charges\" } \
+            (the spans named POST /charges that have an ancestor from web-bff). Structural \
+            operators `>`, `<`, `>>`, `<<`, `~` and the spanset operators `&&` and `||` work, and \
+            so does `| count() > 3`. Regular expressions (`=~`, `!~`) are anchored, as in Tempo. \
+            Each trace the query matches lists the spans it matched in `matched_span_ids`. Syntax \
+            loctel does not support yet is an error with its column. Pages: `limit` (default 20, \
+            at most 100) and `cursor`.",
         annotations(
             title = "Search traces",
             read_only_hint = true,
@@ -265,6 +312,7 @@ impl LoctelTools {
             errors_only: args.errors_only.unwrap_or(false),
             // A float cast saturates, and a negative or missing number is 0.
             min_duration_nanos: args.min_duration_ms.map(|ms| (ms * 1_000_000.0) as u64),
+            query: traceql_query(args.query.as_deref())?,
         };
         let page = self.store.search_traces(
             &filter,
@@ -425,8 +473,13 @@ impl LoctelTools {
     #[tool(
         description = "Search log lines, newest first, with time, level, service, message and \
             the trace and span they belong to. Filter by `since`, `service`, `min_level`, \
-            `contains` (case-insensitive text) and `trace_id`. Pages: `limit` (default 50, at \
-            most 500) and `cursor`.",
+            `contains` (case-insensitive text) and `trace_id`, or search with a LogQL `query`, \
+            with the syntax of Grafana Loki, for example \
+            {service_name=\"payments-api\"} |= \"declined\" | level = \"error\" (labels are the \
+            resource and log attributes with `.` turned into `_`, plus `level`, `scope_name`, \
+            `trace_id` and `span_id`; label matchers are anchored, line filters are not). Syntax \
+            loctel does not support yet is an error with its column. Pages: `limit` (default 50, \
+            at most 500) and `cursor`.",
         annotations(
             title = "Search logs",
             read_only_hint = true,
@@ -446,6 +499,7 @@ impl LoctelTools {
             contains: args.contains,
             trace_id: args.trace_id.as_deref().map(parse_trace_id).transpose()?,
             span_id: None,
+            query: logql_query(args.query.as_deref())?,
         };
         let page = self.store.search_logs(
             &filter,
@@ -466,8 +520,10 @@ impl LoctelTools {
     instructions = "loctel receives the OpenTelemetry traces and logs of the services running on \
         this machine. It is read-only. To find out why a request failed, call recent_failures: it \
         names the span the request failed in, the exception and the error logs. To look at one \
-        request, call get_marker first, send the request, then pass the marker as `since`. Results \
-        are summaries; drill down with get_trace and get_span. Times are RFC 3339 in UTC."
+        request, call get_marker first, send the request, then pass the marker as `since`. \
+        search_traces and search_logs also take a `query`: TraceQL and LogQL, written as in \
+        Grafana Tempo and Loki. Results are summaries; drill down with get_trace and get_span. \
+        Times are RFC 3339 in UTC."
 )]
 impl ServerHandler for LoctelTools {}
 
@@ -613,6 +669,38 @@ fn cursor(cursor: Option<String>) -> Option<String> {
 fn since(since: Option<&str>) -> Result<Option<u64>, String> {
     since
         .map(|text| parse_since(text).map_err(|error| error.to_string()))
+        .transpose()
+}
+
+/// A blank `query` is no query: some agents send `""` for "not given", as
+/// they do for `cursor` and `service`.
+fn is_blank(query: &str) -> bool {
+    query.trim().is_empty()
+}
+
+/// The TraceQL `query` argument, parsed once for the store to share. The text
+/// is parsed as given, so the column an error names counts from the agent's
+/// own first character.
+fn traceql_query(query: Option<&str>) -> Result<Option<Arc<TraceQuery>>, String> {
+    query
+        .filter(|text| !is_blank(text))
+        .map(|text| {
+            traceql::parse(text)
+                .map(Arc::new)
+                .map_err(|error| format!("invalid TraceQL: {error}"))
+        })
+        .transpose()
+}
+
+/// The LogQL `query` argument, parsed once for the store to share.
+fn logql_query(query: Option<&str>) -> Result<Option<Arc<LogQuery>>, String> {
+    query
+        .filter(|text| !is_blank(text))
+        .map(|text| {
+            logql::parse(text)
+                .map(Arc::new)
+                .map_err(|error| format!("invalid LogQL: {error}"))
+        })
         .transpose()
 }
 

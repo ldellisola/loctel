@@ -21,8 +21,21 @@ struct Loctel {
 
 impl Loctel {
     /// Starts `loctel --headless` with `args`. The settings file is the one
-    /// given, which may not exist.
+    /// given, which may not exist. Unless `args` has a `--rules` of its own,
+    /// the rules file is `rules.toml` beside the settings file, so a run never
+    /// reads or writes the developer's real rules.
     fn spawn(settings: &Path, args: &[&str]) -> Loctel {
+        if args.contains(&"--rules") {
+            return Loctel::spawn_exactly(settings, args);
+        }
+        let rules = rules_path_beside(settings);
+        let mut all = vec!["--rules", rules.to_str().unwrap()];
+        all.extend_from_slice(args);
+        Loctel::spawn_exactly(settings, &all)
+    }
+
+    /// [`spawn`](Self::spawn) with `args` as given: no `--rules` is added.
+    fn spawn_exactly(settings: &Path, args: &[&str]) -> Loctel {
         let mut child = Command::new(env!("CARGO_BIN_EXE_loctel"))
             .arg("--headless")
             .arg("--settings")
@@ -90,6 +103,11 @@ impl Drop for Loctel {
 
 fn settings_path(dir: &tempfile::TempDir) -> PathBuf {
     dir.path().join("settings.toml")
+}
+
+/// `rules.toml` in the directory of `settings`.
+fn rules_path_beside(settings: &Path) -> PathBuf {
+    settings.with_file_name("rules.toml")
 }
 
 const PORTS_ZERO: [&str; 6] = ["--grpc-port", "0", "--http-port", "0", "--mcp-port", "0"];
@@ -326,6 +344,113 @@ fn headless_binary_answers_mcp_on_the_printed_address() {
         initialize,
     );
     assert!(refused.starts_with("HTTP/1.1 403"), "{refused}");
+}
+
+/// The line after the three listener lines.
+fn rules_line(loctel: &Loctel) -> Value {
+    for _ in 0..3 {
+        loctel.next_json();
+    }
+    loctel.next_json()
+}
+
+#[test]
+fn headless_prints_rules_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let rules = dir.path().join("rules.toml");
+    let rules_arg = rules.to_str().unwrap();
+    let mut args = vec!["--rules", rules_arg];
+    args.extend_from_slice(&PORTS_ZERO);
+    let mut loctel = Loctel::spawn(&settings_path(&dir), &args);
+
+    let line = rules_line(&loctel);
+
+    // A first start writes a file with no rules, and says where it is.
+    assert_eq!(
+        line,
+        serde_json::json!({
+            "event": "rules",
+            "path": rules_arg,
+            "count": 0,
+            "error": null,
+        })
+    );
+    let text = std::fs::read_to_string(&rules).expect("the rules file was written");
+    assert!(text.contains("# [[rule]]"), "{text}");
+    assert!(!text.lines().any(|l| l.starts_with("[[rule]]")), "{text}");
+
+    loctel.signal("TERM");
+    assert_eq!(loctel.wait().code(), Some(0));
+}
+
+#[test]
+fn headless_rules_line_counts_the_rules_of_an_existing_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let rules = dir.path().join("rules.toml");
+    std::fs::write(
+        &rules,
+        r#"[[rule]]
+name = "Health"
+enabled = true
+language = "traceql"
+query = '{ span.url.path = "/health" }'
+
+[[rule]]
+name = "Noise"
+enabled = false
+language = "logql"
+query = '{service_name="web"} |= "noise"'
+"#,
+    )
+    .unwrap();
+    let before = std::fs::read_to_string(&rules).unwrap();
+    let loctel = Loctel::spawn(&settings_path(&dir), &PORTS_ZERO);
+
+    let line = rules_line(&loctel);
+
+    assert_eq!(line["event"], "rules", "{line}");
+    assert_eq!(
+        line["count"], 2,
+        "every rule counts, enabled or not: {line}"
+    );
+    assert_eq!(line["error"], serde_json::Value::Null, "{line}");
+    assert_eq!(std::fs::read_to_string(&rules).unwrap(), before);
+}
+
+#[test]
+fn headless_rules_line_reports_a_broken_file_and_keeps_running() {
+    let dir = tempfile::tempdir().unwrap();
+    let rules = dir.path().join("rules.toml");
+    std::fs::write(&rules, "[[rule]\nname = ").unwrap();
+    let mut loctel = Loctel::spawn(&settings_path(&dir), &PORTS_ZERO);
+
+    let line = rules_line(&loctel);
+
+    assert_eq!(line["event"], "rules", "{line}");
+    assert_eq!(line["count"], 0, "{line}");
+    let error = line["error"]
+        .as_str()
+        .expect("the error says what is wrong");
+    assert!(error.contains("rules.toml"), "{error}");
+    // The bad file is left as it was, and loctel runs.
+    assert_eq!(std::fs::read_to_string(&rules).unwrap(), "[[rule]\nname = ");
+    assert!(loctel.child.try_wait().unwrap().is_none());
+    loctel.signal("TERM");
+    assert_eq!(loctel.wait().code(), Some(0));
+}
+
+#[test]
+fn headless_rules_file_defaults_to_beside_the_settings_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let settings = settings_path(&dir);
+    // No `--rules`: the file is next to the settings file given, so a run
+    // with a scratch settings path never touches the real rules.
+    let loctel = Loctel::spawn_exactly(&settings, &PORTS_ZERO);
+
+    let line = rules_line(&loctel);
+
+    assert_eq!(line["path"], rules_path_beside(&settings).to_str().unwrap());
+    assert!(rules_path_beside(&settings).exists());
 }
 
 #[test]
