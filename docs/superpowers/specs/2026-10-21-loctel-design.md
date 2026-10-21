@@ -329,8 +329,10 @@ Deferred: `line_format`, `label_format`, metrics queries.
     span, services, start, duration, span count, error flag, **failed in**
     (section 9.4), and the first exception message.
   - **Recent failures:** a convenience tool for "why did my last request
-    fail". It returns the most recent failing traces since a marker, each
+    fail". It returns the most recent failed traces since a marker, each
     with the failed-in span, its exception, and the error logs linked to it.
+    It also lists traces with errors inside, flagged separately
+    (section 9.4).
   - **Get trace:** a span tree, collapsed to the error path and top levels
     by default, expandable or paginated, with exceptions. Its logs are
     optional.
@@ -475,12 +477,39 @@ layout reference, not pixel specs. They only show dark mode.
 - The Linux build uses the same UI without glass. It needs to look
   reasonable, not polished.
 
-### 9.4 "Failed in"
+### 9.4 What "failed" means (my call)
 
-A trace's **failed-in span** is the deepest span with an error status (or an
-exception event) that has no erroring descendants. If several qualify, the
-earliest one wins. It is shown as "service · span name" and used by the
-trace table, the trace header, auto-selection, and MCP.
+These rules are used everywhere: trace table, trace header, map colours and
+rates, the "errors only" toggle, auto-selection, and MCP.
+
+- **Erroring span:** a span whose status is `Error`.
+  - An exception event alone does not make a span erroring. That covers a
+    handled exception, or a retry that then succeeded.
+  - Such exceptions are still shown: as markers on the waterfall, and in
+    the inspector.
+- **Failed trace:** a trace whose **root span** (the request's entry point)
+  is erroring. This answers "did my request work?".
+- **Trace with errors inside:** the root span is fine, but some other span
+  is erroring, for example a call that failed and then recovered on retry.
+  - It is shown differently from a failed trace: amber "errors inside", not
+    red "Failed in".
+  - The "errors only" toggle includes both kinds.
+  - MCP reports the two separately, so an agent can tell "the request
+    failed" from "the request succeeded after errors".
+- **Root not arrived yet:** while the root span hasn't arrived, a trace
+  with erroring spans counts as "errors inside". It becomes "failed" if the
+  root arrives erroring.
+- **Failed-in span:** first take the erroring spans with no erroring
+  descendants (the lowest error on each branch). The one that **started
+  first** wins. If others exist, show "+N more".
+  - Example: checkout calls payments, which fails. Later, checkout calls
+    inventory, which calls the database, which also fails. Failed in =
+    payments, "+1 more".
+  - Shown as "service · span name".
+- **Service error rate (map node):** the share of that service's entry
+  spans (server and consumer spans) in the time range that are erroring.
+- **Edge error rate:** the share of the calls along that edge whose client
+  or producer span is erroring.
 
 ---
 
@@ -685,6 +714,11 @@ Cargo workspace:
 
 ## 14. Calls made by the design author (for the user to check)
 
+- **What "failed" means** (section 9.4):
+  - A trace failed when its root span errors. If only inner spans error,
+    the trace is marked "errors inside" instead.
+  - An exception event alone doesn't count as an error.
+  - Failed in = the earliest of the lowest erroring spans.
 - Metrics requests are accepted and dropped, so exporters stay quiet.
 - If a port is busy, the other endpoints keep running and the error is shown
   in the UI.
