@@ -20,7 +20,7 @@ the task that creates a crate changes its row.
 
 | Crate | Layer | Owns | Status |
 |---|---|---|---|
-| `loctel-model` | core | Domain types (spans, logs, resources, IDs, severity), independent of OTLP | placeholder (one test) |
+| `loctel-model` | core | Domain types (spans, logs, resources, IDs, severity), independent of OTLP | implemented (see "Domain model" below) |
 | `loctel-store` | core | In-memory store: trace assembly, completeness, dedup, eviction, failure semantics, search, logs, service map | planned |
 | `loctel-ingest` | core | OTLP gRPC and HTTP receivers, protobuf and JSON to model conversion | planned |
 | `loctel-mcp` | core | MCP server (rmcp, Streamable HTTP), tools and their DTOs | planned |
@@ -57,6 +57,36 @@ Target shape for Milestone 1:
 
 Telemetry is never persisted. Only `settings.toml` (and discard rules from
 Milestone 2) is written to disk.
+
+## Domain model
+
+`loctel-model` is the vocabulary every other crate speaks. It depends only on
+`serde` and `serde_json`. The conventions below are tested in
+`crates/loctel-model/tests/` and later crates rely on them:
+
+- **IDs.** `TraceId` (16 bytes) and `SpanId` (8 bytes) parse from hex (either
+  case) or raw bytes, and display as lowercase hex. A wrong length or a
+  non-hex character is an `IdError`, never a panic. All zeros parses but is
+  not `is_valid()`; the ingest layer decides what to do with it.
+- **Service name.** `Resource::service_name()` is `service.name`, or
+  `unknown_service` when it is absent, empty or not a string. Telemetry is
+  never dropped for lacking a name.
+- **Clock skew.** `Span::duration_nanos()` saturates, so an end before the
+  start is a duration of 0.
+- **Erroring.** `Span::is_error()` is status `Error` and nothing else. An
+  exception event alone does not make a span erroring (design 9.4).
+- **Exceptions.** `Span::exception()` reads the first event named
+  `exception`, with missing `exception.*` attributes empty. A log record's
+  `exception()` is `Some` only if it carries `exception.type`,
+  `exception.message` or `exception.stacktrace`.
+- **Peer.** `Span::peer()` is `server.address`, else `peer.service`
+  (non-empty strings only).
+- **Log dedup.** `LogRecord::dedup_key()` hashes the time, body, trace ID,
+  span ID and service, so an exporter retry hashes the same. It is stable
+  within a process only; never persist it.
+- **Serialization.** Every type implements `serde::Serialize` as plain JSON:
+  IDs and byte values as lowercase hex strings, attributes as JSON objects (in
+  order), enums as `snake_case` strings.
 
 ## Platform
 
