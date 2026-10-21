@@ -422,8 +422,7 @@ run on a Mac yet are in [`areas/release.md`](areas/release.md).
      `-- gh release create vX.Y.Z loctel-vX.Y.Z.dmg --notes-file notes.md
 ```
 
-`xtask` depends on rmcp's client for `mcp-smoke` and nothing else outside the
-standard library; `one-span.json` is kept valid by a test in `loctel-e2e`
+`xtask` depends on rmcp's client, `reqwest` and `tokio` for `mcp-smoke`; `one-span.json` is kept valid by a test in `loctel-e2e`
 (`tests/release_fixture.rs`).
 
 ## Platform

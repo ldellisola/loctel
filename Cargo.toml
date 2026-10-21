@@ -78,5 +78,11 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSError", "NSGeometry", "NSString"] }
 objc2-service-management = "0.3.2"
 
+# Line tables only: full debug info made a clean test build about 12 GB of
+# target/, too close to the free disk on CI runners and agent containers.
+# Backtraces still show file and line.
+[profile.dev]
+debug = "line-tables-only"
+
 [workspace.lints.clippy]
 all = "warn"

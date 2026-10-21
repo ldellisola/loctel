@@ -32,7 +32,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Install the pinned toolchain
-        run: rustup show
+        run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       # Xcode 26 no longer ships the Metal shader compiler that GPUI's build
       # script runs. Fetch it when the runner image does not have it.

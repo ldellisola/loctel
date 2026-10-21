@@ -23,7 +23,7 @@ together release one after the other and never cancel each other.
 | # | Step | Does |
 |---|---|---|
 | 1 | checkout, `fetch-depth: 0` | the whole history and every tag: the version and the notes come from the previous tag |
-| 2 | `rustup show` | installs the toolchain, components and target of `rust-toolchain.toml` |
+| 2 | `rustup toolchain install` | installs the toolchain, components and target of `rust-toolchain.toml` |
 | 3 | `Swatinem/rust-cache@v2` | |
 | 4 | Metal compiler check | GPUI's build script runs `xcrun metal`. Xcode 26 no longer ships it with the base install, so if `xcrun -sdk macosx metal --version` fails the step runs `xcodebuild -downloadComponent MetalToolchain`. A no-op when the image has it |
 | 5 | version and notes | `VERSION=$(cargo xtask next-version)` goes to `$GITHUB_ENV`, `cargo xtask release-notes > notes.md`. Before the bundle (which needs the version) and before the new tag exists (so the notes cover everything since the previous release) |

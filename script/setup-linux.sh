@@ -49,9 +49,10 @@ else
   echo "setup-linux: all apt packages already installed"
 fi
 
-# `rustup show` installs the toolchain pinned in rust-toolchain.toml
-# (channel, components and targets) when it is not present yet.
-rustup show
+# `rustup toolchain install` with no arguments installs the toolchain pinned
+# in rust-toolchain.toml (channel, components and targets) when it is not
+# present yet. (`rustup show` stopped installing it in rustup 1.28.)
+rustup toolchain install
 rustup target add aarch64-apple-darwin
 
 echo "setup-linux: done"
