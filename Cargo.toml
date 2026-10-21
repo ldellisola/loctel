@@ -15,6 +15,7 @@ loctel-store = { path = "crates/loctel-store" }
 loctel-ingest = { path = "crates/loctel-ingest" }
 loctel-mcp = { path = "crates/loctel-mcp" }
 loctel-engine = { path = "crates/loctel-engine" }
+loctel-query = { path = "crates/loctel-query" }
 loctel-meshgen = { path = "crates/loctel-meshgen" }
 loctel-ui = { path = "crates/loctel-ui" }
 loctel-macos = { path = "crates/loctel-macos" }
@@ -55,6 +56,12 @@ schemars = "1.2.3"
 chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 tokio-util = "0.7.20"
 jsonschema = { version = "0.59.0", default-features = false }
+
+# Query languages (loctel-query). The `regex` crate is RE2-compatible, close to
+# Go's `regexp` that Tempo and Loki use. Default features stay on: `\w` and
+# `\d` are Unicode-aware here and ASCII-only in Go, which only matters for
+# non-ASCII text (docs/areas/query.md).
+regex = "1.13.1"
 
 # UI (loctel-ui, loctel-app). GPUI comes as the weekly `gpui-pre` snapshot,
 # pinned exactly: upgrades are deliberate, in their own PR (decision 0001).
