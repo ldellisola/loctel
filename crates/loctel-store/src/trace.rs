@@ -102,6 +102,17 @@ impl TraceEntry {
         &self.spans
     }
 
+    /// The span with ID `id`, if the trace has it.
+    pub(crate) fn span(&self, id: SpanId) -> Option<&Span> {
+        self.index.get(&id).map(|&position| &self.spans[position])
+    }
+
+    /// The latest span end, each counted no earlier than its own span's
+    /// start, so no span starts after it. 0 while empty.
+    pub(crate) fn end_unix_nano(&self) -> u64 {
+        self.max_end
+    }
+
     /// When the trace started: its earliest span start.
     pub(crate) fn start_unix_nano(&self) -> u64 {
         self.min_start

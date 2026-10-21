@@ -21,7 +21,7 @@ the task that creates a crate changes its row.
 | Crate | Layer | Owns | Status |
 |---|---|---|---|
 | `loctel-model` | core | Domain types (spans, logs, resources, IDs, severity), independent of OTLP | implemented (see "Domain model" below) |
-| `loctel-store` | core | In-memory store: trace assembly, completeness, dedup, eviction, failure semantics, search, logs, service map | partly implemented: assembly, completeness, dedup, eviction, failure semantics, trace summaries and search (see "Store" below); logs and the service map planned |
+| `loctel-store` | core | In-memory store: trace assembly, completeness, dedup, eviction, failure semantics, search, logs, service map | implemented: assembly, completeness, dedup, eviction, failure semantics, trace summaries and search, logs, service map and services list (see "Store" below) |
 | `loctel-ingest` | core | OTLP gRPC and HTTP receivers, protobuf and JSON to model conversion | planned |
 | `loctel-mcp` | core | MCP server (rmcp, Streamable HTTP), tools and their DTOs | planned |
 | `loctel-engine` | core | Wires store, ingest and MCP; settings, pause, rates; owns threads and runtime | planned |
@@ -120,6 +120,19 @@ details (API, rules and the reasons) are in
 - **Summaries and search.** `Store::summary` and `Store::search_traces` give
   one-row `TraceSummary` values, newest first, filtered by time, service,
   errors and duration, with an opaque keyset cursor (`Page`, `PageRequest`).
+- **Logs.** `Store::ingest_logs` keeps log records in time order (observed
+  time when the timestamp is unset), drops exporter retries by
+  `LogRecord::dedup_key()` and evicts the oldest past `max_log_records`.
+  `Store::search_logs` filters by time, service, minimum severity, body text
+  (case-insensitive), trace and span, newest first with the same keyset
+  paging. `Store::logs_for_span` returns a span's logs, oldest first, linked
+  by ID only, so it works whether or not the span is held.
+- **Service map and services.** `Store::service_map(TimeWindow)` and
+  `Store::services(TimeWindow)` are computed on demand from the traces held:
+  service nodes with entry-span counts, service-to-service edges, and
+  database, queue and external nodes inferred from span attributes
+  (design §9.2). External hosts appear only once their trace is complete.
+  Node ids are unique within a kind, not across kinds.
 
 ## Platform
 

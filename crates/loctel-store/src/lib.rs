@@ -5,10 +5,15 @@
 //! says when a trace has gone quiet (complete), and evicts the oldest trace
 //! whole when it holds too many. It also works out which traces failed and
 //! in which span (design 9.4, see [`classify`]), and lists and searches
-//! traces as one-row [`TraceSummary`] values, a page at a time. Everything
-//! goes through [`Store`]; the internals are free to change (the design
-//! replaces them with a spill-to-disk segment store later) as long as that
-//! API holds.
+//! traces as one-row [`TraceSummary`] values, a page at a time.
+//!
+//! Log records are stored in time order, searched newest first and linked to
+//! their spans. The service map and the services list are computed from the
+//! traces held.
+//!
+//! Everything goes through [`Store`]; the internals are free to change (the
+//! design replaces them with a spill-to-disk segment store later) as long as
+//! that API holds.
 //!
 //! Time comes from a [`Clock`], so tests drive completeness with a
 //! [`ManualClock`] instead of sleeping.
@@ -16,7 +21,9 @@
 mod clock;
 mod config;
 mod failure;
+mod logs;
 mod page;
+mod service_map;
 mod store;
 mod summary;
 mod trace;
@@ -24,7 +31,9 @@ mod trace;
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use config::StoreConfig;
 pub use failure::{FailedIn, TraceStatus, classify, trace_exception};
+pub use logs::LogFilter;
 pub use page::{Page, PageRequest};
+pub use service_map::{NodeKind, ServiceEdge, ServiceMap, ServiceNode, ServiceStats, TimeWindow};
 pub use store::{Store, StoreStats};
 pub use summary::{TraceFilter, TraceSummary};
 pub use trace::TraceSnapshot;

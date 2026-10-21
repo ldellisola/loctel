@@ -7,7 +7,10 @@
 
 use std::sync::Arc;
 
-use loctel_model::{AttrValue, Resource, Span, SpanEvent, SpanId, SpanKind, StatusCode, TraceId};
+use loctel_model::{
+    AttrValue, LogRecord, Resource, Severity, Span, SpanEvent, SpanId, SpanKind, StatusCode,
+    TraceId,
+};
 use loctel_store::{ManualClock, Store, StoreConfig};
 
 /// Where the manual clock starts: well away from 0 so that "now minus
@@ -100,6 +103,49 @@ pub fn with_exception(mut span: Span, type_name: &str, message: &str) -> Span {
         ],
     });
     span
+}
+
+/// A log line from `service` at `time_ms` (stored as nanoseconds, and used
+/// as the observed time too). Severity `Info`, no trace context, no
+/// attributes.
+pub fn log(service: &str, body: &str, time_ms: u64) -> LogRecord {
+    LogRecord {
+        time_unix_nano: time_ms * 1_000_000,
+        observed_unix_nano: time_ms * 1_000_000,
+        severity: Severity::Info,
+        severity_text: "INFO".to_string(),
+        body: body.to_string(),
+        attributes: vec![],
+        trace_id: None,
+        span_id: None,
+        resource: Arc::new(Resource {
+            attributes: vec![(
+                "service.name".to_string(),
+                AttrValue::Str(service.to_string()),
+            )],
+        }),
+        scope_name: "test".to_string(),
+    }
+}
+
+/// The same log line with severity `severity` (its text follows the level).
+pub fn with_severity(mut log: LogRecord, severity: Severity) -> LogRecord {
+    log.severity = severity;
+    log.severity_text = severity.level_label().to_uppercase();
+    log
+}
+
+/// The same log line emitted inside span `span` of trace `trace`.
+pub fn in_span(mut log: LogRecord, trace: u8, span: u8) -> LogRecord {
+    log.trace_id = Some(tid(trace));
+    log.span_id = Some(sid(span));
+    log
+}
+
+/// The same log line carrying trace context but no span ID.
+pub fn in_trace(mut log: LogRecord, trace: u8) -> LogRecord {
+    log.trace_id = Some(tid(trace));
+    log
 }
 
 /// A store with the default configuration (10 s quiet period) on a manual

@@ -2,16 +2,19 @@
 
 The in-memory store behind loctel. It takes spans in any order from any
 service, assembles them into traces, says when a trace has gone quiet, and
-evicts the oldest trace whole when it holds too many. Design references: §4
-(order and lateness, completeness), §5 (storage, eviction, clear all).
+evicts the oldest trace whole when it holds too many. It also holds log
+records, linked to spans by ID, and works out the service map and the services
+list from the traces. Design references: §4 (order and lateness, completeness,
+logs), §5 (storage, eviction, clear all), §9.2 (the map) and §9.4 (what
+"failed" means).
 
 Everything outside the crate goes through `Store`. M5 replaces the internals
 with a spill-to-disk segment store, so keep the public API below stable and
 keep callers away from anything else.
 
 Status: trace assembly, completeness, dedup, eviction, failure
-classification, trace summaries and trace search are implemented. Logs and the
-service map are added by later tasks and get their own sections here.
+classification, trace summaries, trace search, logs, the service map and the
+services list are implemented.
 
 ## API
 
@@ -23,14 +26,19 @@ store.ingest_spans(spans);               // Vec<loctel_model::Span>
 let snapshot = store.trace(trace_id);    // Option<TraceSnapshot>
 let summary = store.summary(trace_id);   // Option<TraceSummary>
 let page = store.search_traces(&TraceFilter::default(), &PageRequest { limit: 20, cursor: None });
+store.ingest_logs(logs);                 // Vec<loctel_model::LogRecord>
+let page = store.search_logs(&LogFilter::default(), &PageRequest { limit: 50, cursor: None });
+let lines = store.logs_for_span(trace_id, span_id); // Vec<LogRecord>, oldest first
+let map = store.service_map(TimeWindow { since_unix_nano }); // ServiceMap
+let services = store.services(TimeWindow { since_unix_nano }); // Vec<ServiceStats>
 let stats = store.stats();               // StoreStats
 store.clear();
 ```
 
 - `Store` is `Clone + Send + Sync`. Clones share the same data (an `Arc`
   around an `RwLock`), so give each thread or task its own clone.
-- `ingest_spans` takes the write lock once per batch. `trace`, `summary`,
-  `search_traces` and `stats` take the read lock.
+- `ingest_spans` and `ingest_logs` take the write lock once per batch. Every
+  other method takes the read lock.
 - `Clock` is `trait Clock: Send + Sync { fn now_unix_nano(&self) -> u64 }`.
   `SystemClock` is the wall clock. `ManualClock::new(start)` only moves when
   told: `advance(Duration)` (saturating) and `set(u64)` (either direction).
@@ -40,7 +48,7 @@ store.clear();
   | Field | Default | Meaning |
   |---|---|---|
   | `max_traces` | 200,000 | past this, the oldest trace is evicted whole |
-  | `max_log_records` | 5,000,000 | log cap (enforced once logs are stored) |
+  | `max_log_records` | 5,000,000 | past this, the oldest log records are evicted |
   | `completeness_quiet` | 10 s | quiet time after which a trace is complete |
 
 - `StoreStats`: `traces`, `spans` and `logs` are what the store holds now.
@@ -136,7 +144,8 @@ arrival** is removed, whole, never a few of its spans (design §5).
 once (the retry is ignored), a span evicted later still counts, and
 `clear()` keeps the total. It is a lifetime counter for rate displays, not a
 size: use `StoreStats::spans` for what is held now. `logs_received` is counted
-the same way once logs are stored.
+the same way: a duplicate log is counted once, an evicted log still counts, and
+`clear()` keeps the total.
 
 ## Failure semantics
 
@@ -172,7 +181,7 @@ a pure function, so nothing else may re-derive it. The rules, quoted from
 >   - Shown as "service · span name".
 
 The last two bullets of §9.4 (service and edge error rates) belong to the
-service map and are covered with it.
+service map and are covered in "Service map" below.
 
 How the store reads those rules:
 
@@ -281,13 +290,199 @@ membership, classification, the summary) is done newest first only until the
 page is full. The read lock is held for the call. M5 replaces this with an
 indexed segment store behind the same API.
 
+## Logs
+
+```rust
+store.ingest_logs(logs);
+let page = store.search_logs(&LogFilter::default(), &PageRequest { limit: 50, cursor: None });
+let lines = store.logs_for_span(trace_id, span_id);
+```
+
+Logs arrive from the same exporters as spans, in batches, in any order, and
+are linked to spans by `trace_id` and `span_id` when the log carries them
+(design §4). A log without trace context is still stored and searchable.
+
+- **Time order.** A log's time is its `time_unix_nano`, or its
+  `observed_unix_nano` when the timestamp is unset (OTLP sends 0 for
+  "unknown"; such a log would otherwise sit in 1970, be evicted first and
+  never match `since`). Logs are kept in time order, a tie going to arrival
+  order, and a late arrival takes its place in that order, so batches from
+  several services interleave correctly.
+- **Dedup.** By `LogRecord::dedup_key()`: a hash of the time, body, trace ID,
+  span ID and service. Observed time and attributes are left out on purpose,
+  since a retry may change them. A log identical to one already held is
+  ignored, and not counted in `logs_received`. Dedup remembers only the logs
+  the store still holds, which keeps memory bounded: a retry that arrives
+  after its original was evicted is accepted like a new log (and, being the
+  oldest, is the first to go again).
+- **Eviction.** After a whole batch is applied, the oldest logs by time are
+  removed until at most `max_log_records` remain. Arrival order does not
+  matter: a late log older than everything held is the one dropped. As with
+  spans, evicting inside a batch would forget a log and then accept its retry
+  from the same batch as new. Logs are evicted independently of traces: a
+  trace's spans can go while its logs stay, and the other way round.
+- **`clear()`** drops every log and its dedup memory, so the same line is
+  accepted again afterwards. `logs_received` is kept.
+
+### `LogFilter` and `search_logs`
+
+`Store::search_logs(&LogFilter, &PageRequest) -> Page<LogRecord>`. Every
+condition that is set must hold; the default keeps everything.
+
+| Field | Keeps |
+|---|---|
+| `since_unix_nano` | logs at or after it (inclusive), by the time defined above |
+| `service` | logs from that service (exact name; `unknown_service` for logs without one) |
+| `min_severity` | logs of that severity or higher. `Unspecified` is the lowest level, so any `Some(level)` above it drops unlabelled logs |
+| `contains` | logs whose **body** contains the text, ignoring case (Unicode lowercase folding). Attributes and service name are not searched. The empty text matches every log |
+| `trace_id` | logs emitted in that trace (with or without a span ID) |
+| `span_id` | logs emitted in a span with that ID, in any trace unless `trace_id` is set too |
+
+Results are **newest first**: by log time, then by arrival (the later arrival
+first). Paging is a keyset, as for traces:
+
+- `limit` 0 gives an empty page with no cursor.
+- `next_cursor` is `"{time}-{arrival}"` of the last item (the arrival number
+  is the store's own counter), and is `Some` only if at least one more match
+  exists. Callers must treat it as opaque.
+- The next page is "strictly older than the cursor", so logs arriving between
+  two requests never shift the boundary, and eviction of older logs just ends
+  the listing sooner.
+- A cursor the store did not produce yields an empty page with no cursor.
+
+Cost: the scan runs from the newest log and stops when the page is full or
+the logs are older than `since`, so a recent page costs about its size. A
+filter that matches rarely (`contains`, `service`, `trace_id`) scans every log
+that is newer than `since`. On the development container (one-off, release
+build, 1,000,000 logs held), a search that matches nothing took about 0.12 s,
+and ingest at the cap with eviction ran at roughly 600,000 logs/s. M5 replaces
+this with an indexed segment store behind the same API.
+
+### `logs_for_span`
+
+`Store::logs_for_span(trace, span) -> Vec<LogRecord>` returns the logs whose
+`trace_id` and `span_id` both equal the arguments, **oldest first**. A log
+that has a trace ID but no span ID is not linked to any span (find it with
+`search_logs` and `trace_id`). Logs and spans are stored independently, so the
+call works before the span arrives and after its trace is evicted. It reads a
+per-span index, so it costs the number of logs the span has.
+
+### How logs are held
+
+A `BTreeMap` keyed by `(time, arrival number)`, a `HashSet` of the dedup keys
+of the held logs, and a per-span index of those keys (kept in time order). The
+plan suggested a time-ordered `Vec` with an index of positions; positions go
+stale when a late log inserts in the middle, and evicting from the front of a
+`Vec` moves every record each time. The stable key avoids both. See
+[`decisions/0002-log-storage-structure.md`](../decisions/0002-log-storage-structure.md).
+
+## Service map
+
+```rust
+let map = store.service_map(TimeWindow { since_unix_nano });
+let services = store.services(TimeWindow { since_unix_nano });
+```
+
+The map is computed on demand from the traces held, on every call, over the
+spans that **start at or after `since_unix_nano`** (there is no upper bound:
+the window runs up to now). A trace that ended before the window is skipped
+without looking at its spans.
+
+```rust
+enum NodeKind { Service, Database, Queue, External }       // serialized snake_case
+struct ServiceNode { id: String, kind: NodeKind, requests: u64, errors: u64 }
+struct ServiceEdge { from: String, to: String, calls: u64, errors: u64 }
+struct ServiceMap { nodes: Vec<ServiceNode>, edges: Vec<ServiceEdge> }
+```
+
+Nodes are sorted by id, then kind (declaration order above); edges by
+`(from, to)`. `from` and `to` are node ids, and every edge's ends are nodes
+in the map (a map never has a dangling edge).
+
+The rules (design §9.2, as the plan states them):
+
+- **Service nodes.** One per `service()` that has a span in the window
+  (`unknown_service` for a resource without `service.name`; nothing is
+  dropped for lacking a name). `requests` counts the service's **server and
+  consumer** spans, `errors` the erroring ones among them. Client, producer
+  and internal spans are not entry spans, so they never count here.
+- **Service-to-service edges.** A span whose parent is in another service
+  gives an edge `parent.service -> span.service`, one call per child span,
+  whatever the kinds of the two spans. It counts as an error if the parent
+  or the child is erroring (once, if both are). It is **skipped when both
+  spans carry `messaging.system`**: the queue sits between them (see below).
+  A child whose parent has not arrived gives no edge until it does.
+- **Databases.** A client span with `db.system.name` (or the legacy
+  `db.system`; the new name wins) gives a Database node named by that value
+  and an edge from its service. The edge's errors come from the client span.
+- **Queues.** A producer span with `messaging.system` gives a Queue node
+  named by it and an edge `service -> queue`. A consumer span with
+  `messaging.system` gives an edge `queue -> service`, with the consumer span
+  as the source of its errors. So a message that goes producer to consumer
+  shows as `orders-api -> rabbitmq -> notifications-worker`, and never as a
+  direct service-to-service edge.
+- **External hosts.** A client span with no database or messaging attribute
+  and **no direct child in another service**, in a **complete trace**, gives
+  an External node named by `peer()` (`server.address`, else `peer.service`),
+  or `unknown`, and an edge from its service. The completeness condition is
+  there because the remote service's own span may still be on its way: until
+  the quiet period passes, the call is not yet known to be unmatched. A new
+  span makes the trace incomplete again and its external node disappears
+  until it settles.
+
+Choices the plan leaves open, and what the store does:
+
+- **Both ends in the window.** A service-to-service edge is counted only if
+  the parent and the child both start in the window. A call that began before
+  the window and finished inside it is left out of the edges, though the
+  child's span still counts in its own service's `requests`. This keeps every
+  edge's end a node of the map.
+- **Non-service nodes count calls received.** For Database, Queue and
+  External nodes, `requests` is the number of calls that gave the node an
+  incoming edge (database calls, producer sends, unmatched client calls) and
+  `errors` how many of those were erroring. That matches what `requests`
+  means on a service (work received), so the UI can show a rate on every node.
+  A queue that only has consumers in the window exists, with 0 requests.
+- **Names are non-empty strings.** An attribute whose value is empty or not a
+  string is treated as absent (so a client span with an empty `db.system.name`
+  is an unmatched client call, named `unknown`).
+- **Ids are unique within a kind, not across kinds.** A broker instrumented as
+  service `kafka` and a queue called `kafka` are two nodes with the same id
+  (the service sorts first), and an edge to `kafka` does not say which. The
+  store does not rename or merge them; callers that key nodes by id should key
+  by `(id, kind)`. A test pins this.
+- **Same-service parents.** A parent in the same service gives no edge.
+  Parents and children are found by parent ID, never by time, so a child whose
+  clock runs ahead of or behind its parent's still gets its edge. A span that
+  is its own parent, or a parent cycle, cannot loop (only the direct parent is
+  ever looked at).
+
+Rates (§9.4: "Service error rate: the share of that service's entry spans
+(server and consumer spans) in the time range that are erroring", and "Edge
+error rate: the share of the calls along that edge whose client or producer
+span is erroring") are `errors / requests` and `errors / calls`, computed by
+the caller; a count of 0 means there is no rate to show. The plan's edge rule
+also counts an erroring child, so a failing server whose client span did not
+record the error still turns the edge red.
+
+### `services`
+
+`Store::services(window) -> Vec<ServiceStats>` is the Service nodes of the
+map as a list, sorted by name: `name`, `requests` and `errors` as above, and
+`last_seen_unix_nano`, the **latest start** of any of the service's spans in
+the window. A service that only calls out (no server or consumer spans) is
+listed with 0 requests. Dependencies are not services and are not listed. A
+service with no span in the window is not listed. It is computed from the same
+counts as the map (a test holds the two equal) but skips the dependency work.
+
 ## Tests
 
 `crates/loctel-store/tests/`:
 
 - `fixtures.rs`: `span(...)`, `error(span)`, `with_kind`, `with_attr`,
-  `with_exception`, `tid(n)`, `sid(n)` and the `store_with_manual_clock()`
-  builders every store test file shares.
+  `with_exception`, `log(...)`, `with_severity`, `in_span`, `in_trace`,
+  `tid(n)`, `sid(n)` and the `store_with_manual_clock()` builders every store
+  test file shares.
 - `assembly.rs`: the plan's Task 3 tests. `duplicate_span_is_ignored`
   (exporter retries) and `skewed_child_still_assembles` (clock skew) are the
   review-focus tests this crate owns.
@@ -300,3 +495,16 @@ indexed segment store behind the same API.
 - `search_traces.rs`: the plan's search tests plus paging corners (cursor
   format, equal starts, new traces between pages, garbage cursors) and the
   summary fields.
+- `logs.rs`: the plan's Task 5 log tests, plus paging (cursor, equal
+  timestamps, filters while paging, garbage cursors), late arrivals, the
+  observed-time fallback, each filter, the span link, eviction corners
+  (whole batches, late old logs, a zero cap, retries after eviction) and
+  counting and clearing. `duplicate_log_is_ignored` (exporter retries) is the
+  review-focus test this file owns for logs.
+- `service_map.rs`: the plan's Task 5 map tests (`unknown_service_appears_in_map`
+  is the review-focus test for a missing `service.name`), plus each rule's
+  corners: error counting, messaging skip, consumer-only queues, external
+  naming and completeness, windows (including both-ends-in-window and exact
+  boundaries), sorting, serialization, services equal to the map's service
+  nodes, name collisions, and malformed parents (self-parent, cycle, a
+  10,000-deep chain).

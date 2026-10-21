@@ -4,13 +4,15 @@ use std::cmp::Reverse;
 use std::collections::{HashMap, VecDeque, hash_map::Entry};
 use std::sync::Arc;
 
-use loctel_model::{Span, TraceId};
+use loctel_model::{LogRecord, Span, SpanId, TraceId};
 use parking_lot::RwLock;
 
 use crate::clock::{Clock, saturating_nanos};
 use crate::config::StoreConfig;
 use crate::failure::TraceStatus;
+use crate::logs::{LogFilter, LogStore};
 use crate::page::{Page, PageRequest};
+use crate::service_map::{Aggregate, ServiceMap, ServiceStats, TimeWindow};
 use crate::summary::{TraceFilter, TraceSummary, decode_cursor, encode_cursor};
 use crate::trace::{TraceEntry, TraceSnapshot};
 
@@ -31,8 +33,8 @@ pub struct StoreStats {
     pub logs_received: u64,
 }
 
-/// Holds traces (and, later, logs) in memory. Cloning is cheap and the
-/// clones share the same data, so hand one to every thread that needs it.
+/// Holds traces and logs in memory. Cloning is cheap and the clones share
+/// the same data, so hand one to every thread that needs it.
 #[derive(Clone)]
 pub struct Store {
     shared: Arc<Shared>,
@@ -53,6 +55,8 @@ struct Inner {
     /// Spans across all held traces.
     span_count: usize,
     spans_received: u64,
+    /// Every held log record, and the indexes over them.
+    logs: LogStore,
     logs_received: u64,
 }
 
@@ -80,6 +84,67 @@ impl Store {
             inner.insert_span(span, now);
         }
         inner.evict_beyond(self.shared.config.max_traces);
+    }
+
+    /// Adds log records, in any order. A record identical to one already
+    /// held (an exporter retry: same time, body, trace, span and service) is
+    /// ignored. When the batch is applied, the oldest records beyond
+    /// `max_log_records` are evicted.
+    pub fn ingest_logs(&self, logs: Vec<LogRecord>) {
+        if logs.is_empty() {
+            return;
+        }
+        let mut inner = self.shared.inner.write();
+        for log in logs {
+            if inner.logs.insert(log) {
+                inner.logs_received += 1;
+            }
+        }
+        inner.logs.evict_beyond(self.shared.config.max_log_records);
+    }
+
+    /// The logs matching `filter`, newest first, one page at a time.
+    ///
+    /// The cursor is a keyset on the log's time and arrival, so the next page
+    /// continues right after the last item even if newer logs arrive or older
+    /// ones are evicted meanwhile. `next_cursor` is `None` on the last page.
+    /// A cursor that this method did not produce gives an empty page.
+    pub fn search_logs(&self, filter: &LogFilter, page: &PageRequest) -> Page<LogRecord> {
+        self.shared.inner.read().logs.search(filter, page)
+    }
+
+    /// The logs emitted in span `span` of trace `trace`, oldest first. Logs
+    /// and spans are stored independently, so this works whether or not the
+    /// span itself is held.
+    pub fn logs_for_span(&self, trace: TraceId, span: SpanId) -> Vec<LogRecord> {
+        self.shared.inner.read().logs.for_span(trace, span)
+    }
+
+    /// The service map over the spans that start inside `window`: services
+    /// and their dependencies as nodes, calls between them as edges. Computed
+    /// from the traces held, on every call. See `docs/areas/store.md`
+    /// ("Service map") for the rules.
+    pub fn service_map(&self, window: TimeWindow) -> ServiceMap {
+        let inner = self.shared.inner.read();
+        let now = self.shared.clock.now_unix_nano();
+        let mut aggregate = Aggregate::default();
+        for entry in inner.traces.values() {
+            aggregate.add_trace(entry, self.shared.is_complete(entry, now), window, true);
+        }
+        aggregate.into_map()
+    }
+
+    /// The services with spans inside `window`, sorted by name: the service
+    /// nodes of [`service_map`](Self::service_map), with when each was last
+    /// seen.
+    pub fn services(&self, window: TimeWindow) -> Vec<ServiceStats> {
+        let inner = self.shared.inner.read();
+        let mut aggregate = Aggregate::default();
+        for entry in inner.traces.values() {
+            // Completeness only matters to dependencies.
+            aggregate.add_trace(entry, false, window, false);
+        }
+        aggregate.into_services()
     }
 
     /// The trace as it stands now, or `None` if it is unknown or evicted.
@@ -168,7 +233,7 @@ impl Store {
         StoreStats {
             traces: inner.traces.len(),
             spans: inner.span_count,
-            logs: 0,
+            logs: inner.logs.len(),
             spans_received: inner.spans_received,
             logs_received: inner.logs_received,
         }
@@ -180,6 +245,7 @@ impl Store {
         inner.traces.clear();
         inner.arrival_order.clear();
         inner.span_count = 0;
+        inner.logs.clear();
     }
 }
 

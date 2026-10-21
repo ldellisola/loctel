@@ -8,8 +8,8 @@ pub struct StoreConfig {
     /// Most traces kept. Past this, the oldest trace (by first arrival) is
     /// evicted whole.
     pub max_traces: usize,
-    /// Most log records kept. Past this, the oldest are evicted. (Enforced
-    /// once logs are stored.)
+    /// Most log records kept. Past this, the oldest (by log time) are
+    /// evicted.
     pub max_log_records: usize,
     /// How long a trace must go without a new span to count as complete.
     pub completeness_quiet: Duration,
