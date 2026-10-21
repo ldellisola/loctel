@@ -9,7 +9,7 @@ use fixtures::*;
 use loctel_meshgen::Scenario;
 use loctel_model::Span;
 use loctel_query::traceql;
-use loctel_rules::{DROPPED_TTL, DropScope, RuleSet};
+use loctel_rules::{DROPPED_TTL, DropScope, RuleSet, RuleSpec};
 use loctel_store::Removed;
 
 const BASE: u64 = 2_000_000_000_000;
@@ -684,6 +684,83 @@ fn remove_dropped_credits_the_rule_that_dropped_each_thing() {
     assert_eq!(w.counts(0), counts(1, 3, 1));
     assert_eq!(w.counts(1), counts(0, 2, 1));
     assert_eq!(w.rules.totals().spans, 5);
+    assert_eq!(w.rules.totals().logs, 2);
+}
+
+/// Trace 1 of the next two tests: a root, `c` below it and `d` below `c`.
+/// `d` is stored first, with a log in it and a log on the trace alone.
+fn world_with_d_stored(rules: Vec<RuleSpec>) -> World {
+    let w = World::new(rules);
+    w.ingest_spans(vec![span(1, 3, Some(2), "web", "d", 2, 1)]);
+    w.ingest_logs(vec![
+        in_span(log("web", "in d", 1), 1, 3),
+        in_trace(log("web", "on the trace", 2), 1),
+    ]);
+    assert_eq!((w.store.stats().spans, w.store.stats().logs), (1, 2));
+    w
+}
+
+#[test]
+fn a_stored_span_condemned_by_an_earlier_span_rule_is_not_credited_to_a_later_trace_rule() {
+    // A (span scope) is first in the file and condemns `c` and, below it, the
+    // stored `d`. B (trace scope) is later and drops the trace through `root`
+    // in the same batch. "A span is counted once, on the first rule that
+    // dropped it": `d` and the log in it are A's, not B's, however the removals
+    // are ordered.
+    let w = world_with_d_stored(vec![
+        span_rule("A", r#"{ name = "c" }"#),
+        trace_rule("B", r#"{ name = "root" }"#),
+    ]);
+
+    let verdict = w.rules.filter_spans(
+        vec![
+            span(1, 2, Some(1), "web", "c", 1, 5),
+            span(1, 1, None, "web", "root", 0, 10),
+        ],
+        &w.store,
+    );
+    assert!(verdict.keep.is_empty());
+    assert_eq!(verdict.drop_traces, vec![tid(1)]);
+    assert_eq!(verdict.drop_spans, vec![(tid(1), sid(3))]);
+    let removed = w.rules.remove_dropped(&verdict, &w.store);
+
+    assert_eq!(removed, Removed { spans: 1, logs: 2 });
+    let stats = w.store.stats();
+    assert_eq!((stats.traces, stats.spans, stats.logs), (0, 0, 0));
+    // A: `c` (incoming), `d` (stored) and the log in `d`. B: the trace, `root`
+    // (incoming) and the log that only carries the trace ID.
+    assert_eq!(w.counts(0), counts(0, 2, 1));
+    assert_eq!(w.counts(1), counts(1, 1, 1));
+    assert_eq!(w.rules.totals().spans, 3);
+    assert_eq!(w.rules.totals().logs, 2);
+}
+
+#[test]
+fn a_stored_span_is_credited_to_an_earlier_trace_rule_over_a_later_span_rule() {
+    // The same batch with the rules the other way round: the trace rule is
+    // first and takes the whole trace, so the span rule finds nothing live.
+    let w = world_with_d_stored(vec![
+        trace_rule("B", r#"{ name = "root" }"#),
+        span_rule("A", r#"{ name = "c" }"#),
+    ]);
+
+    let verdict = w.rules.filter_spans(
+        vec![
+            span(1, 2, Some(1), "web", "c", 1, 5),
+            span(1, 1, None, "web", "root", 0, 10),
+        ],
+        &w.store,
+    );
+    assert!(verdict.keep.is_empty());
+    assert_eq!(verdict.drop_traces, vec![tid(1)]);
+    assert!(verdict.drop_spans.is_empty());
+    let removed = w.rules.remove_dropped(&verdict, &w.store);
+
+    assert_eq!(removed, Removed { spans: 1, logs: 2 });
+    // B: the trace, `c` and `root` (incoming), `d` and both logs (stored).
+    assert_eq!(w.counts(0), counts(1, 3, 2));
+    assert_eq!(w.counts(1), counts(0, 0, 0));
+    assert_eq!(w.rules.totals().spans, 3);
     assert_eq!(w.rules.totals().logs, 2);
 }
 

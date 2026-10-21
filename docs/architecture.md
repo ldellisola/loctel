@@ -251,7 +251,8 @@ What other crates rely on:
   **`filter_logs(logs)`** judge a batch on its way into the store. The verdict
   lists the spans to keep and what the store holds that must go (`drop_traces`,
   `drop_spans`); the caller removes it with **`remove_dropped(&verdict, &store)`**
-  and then stores `keep`, as one step per batch. A trace-scope match drops the
+  (spans first, then traces, so each removal is credited to the first rule that
+  dropped it) and then stores `keep`, as one step per batch. A trace-scope match drops the
   whole trace (stored spans, later spans and logs, for `DROPPED_TTL`); a
   span-scope match drops the matched spans and their descendants. Queries that
   need the whole trace are evaluated over the stored spans plus the batch.

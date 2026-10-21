@@ -36,7 +36,12 @@ later agent might be tempted to undo, and the one place the plan was adapted.
   span, so `remove_dropped` reads it, calls the store, and credits each removal
   to its rule through the same code `record_removed` uses. `record_removed`
   stays public and as specified, for a caller that knows the rule. The engine
-  calls `remove_dropped`.
+  calls `remove_dropped`. It removes the verdict's `drop_spans` before its
+  `drop_traces`: an earlier span-scope rule and a later trace-scope rule can
+  both hit one trace in a batch, and `remove_trace` would otherwise take the
+  stored spans (and logs) the span rule had already claimed and credit them to
+  the trace rule, breaking "a span is counted once, on the first rule that
+  dropped it". Tests cover both rule orders.
 - **Counting.** A rule's `dropped_spans` and `dropped_logs` are the incoming
   items it dropped plus the stored ones removed for it; `dropped_traces` is the
   traces it dropped whole, counted once each. The stored logs of a dropped trace

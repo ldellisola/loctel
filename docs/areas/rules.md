@@ -141,6 +141,12 @@ verdict lists and credits each removal to the rule that dropped it), then
 a span after its trace was removed. `record_removed(rule, Removed)` is the same
 crediting for a caller that already knows the rule.
 
+`remove_dropped` removes the `drop_spans` first and the `drop_traces` after
+them, and the order is load-bearing for the counters: when a span-scope rule
+condemned stored spans of a trace that a later trace-scope rule of the same
+batch dropped whole, the stored spans (and their logs) belong to the first
+rule. Removing the trace first would hand them to the trace rule.
+
 ### Logs (LogQL, and the memory)
 
 `filter_logs` drops a log when any of these holds, and counts it on the rule

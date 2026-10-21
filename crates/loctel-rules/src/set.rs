@@ -407,12 +407,20 @@ impl RuleSet {
         keep
     }
 
-    /// Does what a verdict asks of the store: removes the traces in
-    /// `drop_traces` (spans and logs) and the spans in `drop_spans` (and their
+    /// Does what a verdict asks of the store: removes the spans in
+    /// `drop_spans` (and their logs) and the traces in `drop_traces` (spans and
     /// logs), and credits what was removed to the rule that dropped each
     /// (found in the memory of dropped data, which the verdict has just
     /// filled). Returns the total removed. The plan's `record_removed` is
     /// this, per rule, for a caller that knows the rule.
+    ///
+    /// The spans go first, on purpose: a span-scope rule may have condemned
+    /// stored spans of a trace that a later trace-scope rule of the same batch
+    /// then dropped whole. The spans are the earlier rule's ("a span is counted
+    /// once, on the first rule that dropped it"), so they must be removed, and
+    /// credited, before `remove_trace` sweeps up what is left for the trace's
+    /// rule. (A span-scope rule that comes after a trace-scope one finds
+    /// nothing of that trace live, so it never condemns anything in it.)
     ///
     /// Call it after `filter_spans` and before storing `keep`.
     pub fn remove_dropped(&self, verdict: &SpanVerdict, store: &Store) -> Removed {
@@ -439,11 +447,13 @@ impl RuleSet {
 
         let mut total = Removed::default();
         let mut credits: Vec<(Option<RuleId>, Removed)> = Vec::new();
-        for (trace, rule) in traces {
-            credits.push((rule, store.remove_trace(trace)));
-        }
+        // Spans before traces (see above): what a span-scope rule condemned is
+        // credited to it, and `remove_trace` takes only what is left.
         for ((trace, rule), ids) in spans {
             credits.push((rule, store.remove_spans(trace, &ids)));
+        }
+        for (trace, rule) in traces {
+            credits.push((rule, store.remove_trace(trace)));
         }
 
         let mut state = self.state.lock();
