@@ -5,10 +5,20 @@
 //!   (and reminds you to look at them before committing).
 //! - `run-shot` builds `loctel`, runs it under a virtual X display, captures
 //!   the screen and writes `target/run-shot.png`.
+//! - `next-version` prints the version the next release gets (`version.rs`).
+//! - `release-notes` prints the notes of the next release: the commit subjects
+//!   since the previous version tag, the Mac checklist and the install steps
+//!   (`notes.rs`).
+//! - `mcp-smoke --url URL` checks that the MCP server at URL lists
+//!   `recent_failures` (`smoke.rs`).
 //!
-//! The release subcommands (next-version, release-notes, mcp-smoke) arrive
-//! with the tasks that need them. This crate uses only the standard library,
-//! so `cargo xtask` starts fast and has nothing to upgrade.
+//! The last three are what `.github/workflows/release.yml` runs. Only
+//! `mcp-smoke` needs more than the standard library (rmcp's client), which is
+//! why `cargo xtask` has a few dependencies at all.
+
+mod notes;
+mod smoke;
+mod version;
 
 use std::env;
 use std::ffi::OsString;
@@ -22,6 +32,13 @@ commands:
   screenshots [--update]  run the screenshot tests; --update rewrites the
                           reference PNGs (view them before committing)
   run-shot                run `loctel` under xvfb-run and write target/run-shot.png
+  next-version            print the next release's version (the highest vX.Y.Z
+                          tag with its patch plus one; v0.1.0 with no tags)
+  release-notes           print the next release's notes: the commit subjects
+                          since the previous version tag, the Mac checklist and
+                          the install steps
+  mcp-smoke --url URL     exit 0 only if the MCP server at URL lists the tool
+                          `recent_failures` (the release job's smoke test)
 ";
 
 fn main() -> ExitCode {
@@ -46,6 +63,9 @@ fn main() -> ExitCode {
 enum XtaskCommand {
     Screenshots { update: bool },
     RunShot,
+    NextVersion,
+    ReleaseNotes,
+    McpSmoke { url: String },
 }
 
 fn parse(args: &[String]) -> Result<XtaskCommand, String> {
@@ -60,6 +80,18 @@ fn parse(args: &[String]) -> Result<XtaskCommand, String> {
         ("screenshots", [other, ..]) => Err(format!("screenshots: unknown argument `{other}`")),
         ("run-shot", []) => Ok(XtaskCommand::RunShot),
         ("run-shot", [other, ..]) => Err(format!("run-shot: unknown argument `{other}`")),
+        ("next-version", []) => Ok(XtaskCommand::NextVersion),
+        ("next-version", [other, ..]) => Err(format!("next-version: unknown argument `{other}`")),
+        ("release-notes", []) => Ok(XtaskCommand::ReleaseNotes),
+        ("release-notes", [other, ..]) => Err(format!("release-notes: unknown argument `{other}`")),
+        ("mcp-smoke", [flag, url]) if flag == "--url" => {
+            Ok(XtaskCommand::McpSmoke { url: url.clone() })
+        }
+        ("mcp-smoke", []) => Err("mcp-smoke: `--url URL` is required".to_owned()),
+        ("mcp-smoke", [flag]) if flag == "--url" => {
+            Err("mcp-smoke: `--url` needs a value".to_owned())
+        }
+        ("mcp-smoke", [other, ..]) => Err(format!("mcp-smoke: unknown argument `{other}`")),
         (other, _) => Err(format!("unknown command `{other}`")),
     }
 }
@@ -68,6 +100,9 @@ fn run(command: XtaskCommand) -> Result<(), String> {
     match command {
         XtaskCommand::Screenshots { update } => screenshots(update),
         XtaskCommand::RunShot => run_shot(),
+        XtaskCommand::NextVersion => next_version_command(),
+        XtaskCommand::ReleaseNotes => release_notes_command(),
+        XtaskCommand::McpSmoke { url } => smoke::mcp_smoke(&url),
     }
 }
 
@@ -219,6 +254,63 @@ fn run_shot() -> Result<(), String> {
     Ok(())
 }
 
+/// The Mac checklist that goes into every release's notes, relative to the
+/// workspace root.
+const CHECKLIST: &str = "docs/milestones/mac-checklist.md";
+
+/// The lines `git <args>` prints, run in `root`.
+fn git_lines(root: &Path, args: &[&str]) -> Result<Vec<String>, String> {
+    let output = Command::new("git")
+        .current_dir(root)
+        .args(args)
+        .output()
+        .map_err(|error| format!("cannot run git: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "`git {}` failed ({}): {}",
+            args.join(" "),
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect())
+}
+
+/// Every tag that looks like a release (`v...`) in the repository at `root`.
+/// A shallow checkout has none, so the release job fetches the full history.
+fn release_tags(root: &Path) -> Result<Vec<String>, String> {
+    git_lines(root, &["tag", "--list", "v*"])
+}
+
+/// The subject line of every commit since the previous release (the highest
+/// `vX.Y.Z` tag), newest first; all commits when there is no release yet.
+fn subjects_since_last_release(root: &Path) -> Result<Vec<String>, String> {
+    let range = match version::latest_tag(&release_tags(root)?) {
+        Some(tag) => format!("{tag}..HEAD"),
+        None => "HEAD".to_owned(),
+    };
+    git_lines(root, &["log", "--format=%s", &range])
+}
+
+fn next_version_command() -> Result<(), String> {
+    let tags = release_tags(&workspace_root())?;
+    println!("{}", version::next_version(&tags));
+    Ok(())
+}
+
+fn release_notes_command() -> Result<(), String> {
+    let root = workspace_root();
+    let subjects = subjects_since_last_release(&root)?;
+    let checklist_path = root.join(CHECKLIST);
+    let checklist = std::fs::read_to_string(&checklist_path)
+        .map_err(|error| format!("cannot read {}: {error}", checklist_path.display()))?;
+    print!("{}", notes::release_notes(&subjects, &checklist));
+    Ok(())
+}
+
 fn on_path(program: &str) -> bool {
     env::var_os("PATH")
         .is_some_and(|paths| env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
@@ -251,6 +343,14 @@ mod tests {
             Ok(XtaskCommand::Screenshots { update: true })
         );
         assert_eq!(parsed(&["run-shot"]), Ok(XtaskCommand::RunShot));
+        assert_eq!(parsed(&["next-version"]), Ok(XtaskCommand::NextVersion));
+        assert_eq!(parsed(&["release-notes"]), Ok(XtaskCommand::ReleaseNotes));
+        assert_eq!(
+            parsed(&["mcp-smoke", "--url", "http://127.0.0.1:4319/mcp"]),
+            Ok(XtaskCommand::McpSmoke {
+                url: "http://127.0.0.1:4319/mcp".to_owned()
+            })
+        );
     }
 
     #[test]
@@ -263,11 +363,136 @@ mod tests {
                 .contains("--bogus")
         );
         assert!(parsed(&["run-shot", "extra"]).is_err());
+        assert!(parsed(&["next-version", "extra"]).is_err());
+        assert!(parsed(&["release-notes", "extra"]).is_err());
+    }
+
+    #[test]
+    fn mcp_smoke_needs_its_url() {
+        assert!(parsed(&["mcp-smoke"]).unwrap_err().contains("--url"));
+        assert!(
+            parsed(&["mcp-smoke", "--url"])
+                .unwrap_err()
+                .contains("value")
+        );
+        assert!(
+            parsed(&["mcp-smoke", "http://x/mcp"])
+                .unwrap_err()
+                .contains("http://x/mcp")
+        );
+        assert!(parsed(&["mcp-smoke", "--url", "a", "b"]).is_err());
     }
 
     #[test]
     fn the_workspace_root_has_the_workspace_manifest() {
         assert!(workspace_root().join("Cargo.toml").is_file());
         assert!(workspace_root().join("xtask").is_dir());
+    }
+
+    #[test]
+    fn the_release_job_has_a_checklist_to_put_in_the_notes() {
+        // The job runs `release-notes` on every merge: a renamed or emptied
+        // checklist file would fail the release, so this fails first.
+        let checklist = std::fs::read_to_string(workspace_root().join(CHECKLIST))
+            .expect("docs/milestones/mac-checklist.md exists");
+
+        assert!(
+            checklist.contains("\n1. "),
+            "the checklist is a numbered list"
+        );
+        // It goes in under the notes' own "Check on your Mac" heading.
+        assert!(!checklist.starts_with('#'), "the checklist has no title");
+        let notes = notes::release_notes(&["feat: x".to_owned()], &checklist);
+        assert!(notes.contains(&checklist));
+    }
+
+    /// A scratch repository whose commits and tags the tests write by hand.
+    struct Repo(tempfile::TempDir);
+
+    impl Repo {
+        fn new() -> Repo {
+            let repo = Repo(tempfile::tempdir().unwrap());
+            repo.git(&["init", "--quiet"]);
+            repo
+        }
+
+        fn path(&self) -> &Path {
+            self.0.path()
+        }
+
+        /// Runs git with an identity and without signing, whatever the
+        /// machine's own configuration says.
+        fn git(&self, args: &[&str]) {
+            let status = Command::new("git")
+                .current_dir(self.path())
+                .args([
+                    "-c",
+                    "user.name=test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "tag.gpgsign=false",
+                ])
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        }
+
+        fn commit(&self, subject: &str) {
+            self.git(&["commit", "--quiet", "--allow-empty", "-m", subject]);
+        }
+
+        fn tag(&self, name: &str) {
+            self.git(&["tag", name]);
+        }
+    }
+
+    #[test]
+    fn with_no_release_tag_every_commit_is_in_the_notes_and_the_version_is_the_first() {
+        let repo = Repo::new();
+        repo.commit("feat: first");
+        repo.commit("fix: second");
+        repo.tag("not-a-release");
+
+        assert_eq!(
+            subjects_since_last_release(repo.path()).unwrap(),
+            ["fix: second", "feat: first"]
+        );
+        assert_eq!(
+            version::next_version(&release_tags(repo.path()).unwrap()),
+            "v0.1.0"
+        );
+    }
+
+    #[test]
+    fn the_notes_start_after_the_highest_version_tag() {
+        let repo = Repo::new();
+        repo.commit("feat: old");
+        repo.tag("v0.1.9");
+        repo.commit("feat: between");
+        repo.tag("v0.1.10");
+        repo.commit("fix: new (#7)");
+        repo.commit("docs: newer (#8)");
+
+        assert_eq!(
+            subjects_since_last_release(repo.path()).unwrap(),
+            ["docs: newer (#8)", "fix: new (#7)"]
+        );
+        assert_eq!(
+            version::next_version(&release_tags(repo.path()).unwrap()),
+            "v0.1.11"
+        );
+    }
+
+    #[test]
+    fn git_failures_are_reported_with_the_command() {
+        let not_a_repo = tempfile::tempdir().unwrap();
+
+        let error = release_tags(not_a_repo.path()).unwrap_err();
+
+        assert!(error.contains("git tag --list"), "{error}");
     }
 }

@@ -1,6 +1,11 @@
 # Cargo build output (includes target/screenshot-diffs)
 /target
 
+# What script/bundle-mac.sh and the release job leave in the root
+/loctel.app/
+/loctel-v*.dmg
+/notes.md
+
 # Editors and OS
 .DS_Store
 .idea/

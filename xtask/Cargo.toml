@@ -6,5 +6,15 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+# Only `mcp-smoke` needs these: it is the release job's MCP client.
+[dependencies]
+rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
+reqwest.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+loctel-engine.workspace = true
+tempfile.workspace = true
+
 [lints]
 workspace = true

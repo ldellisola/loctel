@@ -33,5 +33,23 @@ gpui-pre-platform.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 
+# What `cargo bundle` puts in loctel.app (script/bundle-mac.sh runs it from the
+# workspace root, so the paths below are relative to that root). cargo-bundle
+# writes the executable's name (`loctel`, from the [[bin]] above) into the
+# bundle on its own. The macOS-only keys sit in their own table, without the
+# `osx_` prefix the older flat names had (docs/decisions/0010).
+[package.metadata.bundle]
+name = "loctel"
+identifier = "io.github.ldellisola.loctel"
+icon = ["crates/loctel-app/bundle/AppIcon.svg"]
+
+[package.metadata.bundle.macos]
+minimum_system_version = "26.0"
+# cargo-bundle copies this file as it is into the top level of Info.plist, so it
+# holds bare key and value pairs (an XML comment would end up in the plist too).
+# `LSUIElement` makes the app an accessory: no Dock icon, not even a flash of one
+# at launch.
+info_plist_exts = ["crates/loctel-app/bundle/info-plist-ext.xml"]
+
 [lints]
 workspace = true

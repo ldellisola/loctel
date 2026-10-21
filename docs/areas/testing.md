@@ -325,6 +325,7 @@ tested in `crates/loctel-app/tests/headless.rs`. See
 | `tests/agent_flow.rs` | `agent_flow_since_marker` | marker, then a success and a failure: `recent_failures(since)` is exactly 1 failed and 0 errors-inside, `search_traces(since)` is 2, and the earlier failure is left out |
 | `tests/agent_flow.rs` | `health_checks_are_visible` | until the discard rules of Milestone 2 exist, health checks are stored and listed among the real traces |
 | `tests/pause.rs` | `paused_engine_stores_nothing` | paused over every transport: success to the exporter, nothing held, nothing found; after resuming only the new trace is there |
+| `tests/release_fixture.rs` | `one_span_fixture_is_accepted_and_stored` | `fixtures/one-span.json`, the request the release job posts to the built app, gets a success over HTTP JSON with no rejected span, and the trace (one span of `release-smoke`) is complete and visible through `get_trace`. The job's `curl -f` cannot see a `partial_success` rejection, so this test guards the file (see [`release.md`](release.md)) |
 
 ### Writing one
 
@@ -349,3 +350,24 @@ tested in `crates/loctel-app/tests/headless.rs`. See
   the regression test in that crate; the end-to-end test then stays as the
   proof it works through the whole path.
 
+
+## Release tooling: `xtask`
+
+```bash
+cargo test -p xtask   # about a second once built
+```
+
+The unit tests of the pieces the release job runs, all on Linux (the macOS
+parts of the pipeline cannot be tested here; see [`release.md`](release.md)):
+
+- `version.rs`: no tags gives `v0.1.0`; the highest `vX.Y.Z` has its patch
+  bumped, compared as numbers (`[v0.1.4, v0.1.10, v0.0.9]` gives `v0.1.11`);
+  tags that are not versions are ignored.
+- `notes.rs`: the three sections in order (Changes, Check on your Mac,
+  Installing), the checklist carried over unchanged, the Open Anyway and
+  `xattr -dr com.apple.quarantine` steps present.
+- `main.rs`: the command line, and the git glue against scratch repositories
+  (the commits since the highest version tag, the tags of a repository).
+- `smoke.rs`: `mcp-smoke` passes against a real engine (the same one
+  `loctel --headless` runs) and fails when nothing listens or the tool is
+  missing.

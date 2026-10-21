@@ -65,15 +65,19 @@ marked as a template, so AppKit colours it for a light or dark menu bar and for
 the open menu. `assets/status-icon.svg` is the source geometry, and
 `script/gen-status-icon.py` (needs Pillow) draws the PNGs from it. Change the
 glyph there, then run the script and the tests; `icon.rs` pins the sizes, that
-the ink is black, and the three rings. The release's `.icns` (Milestone 1,
-release task) comes from the same glyph.
+the ink is black, and the three rings. The app's own icon (Finder, the `.dmg`,
+Login Items) is `crates/loctel-app/bundle/AppIcon.svg`: the same geometry in the
+accent colour on a dark rounded square, which cargo-bundle renders into the
+bundle's `.icns` (see [`release.md`](release.md)). Change the glyph in both.
 
 ## Activation policy and quitting
 
 - loctel is an **accessory app** (design §9.1): no Dock icon, no menu bar of its
   own, and it is not in ⌘-Tab. `main.rs` sets `ActivationPolicy::Accessory`
-  once the app has launched. The release bundle also sets `LSUIElement` (release
-  task), which is what stops a Dock icon from flashing at launch.
+  once the app has launched. The release bundle also sets `LSUIElement`
+  (`crates/loctel-app/bundle/info-plist-ext.xml`, which cargo-bundle copies into
+  `Info.plist`, and `script/bundle-mac.sh` checks that it landed), which is what
+  stops a Dock icon from flashing at launch.
 - Showing in the Dock and ⌘-Tab while a window is open is the main window's job
   (Milestone 3: switch to `Regular` on open, back to `Accessory` on close).
 - **`QuitMode::Explicit`**: closing the last window never quits, because the
@@ -95,8 +99,10 @@ release task) comes from the same glyph.
   `--grpc-port 0` are not in them, so they are never written down.
 - A `settings.toml` that exists but does not parse is not rewritten, and the
   login item is left alone that launch (the file's error is printed).
-- Registering needs a code-signed app bundle. From `cargo run` (no bundle) it
-  fails with the system's message; that is expected during development.
+- Registering needs a code-signed app bundle. The release bundle is signed ad
+  hoc (`script/bundle-mac.sh`, see [`release.md`](release.md)); from `cargo run`
+  (no bundle) it fails with the system's message, which is expected during
+  development.
 
 ## Checking the macOS code from Linux
 
@@ -147,6 +153,10 @@ and a failure goes in `docs/decisions/` or an issue:
     not turn it back on;
   - after logging out and in, loctel is running.
 - **⌘Q** is absent from the menu (see above); decide whether that matters.
+- **The bundle** (built by the release job, see [`release.md`](release.md)): it
+  opens after **Open Anyway** (the ad-hoc signature is accepted and macOS does
+  not call the app damaged), its icon looks right in Finder, in the `.dmg` window
+  and in Login Items, and `LSUIElement` really keeps the Dock icon away.
 
 ## Tests
 

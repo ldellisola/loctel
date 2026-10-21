@@ -18,6 +18,8 @@ PACKAGES=(
   libvulkan1 mesa-vulkan-drivers libegl1 libegl-mesa0
   # virtual display and screenshot tooling, protobuf for OTLP
   xvfb xdotool imagemagick protobuf-compiler
+  # lints the scripts in script/ (and the `run:` steps actionlint finds)
+  shellcheck
 )
 
 # Run as root directly, otherwise through sudo.

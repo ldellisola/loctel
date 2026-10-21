@@ -1,0 +1,97 @@
+name: release
+
+# Every merge to main publishes a GitHub release with an unsigned .dmg (design
+# 10.3). This is the only workflow that uses the macOS runner: it is slow, so
+# pull requests never get it (ci.yml checks the macOS code from Linux).
+#
+# The agent that merged watches this job and fixes it if it fails, because
+# nobody else does. See docs/areas/release.md.
+on:
+  push:
+    branches: [main]
+
+# One release at a time: two merges close together queue, and the second gets
+# the next version number after the first has been tagged.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    runs-on: macos-26
+    steps:
+      # The whole history and every tag: the version and the notes are worked
+      # out from the previous release's tag.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install the pinned toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      # Xcode 26 no longer ships the Metal shader compiler that GPUI's build
+      # script runs. Fetch it when the runner image does not have it.
+      - name: Make sure the Metal shader compiler is installed
+        run: |
+          if ! xcrun -sdk macosx metal --version >/dev/null 2>&1; then
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+      # Before the bundle, which needs the version, and before the new tag
+      # exists, so the notes cover everything since the previous release.
+      - name: Work out the version and the release notes
+        run: |
+          version=$(cargo xtask next-version)
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          cargo xtask release-notes > notes.md
+          echo "Releasing $version"
+          cat notes.md
+      - name: Build
+        run: cargo build --release -p loctel-app
+      - name: Install cargo-bundle
+        run: cargo install cargo-bundle --version 0.12.0 --locked
+      - name: Bundle loctel.app and the .dmg
+        run: script/bundle-mac.sh "$VERSION"
+      # Launch the bundled binary, check that it takes OTLP and answers MCP,
+      # and that it quits cleanly on SIGTERM.
+      - name: Smoke test
+        run: |
+          loctel.app/Contents/MacOS/loctel --headless --grpc-port 24317 --http-port 24318 --mcp-port 24319 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+
+          accepted=
+          for _ in $(seq 1 50); do
+            if ! kill -0 "$pid" 2>/dev/null; then
+              echo "loctel exited before it answered" >&2
+              exit 1
+            fi
+            if curl -sf -X POST -H 'content-type: application/json' --data @crates/loctel-e2e/fixtures/one-span.json http://127.0.0.1:24318/v1/traces; then
+              accepted=yes
+              break
+            fi
+            sleep 0.2
+          done
+          if [ -z "$accepted" ]; then
+            echo "loctel did not accept the trace on port 24318" >&2
+            exit 1
+          fi
+
+          cargo xtask mcp-smoke --url http://127.0.0.1:24319/mcp
+
+          kill "$pid"
+          wait "$pid"
+      # The tag is made here, at the commit that was built (without --target
+      # it would be the head of main, which a later merge may have moved).
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$VERSION" "loctel-$VERSION.dmg" \
+            --target "$GITHUB_SHA" \
+            --title "loctel $VERSION" \
+            --notes-file notes.md

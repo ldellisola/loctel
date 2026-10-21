@@ -14,9 +14,10 @@ crate.
 
 ## Crate map
 
-Status says what is in the repository now. Rows marked "planned" are the
-Milestone 1 target from `superpowers/plans/2026-10-21-loctel-m1-core.md`;
-the task that creates a crate changes its row.
+Status says what is in the repository now. This is the Milestone 1 set, from
+`superpowers/plans/2026-10-21-loctel-m1-core.md`: every crate in that plan
+exists. Later milestones add crates (query languages, rules) and change rows;
+the change that adds a crate updates this table and the diagram below it.
 
 | Crate | Layer | Owns | Status |
 |---|---|---|---|
@@ -29,13 +30,32 @@ the task that creates a crate changes its row.
 | `loctel-e2e` | test tooling | End-to-end tests through real OTLP and a real MCP client (`publish = false`) | implemented: a `Harness` over a real engine and six tests (see "Test tooling" below) |
 | `loctel-ui` | UI | GPUI views and the headless screenshot harness | implemented: the status view, the shared menu text, the theme, and `testing::{render_png, assert_snapshot}` behind the `screenshot` feature (see "UI" below) |
 | `loctel-macos` | macOS | Status item, activation policy, login item (`cfg(target_os = "macos")`) | implemented, never run: the menu bar item and its menu, the login item and the first-launch step; empty off macOS apart from three plain-Rust modules that the Linux tests cover (see "macOS shell" below) |
-| `loctel-app` | binary | The `loctel` binary: headless mode and GUI, bundle metadata | implemented: headless mode, on Linux the status window and on macOS the menu bar app (see "Headless mode", "UI" and "macOS shell" below); the bundle metadata comes with the release task |
-| `xtask` | tooling | Screenshots, next-version, release notes, MCP smoke test | `screenshots [--update]` and `run-shot` (see "UI" below); the release subcommands arrive with the release task |
+| `loctel-app` | binary | The `loctel` binary: headless mode and GUI, bundle metadata | implemented: headless mode, on Linux the status window and on macOS the menu bar app (see "Headless mode", "UI" and "macOS shell" below); `[package.metadata.bundle]` and `bundle/` hold what goes into `loctel.app` (see "Release pipeline" below) |
+| `xtask` | tooling | Screenshots, next-version, release notes, MCP smoke test | implemented: `screenshots [--update]`, `run-shot`, `next-version`, `release-notes` and `mcp-smoke --url URL` (see "UI" and "Release pipeline" below) |
+
+Who depends on whom (an arrow reads "depends on"; edges that only tests use
+are left out):
+
+```
+ loctel-app  (the `loctel` binary)
+   |--> loctel-engine --+--> loctel-mcp ---+--> loctel-store ----> loctel-model
+   |                    |                  |--> loctel-ingest ---> loctel-model
+   |                    |                  `--> loctel-model
+   |                    |--> loctel-ingest
+   |                    |--> loctel-store
+   |                    `--> loctel-model
+   |--> loctel-ui     (Linux window; owns `menu_text`) --> loctel-engine
+   `--> loctel-macos  (macOS only) --> loctel-engine, loctel-ui
+
+ loctel-meshgen --> loctel-model                      (test tooling)
+ loctel-e2e     --> loctel-engine, loctel-meshgen     (+ rmcp's client)
+ xtask          --> rmcp's client                     (+ loctel-engine in its tests)
+```
 
 ## Data flow
 
-Target shape for Milestone 1 (everything runs on Linux except the macOS
-status item, which is written and type-checked but has never run):
+The Milestone 1 shape. Everything runs on Linux except the macOS status item,
+which is written and type-checked but has never run:
 
 ```
  services (Docker or bare metal)
@@ -371,6 +391,38 @@ the way an agent does. Tests cover each transport, late-span assembly, the
 service map, the marker flow, health checks and pause. See "End-to-end tests"
 in [`areas/testing.md`](areas/testing.md) and
 [`decisions/0007-e2e-harness-choices.md`](decisions/0007-e2e-harness-choices.md).
+
+## Release pipeline
+
+Every merge to main becomes a GitHub release with an unsigned `.dmg`. It is the
+only place the `macos-26` runner is used. The steps, the version and notes
+rules, the bundle contents, the Gatekeeper steps and the list of what has not
+run on a Mac yet are in [`areas/release.md`](areas/release.md).
+
+```
+ push to main
+     |
+     v
+ .github/workflows/release.yml  (macos-26; concurrency: one release at a time)
+     |
+     |-- cargo xtask next-version -----> vX.Y.Z   (highest tag, patch + 1)
+     |-- cargo xtask release-notes ----> notes.md (commit subjects since the previous tag
+     |                                             + docs/milestones/mac-checklist.md
+     |                                             + install steps)
+     |-- cargo build --release -p loctel-app
+     |-- script/bundle-mac.sh vX.Y.Z
+     |       cargo-bundle (crates/loctel-app/Cargo.toml metadata, bundle/AppIcon.svg,
+     |       LSUIElement) --> loctel.app --> codesign --sign - (ad hoc)
+     |       --> staged with an Applications symlink --> hdiutil --> loctel-vX.Y.Z.dmg
+     |-- smoke: loctel.app --headless on ports 24317-24319
+     |       <-- curl crates/loctel-e2e/fixtures/one-span.json (OTLP/JSON)
+     |       <-- cargo xtask mcp-smoke (rmcp client: lists `recent_failures`)
+     `-- gh release create vX.Y.Z loctel-vX.Y.Z.dmg --notes-file notes.md
+```
+
+`xtask` depends on rmcp's client for `mcp-smoke` and nothing else outside the
+standard library; `one-span.json` is kept valid by a test in `loctel-e2e`
+(`tests/release_fixture.rs`).
 
 ## Platform
 
