@@ -87,6 +87,16 @@ cargo xtask run-shot
 cargo xtask screenshots --update
 ```
 
+The macOS code (`crates/loctel-macos`, and the macOS half of `crates/loctel-app`)
+is compiled out of the Linux build, so the gate never sees it. Type-check and
+lint it for the Mac from Linux with the command below (`ci.yml` runs it too).
+Nothing can run it here: what it does on a Mac stays "unverified" until the
+milestone check, and [`docs/areas/macos.md`](docs/areas/macos.md) lists what:
+
+```bash
+bash script/check-macos.sh --all-targets
+```
+
 The end-to-end tests (real OTLP in, a real MCP client out, driven by the same
 fake mesh) run with the rest of `cargo test --workspace`, and alone with
 `cargo test -p loctel-e2e` (a few seconds). Read the "End-to-end tests" section

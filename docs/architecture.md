@@ -28,14 +28,14 @@ the task that creates a crate changes its row.
 | `loctel-meshgen` | test tooling | Fake microservice mesh scenarios (library and `meshgen` binary) | implemented: six scenarios and a sender over gRPC, HTTP protobuf and HTTP JSON (see "Test tooling" below) |
 | `loctel-e2e` | test tooling | End-to-end tests through real OTLP and a real MCP client (`publish = false`) | implemented: a `Harness` over a real engine and six tests (see "Test tooling" below) |
 | `loctel-ui` | UI | GPUI views and the headless screenshot harness | implemented: the status view, the shared menu text, the theme, and `testing::{render_png, assert_snapshot}` behind the `screenshot` feature (see "UI" below) |
-| `loctel-macos` | macOS | Status item, activation policy, login item (`cfg(target_os = "macos")`) | planned |
-| `loctel-app` | binary | The `loctel` binary: headless mode and GUI, bundle metadata | implemented: headless mode, and on Linux the status window (see "Headless mode" and "UI" below); the macOS shell comes with the macOS task |
+| `loctel-macos` | macOS | Status item, activation policy, login item (`cfg(target_os = "macos")`) | implemented, never run: the menu bar item and its menu, the login item and the first-launch step; empty off macOS apart from three plain-Rust modules that the Linux tests cover (see "macOS shell" below) |
+| `loctel-app` | binary | The `loctel` binary: headless mode and GUI, bundle metadata | implemented: headless mode, on Linux the status window and on macOS the menu bar app (see "Headless mode", "UI" and "macOS shell" below); the bundle metadata comes with the release task |
 | `xtask` | tooling | Screenshots, next-version, release notes, MCP smoke test | `screenshots [--update]` and `run-shot` (see "UI" below); the release subcommands arrive with the release task |
 
 ## Data flow
 
-Target shape for Milestone 1 (the macOS status item is not wired in yet; the
-rest is what runs today, including the Linux status window):
+Target shape for Milestone 1 (everything runs on Linux except the macOS
+status item, which is written and type-checked but has never run):
 
 ```
  services (Docker or bare metal)
@@ -282,8 +282,9 @@ loctel [--headless] [--grpc-port N] [--http-port N] [--mcp-port N]
   engine that cannot start exits 1.
 - **Without `--headless`** on Linux the binary opens the status window (see
   "UI" below) and prints the same listener lines; with no display it says so
-  on stderr and runs headless. On any other OS it does the same as headless
-  until the macOS status item lands, and that branch will live in `main`.
+  on stderr and runs headless. On macOS it is the menu bar app (see "macOS
+  shell" below), and prints the same lines. On any other OS it does the same as
+  headless.
 - **Tests.** `crates/loctel-app/tests/headless.rs` runs the built binary:
   the lines, SIGTERM and SIGINT, a taken port, settings file and flags.
 
@@ -312,6 +313,33 @@ details, the theme tokens and the workflow are in
   **`cargo xtask run-shot`** runs the real window under Xvfb and writes
   `target/run-shot.png`. The repo skills `run-and-screenshot` and
   `update-screenshots` are the procedures.
+
+## macOS shell
+
+`loctel-macos` is the only crate with `objc2` or `unsafe` code, and it is empty
+off macOS (its dependencies are macOS-only) apart from three plain-Rust modules
+that hold decisions and are compiled for tests everywhere: the menu's rows, the
+first-launch step and the icon files. It depends on the engine, `loctel-ui`
+(for `menu_text`), `gpui-pre`, `gpui-tray` (the `NSStatusItem`), `objc2` and
+`objc2-service-management`. The details, the menu and the list of what no one
+has seen work yet are in [`areas/macos.md`](areas/macos.md); the choices and
+their reasons are in
+[`decisions/0009-macos-check-from-linux.md`](decisions/0009-macos-check-from-linux.md).
+
+- **One entry point.** `loctel_macos::install(cx, engine, settings_path)`, called
+  by `loctel-app` inside `Application::run` after it set
+  `ActivationPolicy::Accessory` and `QuitMode::Explicit`. It opens no window.
+  The main window is Milestone 3.
+- **The menu** is the status line (the `menu_text` the Linux window uses),
+  Copy MCP address, Pause or Resume, Start at login (checkmark from the
+  system) and Quit, rebuilt on every click and when its state changes (checked
+  every 2 s).
+- **Start at login** is `SMAppService.mainAppService`, and the system is the
+  source of truth. The first launch turns it on once (`first_launch_done`).
+- **Checked from Linux.** `script/check-macos.sh` type-checks and lints the
+  macOS code for `aarch64-apple-darwin`, with a rustc wrapper that stands in for
+  the one build step that only runs on a Mac; `ci.yml` runs it in the Linux
+  job. Nothing runs it: the macOS runner is only for releases.
 
 ## Test tooling
 

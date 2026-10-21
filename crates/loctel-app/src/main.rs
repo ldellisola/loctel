@@ -3,13 +3,17 @@
 //! Headless mode (`--headless`) serves OTLP with no window, prints one JSON
 //! line per listener and runs until SIGINT or SIGTERM.
 //!
+//! Without `--headless` on macOS it is the product: a menu bar item and no
+//! window, no Dock icon (`loctel_macos::install`), running until the menu's
+//! Quit. It prints the same listener lines as headless mode.
+//!
 //! Without `--headless` on Linux it opens one window with the status view
 //! (`loctel_ui::StatusView`), refreshed every second, and prints the same
 //! listener lines; closing the window quits. With no display to open it on, it
-//! says so and runs headless instead. That window is a development aid: the
-//! product is the macOS menu bar app, which comes with the macOS task. Until
-//! then, running without `--headless` on any other OS is the same as running
-//! with it.
+//! says so and runs headless instead. That window is a development aid.
+//!
+//! On any other OS, running without `--headless` is the same as running with
+//! it.
 
 mod cli;
 
@@ -68,7 +72,12 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
         );
     }
 
-    // Headless, or an OS whose app shell has not landed yet: serve and print.
+    #[cfg(target_os = "macos")]
+    if !cli.headless {
+        return run_menu_bar(cli.engine_config(settings), settings_path);
+    }
+
+    // Headless, or an OS with no app shell: serve and print.
     // Listen for the signals before announcing anything: whoever reads the
     // listener lines may signal right away, and a signal that arrives before
     // the handlers exist would kill the process instead of stopping it.
@@ -77,6 +86,30 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
     print_listeners(&engine.status().listeners)?;
 
     signals.wait();
+    engine.shutdown();
+    Ok(())
+}
+
+/// The macOS app: the engine, and the menu bar item over it. It is an
+/// accessory app (no Dock icon, no menu bar of its own) and quits only when
+/// the menu says so, never because a window closed: it has none. Prints the
+/// listener lines like headless mode does, then runs until Quit.
+#[cfg(target_os = "macos")]
+fn run_menu_bar(config: EngineConfig, settings_path: std::path::PathBuf) -> anyhow::Result<()> {
+    use gpui::{ActivationPolicy, QuitMode};
+
+    let engine = Engine::start(config)?;
+    print_listeners(&engine.status().listeners)?;
+
+    gpui_platform::application()
+        .with_quit_mode(QuitMode::Explicit)
+        .run({
+            let engine = engine.clone();
+            move |cx| {
+                cx.set_activation_policy(ActivationPolicy::Accessory);
+                loctel_macos::install(cx, engine, settings_path);
+            }
+        });
     engine.shutdown();
     Ok(())
 }

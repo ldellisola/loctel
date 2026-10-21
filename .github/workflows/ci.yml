@@ -25,6 +25,10 @@ jobs:
         run: cargo fmt --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # The macOS code is compiled out of the Linux build above, so this
+      # type-checks and lints it for aarch64-apple-darwin. No macOS runner.
+      - name: Type-check and lint the macOS code
+        run: bash script/check-macos.sh --all-targets
       - name: Test
         run: cargo test --workspace
       - name: Upload screenshot diffs
