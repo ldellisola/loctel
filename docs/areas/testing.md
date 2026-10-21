@@ -117,7 +117,10 @@ end-to-end expectations all rely on every row below. Any change to it (a name,
 an offset, a duration, an attribute, a log line) requires updating the
 reference screenshots and the e2e expectations in the same change, and the
 table in `crates/loctel-meshgen/tests/scenarios.rs`, which pins it field by
-field. It is one trace and one batch, with no delay.
+field. The TraceQL evaluator's tests
+(`crates/loctel-query/tests/traceql_eval.rs`) name its spans by row number and
+work out each expected answer from this table, so they change with it. It is
+one trace and one batch, with no delay.
 
 Offsets are milliseconds from `base_unix_nano`.
 

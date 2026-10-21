@@ -10,10 +10,11 @@ pasted from Grafana should work unchanged. Where loctel does not support a
 feature, the parser says so with the feature's name and position, and never
 gives results that quietly differ from Grafana's.
 
-Status (Milestone 2, in progress): the shared pieces and the **TraceQL lexer
-and parser** are implemented. The TraceQL evaluator, LogQL and the rules that
-use them follow (the M2 plan, `superpowers/plans/2026-10-21-loctel-m2-query-rules.md`,
-Tasks 2 to 7). This page grows with each of them.
+Status (Milestone 2, in progress): the shared pieces and the **TraceQL lexer,
+parser and evaluator** (`TraceView`, `evaluate`, `matches_span`) are
+implemented. LogQL and the rules that use them follow (the M2 plan,
+`superpowers/plans/2026-10-21-loctel-m2-query-rules.md`, Tasks 3 to 7). This
+page grows with each of them.
 
 ## Shared pieces
 
@@ -56,6 +57,9 @@ use loctel_query::traceql;
 
 let query = traceql::parse(r#"{ resource.service.name = "web-bff" } >> { status = error }"#)?;
 query.needs_whole_trace();   // true: a structural operator needs the other spans
+
+// Run it over one trace's spans (here `spans: &[Span]`).
+let matched: Vec<usize> = query.evaluate(&traceql::TraceView::new(spans));
 ```
 
 `parse(text) -> Result<TraceQuery, QueryError>`. The AST (`TraceQuery`,
@@ -207,6 +211,94 @@ chain builds a tree as deep as it is long and the evaluator walks it
 recursively. A rules file edited by hand must never be able to overflow the
 stack, so both are errors, not crashes.
 
+### Evaluation
+
+```rust
+let view = TraceView::new(spans);        // indexes the parents once
+let matched = query.evaluate(&view);     // indices into `spans`, ascending, no duplicates
+query.matches_span(&span);               // Some(bool) when !needs_whole_trace(), else None
+```
+
+`TraceView::new(spans)` indexes the parent links and numbers the tree, so that
+a trace of any shape costs O(n) to prepare and ancestry is two integer
+comparisons (`is_ancestor(a, d)`). It never recurses, so a chain of 100,000
+spans is fine. `evaluate` returns the matched spans; **a trace matches a
+query when the result is not empty.** It is linear in the number of spans
+times the size of the query: the structural operators make one pass over the
+spans in preorder instead of testing pairs (100,000 spans, a structural query:
+about 50 ms in a debug build). `matches_span` builds no view and allocates
+nothing of its own, and is what the rules engine calls on each arriving span;
+it agrees with `evaluate` on a one-span view.
+
+`evaluate` and `matches_span` cannot fail: once a query has parsed, a
+comparison that makes no sense is simply false.
+
+| Construct | Meaning |
+|---|---|
+| `{ expr }` | the spans for which `expr` is true; `{ }` is every span |
+| `.x` | the span attribute `x` if the span has it, else the resource attribute |
+| `span.x`, `resource.x` | that scope only; a span attribute of another type does not fall through to the resource |
+| missing attribute | **every comparison is false**, including `!=` and `!~`; `x = nil` is true, `x != nil` is false |
+| present attribute | `x != nil` is true, `x = nil` false (intrinsics are always present, except the root fields below) |
+| `int` vs `int`, `float` vs `float`, `int` vs `float` | numeric (an int and a float compare as numbers: `500 = 500.0`) |
+| `string` vs `string` | `=`, `!=` by value; `<` `>` `<=` `>=` byte by byte (lexical) |
+| `bool` | `=` and `!=` only; `>` and friends are false |
+| duration vs duration | numeric, on nanoseconds: `duration`, `traceDuration` (and `trace:duration`) and duration literals |
+| `status`, `kind` | against their keywords (`error`, `server`, ...); `=` and `!=` only; against a string or a number they are false |
+| `statusMessage`, `name` | strings |
+| any other pair of types | **false**, with no error (`{ span.http.response.status_code = "500" }` on an int attribute matches nothing) |
+| `=~`, `!~` | the left side must be a string, else false (for `!~` too); fully anchored, so `name =~ "POST"` does not match `POST /charges`; `!~` is exactly the opposite for strings |
+| bare attribute `{ span.cache.hit }` | true when it is the boolean `true`; unknown (see below) when missing or not a boolean |
+| `!` | negates a condition; `!(span.x = 1)` is true on a span without `x` (the comparison is false there) |
+| `a && b`, `a \|\| b` inside a filter | as in Tempo, one precedence level, left to right (parser section); `\|\|` is true if either side is true, `&&` false if either is false |
+| `rootName`, `rootServiceName` | the trace's root span's name and service, for every span of the trace; **missing while no root has arrived** (a comparison is false, `rootName = nil` true) |
+| `traceDuration` | earliest span start to latest span end of the trace, clamped at 0; needs no root |
+| `A > B` | the spans of B whose parent is in A |
+| `A < B` | the spans of B that are the parent of some span of A |
+| `A >> B` | the spans of B with an ancestor in A |
+| `A << B` | the spans of B that are an ancestor of some span of A |
+| `A ~ B` | the spans of B that share a parent with a span of A, (a span is never its own sibling) |
+| `A !> B`, `A !< B`, `A !>> B`, `A !<< B`, `A !~ B` | the spans of B **without** that relationship. With nothing in A they give every span of B, as Tempo does |
+| `A && B` (spansets) | the union of A and B when both are non-empty, else nothing |
+| `A \|\| B` (spansets) | the union |
+| `... \| count() OP n` | keeps the whole current result when its size satisfies the comparison, else gives nothing. Stages chain, and the stage applies to the whole spanset expression before it |
+
+Two things about "unknown". A bare attribute that is missing, or not a boolean,
+is neither true nor false. A span matches only when the filter is **true**, so
+`{ span.flag }`, `{ !span.flag }` and `{ span.flag && true }` all match nothing
+on a span without `flag`, while `{ span.flag || true }` matches (true wins an
+`||`, false wins an `&&`, and `!` of unknown stays unknown). Tempo gets the same
+answers by treating `!` of a missing attribute as an error that fails the span.
+
+**The shape of the trace.** A trace is whatever has arrived, so:
+
+- A span whose **parent is missing** is the root of its own subtree: it has no
+  parent (`> <` and `~` skip it), its own descendants stay its descendants, and
+  it is not *the trace's* root. `root()` is the store's rule: the parentless
+  span that started first, ties to the lowest span ID. Several parentless spans
+  are not siblings, and neither are an orphan and the root: a missing parent is
+  not a parent (Tempo also never matches `~` for spans without a parent).
+- Bad data cannot hang or crash it: a span that names itself as its parent is
+  a root of its own subtree; a **loop of parents** is cut at its lowest-numbered
+  span; with **duplicate span IDs**, children attach to the first.
+
+**Where loctel is narrower than Tempo** (all of them never an error, never a
+different answer for a query that is right in both):
+
+- An **int or float attribute does not compare with a duration literal**
+  (`{ span.latency_ns > 1s }` matches nothing). Tempo treats durations as
+  numbers of nanoseconds there. The plan fixes durations as comparing with
+  durations only; changing it means adding the pairs in `compare` in
+  `traceql/eval.rs`.
+- **Array, bytes and map attributes** are present (`!= nil` is true) but equal
+  to nothing and ordered against nothing. Tempo matches an array attribute when
+  any of its elements matches.
+- `traceDuration` is the plain earliest start to latest end. The store's trace
+  duration counts each span's end as no earlier than its own start, which
+  differs only when a span's clock is skewed (end before start).
+- Tempo shows `<root span not yet received>` for the root fields of a trace
+  without a root; here they are missing.
+
 ### Tests
 
 `crates/loctel-query/tests/traceql_parse.rs`: the plan's must-parse list, the
@@ -225,3 +317,14 @@ queries of Tempo's `test_examples.yaml` (plus its 22 "unsupported" ones):
 - 13 of the 70 validation-error queries are accepted, all of them statically
   ill-typed comparisons (`{ 1 = "foo" }`, `{ rootServiceName = 1 }`,
   `{ span:status = nil }`), as described above.
+
+`crates/loctel-query/tests/traceql_eval.rs` (with `tests/fixtures.rs`, which
+builds the fixed `CheckoutFailure` trace through meshgen and the real OTLP
+conversion, and names its spans by their row in the M1 plan's table): the
+plan's examples, every operator and the negated forms (with each answer worked
+out by hand from the table), typing (a table of queries that must and must not
+match a span with every attribute type), missing attributes, unknown logic, the
+root fields, `matches_span` against `evaluate`, orphans, loops, duplicate IDs,
+an empty trace, a chain of 100,000 spans, and the structural operators against
+a brute-force check on a 2,000-span trace. Run it with
+`cargo test -p loctel-query --test traceql_eval`.
