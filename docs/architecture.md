@@ -22,7 +22,7 @@ the task that creates a crate changes its row.
 |---|---|---|---|
 | `loctel-model` | core | Domain types (spans, logs, resources, IDs, severity), independent of OTLP | implemented (see "Domain model" below) |
 | `loctel-store` | core | In-memory store: trace assembly, completeness, dedup, eviction, failure semantics, search, logs, service map | implemented: assembly, completeness, dedup, eviction, failure semantics, trace summaries and search, logs, service map and services list (see "Store" below) |
-| `loctel-ingest` | core | OTLP gRPC and HTTP receivers, protobuf and JSON to model conversion | planned |
+| `loctel-ingest` | core | OTLP gRPC and HTTP receivers, protobuf and JSON to model conversion | implemented: gRPC and HTTP receivers, gzip, conversion, `partial_success` (see "Ingest" below) |
 | `loctel-mcp` | core | MCP server (rmcp, Streamable HTTP), tools and their DTOs | planned |
 | `loctel-engine` | core | Wires store, ingest and MCP; settings, pause, rates; owns threads and runtime | planned |
 | `loctel-meshgen` | test tooling | Fake microservice mesh scenarios (library and `meshgen` binary) | planned |
@@ -133,6 +133,31 @@ details (API, rules and the reasons) are in
   database, queue and external nodes inferred from span attributes
   (design §9.2). External hosts appear only once their trace is complete.
   Node ids are unique within a kind, not across kinds.
+
+## Ingest
+
+`loctel-ingest` depends on `loctel-model`, the OTLP types from
+`opentelemetry-proto`, `tonic` (gRPC) and `axum` (HTTP), and knows nothing
+about the store. The details are in [`areas/ingest.md`](areas/ingest.md). What
+other crates rely on:
+
+- **A sink, not a store.** `start(IngestConfig, Arc<dyn Sink>)` converts what
+  arrives and calls `Sink::spans` or `Sink::logs`. The engine's sink is where
+  pause and the store live. The sink is called from async handlers, so it must
+  not block, and it never sees an empty batch.
+- **Two listeners, independent.** `IngestServers` carries a `ListenerStatus`
+  for `otlp-grpc` and `otlp-http`. A port that cannot be bound is a
+  `ListenerState::Failed` in the status, and the other listener keeps running.
+  The same status types are shared with MCP and the engine.
+- **Lenient in, strict about identity.** A span without a usable trace ID or
+  span ID is rejected and counted in `partial_success`; a parent that is empty,
+  all zeros or the span itself means "root"; a log is never rejected; a
+  resource without `service.name` is kept (`unknown_service`).
+- **Formats and limits.** Protobuf and OTLP/JSON over HTTP, gzip on both
+  transports, requests up to 64 MiB (the libraries default to 4 MiB and 2 MB).
+  Metrics are accepted and dropped.
+- **Lifetime.** The servers run on the runtime that called `start`. Dropping
+  `IngestServers`, or `shutdown(self)`, stops them gracefully.
 
 ## Platform
 

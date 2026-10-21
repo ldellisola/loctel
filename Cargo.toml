@@ -15,5 +15,14 @@ parking_lot = "0.12.5"
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = "1.0.154"
 
+# OTLP ingest (loctel-ingest)
+opentelemetry-proto = { version = "=0.33.1", default-features = false, features = ["gen-tonic", "trace", "logs", "metrics", "with-serde"] }
+tonic = { version = "0.14.6", features = ["server", "gzip"] }
+axum = "0.8.9"
+tower-http = { version = "0.6", features = ["decompression-gzip"] }
+tokio = { version = "1.54.0", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
+prost = "0.14.4"
+flate2 = "1.1.10"
+
 [workspace.lints.clippy]
 all = "warn"

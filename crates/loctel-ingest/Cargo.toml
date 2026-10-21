@@ -1,0 +1,26 @@
+[package]
+name = "loctel-ingest"
+description = "OTLP receivers for loctel: gRPC and HTTP (protobuf and JSON), converted to model types"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+loctel-model.workspace = true
+opentelemetry-proto.workspace = true
+tonic.workspace = true
+axum.workspace = true
+tower-http.workspace = true
+tokio.workspace = true
+prost.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+flate2.workspace = true
+# `io-util` for the raw-socket HTTP client in tests/servers.rs.
+tokio = { workspace = true, features = ["io-util"] }
+
+[lints]
+workspace = true
