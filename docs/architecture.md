@@ -21,7 +21,7 @@ the task that creates a crate changes its row.
 | Crate | Layer | Owns | Status |
 |---|---|---|---|
 | `loctel-model` | core | Domain types (spans, logs, resources, IDs, severity), independent of OTLP | implemented (see "Domain model" below) |
-| `loctel-store` | core | In-memory store: trace assembly, completeness, dedup, eviction, failure semantics, search, logs, service map | planned |
+| `loctel-store` | core | In-memory store: trace assembly, completeness, dedup, eviction, failure semantics, search, logs, service map | partly implemented: assembly, completeness, dedup, eviction (see "Store" below); the rest planned |
 | `loctel-ingest` | core | OTLP gRPC and HTTP receivers, protobuf and JSON to model conversion | planned |
 | `loctel-mcp` | core | MCP server (rmcp, Streamable HTTP), tools and their DTOs | planned |
 | `loctel-engine` | core | Wires store, ingest and MCP; settings, pause, rates; owns threads and runtime | planned |
@@ -87,6 +87,29 @@ Milestone 2) is written to disk.
 - **Serialization.** Every type implements `serde::Serialize` as plain JSON:
   IDs and byte values as lowercase hex strings, attributes as JSON objects (in
   order), enums as `snake_case` strings.
+
+## Store
+
+`loctel-store` depends on `loctel-model`, `parking_lot` and `serde`. The
+details (API, rules and the reasons) are in
+[`areas/store.md`](areas/store.md). What other crates rely on:
+
+- **One entry point.** Everything goes through `Store` (`Clone + Send +
+  Sync`, clones share data). The internals are replaced in Milestone 5, so
+  nothing else may depend on them.
+- **Time is injected.** `Store::new(config, Arc<dyn Clock>)`. `SystemClock`
+  in the app, `ManualClock` in tests, so completeness is tested without
+  sleeping.
+- **Assembly.** Spans join a trace by trace ID in any order. The root is the
+  parentless span (earliest start wins); a span whose parent is missing is an
+  orphan until the parent arrives. `TraceSnapshot` is a copy, with spans
+  sorted by start time, then span ID.
+- **Dedup.** By span ID within a trace, first copy wins. Exporter retries
+  are stored once and counted once.
+- **Complete.** No new span for `completeness_quiet` (10 s by default),
+  computed on read from arrival time, never from span timestamps.
+- **Eviction.** Past `max_traces` the oldest trace by first arrival goes
+  whole, after the whole batch has been applied.
 
 ## Platform
 

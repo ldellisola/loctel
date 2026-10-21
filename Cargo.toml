@@ -10,6 +10,8 @@ rust-version = "1.98.1"
 # Every crate takes its dependencies from here with `dep.workspace = true`.
 # Exact pins are added by the task that first needs each crate.
 [workspace.dependencies]
+loctel-model = { path = "crates/loctel-model" }
+parking_lot = "0.12.5"
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = "1.0.154"
 

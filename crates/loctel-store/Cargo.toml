@@ -1,0 +1,15 @@
+[package]
+name = "loctel-store"
+description = "In-memory store for loctel: trace assembly, completeness, dedup, eviction"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+loctel-model.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true
