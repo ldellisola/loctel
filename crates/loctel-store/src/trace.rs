@@ -1,6 +1,6 @@
 //! One trace: the stored entry and the snapshot handed to readers.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use loctel_model::{Span, SpanId, TraceId};
 
@@ -43,6 +43,9 @@ impl TraceSnapshot {
 
 /// What the store keeps for one trace.
 pub(crate) struct TraceEntry {
+    /// Where the trace sits in the store's order of first arrival (the key of
+    /// the store's `arrival_order`). Never changes while the trace is held.
+    arrival: u64,
     /// In arrival order.
     spans: Vec<Span>,
     /// Span ID to position in `spans`: the dedup index.
@@ -65,9 +68,16 @@ pub(crate) fn root_span(spans: &[Span]) -> Option<&Span> {
         .min_by_key(|span| (span.start_unix_nano, span.span_id))
 }
 
+/// When a span ends, as far as the trace's extent is concerned: an end before
+/// the span's own start (clock skew) counts as that start.
+fn span_end(span: &Span) -> u64 {
+    span.end_unix_nano.max(span.start_unix_nano)
+}
+
 impl TraceEntry {
-    pub(crate) fn new(now: u64) -> Self {
+    pub(crate) fn new(now: u64, arrival: u64) -> Self {
         Self {
+            arrival,
             spans: Vec::new(),
             index: HashMap::new(),
             last_arrival: now,
@@ -80,6 +90,11 @@ impl TraceEntry {
         self.spans.len()
     }
 
+    /// The trace's number in the store's order of first arrival.
+    pub(crate) fn arrival(&self) -> u64 {
+        self.arrival
+    }
+
     /// Adds `span` unless the trace already has a span with that ID (an
     /// exporter retry). Returns whether it was added. Only a new span moves
     /// `last_arrival`, so a retry never makes a complete trace incomplete.
@@ -89,12 +104,38 @@ impl TraceEntry {
         }
         self.index.insert(span.span_id, self.spans.len());
         self.min_start = self.min_start.min(span.start_unix_nano);
-        self.max_end = self
-            .max_end
-            .max(span.end_unix_nano.max(span.start_unix_nano));
+        self.max_end = self.max_end.max(span_end(&span));
         self.spans.push(span);
         self.last_arrival = now;
         true
+    }
+
+    /// Removes the spans whose IDs are in `ids` (IDs the trace does not have
+    /// are ignored) and returns how many went. The dedup index and the
+    /// trace's start and end are brought up to date, so they describe the spans
+    /// that are left. `last_arrival` is left alone: removing a span is not a
+    /// new arrival, and it must not make a quiet trace incomplete again.
+    ///
+    /// Takes time linear in the trace's spans, whatever `ids` holds.
+    pub(crate) fn remove_spans(&mut self, ids: &[SpanId]) -> usize {
+        let doomed: HashSet<SpanId> = ids
+            .iter()
+            .copied()
+            .filter(|id| self.index.contains_key(id))
+            .collect();
+        if doomed.is_empty() {
+            return 0;
+        }
+        self.spans.retain(|span| !doomed.contains(&span.span_id));
+        self.index.clear();
+        self.min_start = u64::MAX;
+        self.max_end = 0;
+        for (position, span) in self.spans.iter().enumerate() {
+            self.index.insert(span.span_id, position);
+            self.min_start = self.min_start.min(span.start_unix_nano);
+            self.max_end = self.max_end.max(span_end(span));
+        }
+        doomed.len()
     }
 
     /// The spans, in arrival order.

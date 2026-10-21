@@ -23,8 +23,8 @@ updates this table and the diagram below it.
 | Crate | Layer | Owns | Status |
 |---|---|---|---|
 | `loctel-model` | core | Domain types (spans, logs, resources, IDs, severity), independent of OTLP | implemented (see "Domain model" below) |
-| `loctel-store` | core | In-memory store: trace assembly, completeness, dedup, eviction, failure semantics, search, logs, service map | implemented: assembly, completeness, dedup, eviction, failure semantics, trace summaries and search, logs, service map and services list (see "Store" below) |
-| `loctel-query` | core | TraceQL and LogQL lexers, parsers and evaluators, with errors that carry the position in the query. Pure: depends only on `loctel-model` (and `regex`) | in progress (Milestone 2): `QueryError`, `Pattern`, duration literals, the TraceQL lexer, parser and evaluator (`TraceView`, `evaluate`, `matches_span`) and LogQL (`logql::parse`, `LogQuery::matches`, `logql::labels`); the store, rules and MCP use them in the next tasks (see "Query languages" below) |
+| `loctel-store` | core | In-memory store: trace assembly, completeness, dedup, eviction, failure semantics, search (with TraceQL and LogQL filters), logs, removal and scans, service map | implemented: assembly, completeness, dedup, eviction, failure semantics, trace summaries and search, logs, service map and services list, and (Milestone 2) query filters with matched spans, `remove_trace`, `remove_spans`, `with_trace_spans` and the scans (see "Store" below) |
+| `loctel-query` | core | TraceQL and LogQL lexers, parsers and evaluators, with errors that carry the position in the query. Pure: depends only on `loctel-model` (and `regex`) | in progress (Milestone 2): `QueryError`, `Pattern`, duration literals, the TraceQL lexer, parser and evaluator (`TraceView`, `evaluate`, `matches_span`) and LogQL (`logql::parse`, `LogQuery::matches`, `logql::labels`); the store uses them as search filters, and rules and MCP will in the next tasks (see "Query languages" below) |
 | `loctel-ingest` | core | OTLP gRPC and HTTP receivers, protobuf and JSON to model conversion | implemented: gRPC and HTTP receivers, gzip, conversion, `partial_success` (see "Ingest" below) |
 | `loctel-mcp` | core | MCP server (rmcp, Streamable HTTP), tools and their DTOs | implemented: nine read-only tools, the `Origin` check, both protocol generations (see "MCP" below) |
 | `loctel-engine` | core | Wires store, ingest and MCP; settings, pause, rates; owns threads and runtime | implemented: store, OTLP receivers and MCP server, `settings.toml`, pause, rates (see "Engine" below) |
@@ -41,6 +41,7 @@ are left out):
 ```
  loctel-app  (the `loctel` binary)
    |--> loctel-engine --+--> loctel-mcp ---+--> loctel-store ----> loctel-model
+   |                    |                  |                 `---> loctel-query
    |                    |                  |--> loctel-ingest ---> loctel-model
    |                    |                  `--> loctel-model
    |                    |--> loctel-ingest
@@ -49,8 +50,8 @@ are left out):
    |--> loctel-ui     (Linux window; owns `menu_text`) --> loctel-engine
    `--> loctel-macos  (macOS only) --> loctel-engine, loctel-ui
 
- loctel-query   --> loctel-model                      (nothing depends on it yet: the store,
-                                                       rules and MCP will, in Milestone 2)
+ loctel-query   --> loctel-model                      (the store depends on it; rules and MCP
+                                                       will, in Milestone 2)
 
  loctel-meshgen --> loctel-model                      (test tooling)
  loctel-e2e     --> loctel-engine, loctel-meshgen     (+ rmcp's client)
@@ -124,8 +125,8 @@ Milestone 2) is written to disk.
 
 ## Store
 
-`loctel-store` depends on `loctel-model`, `parking_lot` and `serde`. The
-details (API, rules and the reasons) are in
+`loctel-store` depends on `loctel-model`, `loctel-query`, `parking_lot` and
+`serde`. The details (API, rules and the reasons) are in
 [`areas/store.md`](areas/store.md). What other crates rely on:
 
 - **One entry point.** Everything goes through `Store` (`Clone + Send +
@@ -153,14 +154,23 @@ details (API, rules and the reasons) are in
   read.
 - **Summaries and search.** `Store::summary` and `Store::search_traces` give
   one-row `TraceSummary` values, newest first, filtered by time, service,
-  errors and duration, with an opaque keyset cursor (`Page`, `PageRequest`).
+  errors, duration and a TraceQL query (`TraceFilter::query`; the summary then
+  lists the first 20 matched spans in `matched_span_ids`), with an opaque keyset
+  cursor (`Page`, `PageRequest`).
 - **Logs.** `Store::ingest_logs` keeps log records in time order (observed
   time when the timestamp is unset), drops exporter retries by
   `LogRecord::dedup_key()` and evicts the oldest past `max_log_records`.
   `Store::search_logs` filters by time, service, minimum severity, body text
   (case-insensitive), trace and span, newest first with the same keyset
-  paging. `Store::logs_for_span` returns a span's logs, oldest first, linked
-  by ID only, so it works whether or not the span is held.
+  paging; `LogFilter::query` adds a LogQL query. `Store::logs_for_span` returns
+  a span's logs, oldest first, linked by ID only, so it works whether or not the
+  span is held.
+- **Removal and scans.** `Store::remove_trace` and `Store::remove_spans`
+  delete stored data for the discard rules (a trace or spans, and their logs),
+  reporting `Removed { spans, logs }`; what is held goes down and the
+  `*_received` totals do not. `Store::with_trace_spans`, `scan_traces` and
+  `scan_logs` read stored data in place, under the read lock, for the rules and
+  their preview.
 - **Service map and services.** `Store::service_map(TimeWindow)` and
   `Store::services(TimeWindow)` are computed on demand from the traces held:
   service nodes with entry-span counts, service-to-service edges, and

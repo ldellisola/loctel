@@ -265,6 +265,8 @@ impl LoctelTools {
             errors_only: args.errors_only.unwrap_or(false),
             // A float cast saturates, and a negative or missing number is 0.
             min_duration_nanos: args.min_duration_ms.map(|ms| (ms * 1_000_000.0) as u64),
+            // The tool takes no query argument yet.
+            query: None,
         };
         let page = self.store.search_traces(
             &filter,
@@ -446,6 +448,8 @@ impl LoctelTools {
             contains: args.contains,
             trace_id: args.trace_id.as_deref().map(parse_trace_id).transpose()?,
             span_id: None,
+            // The tool takes no query argument yet.
+            query: None,
         };
         let page = self.store.search_logs(
             &filter,

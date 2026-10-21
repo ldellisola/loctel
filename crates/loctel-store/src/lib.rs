@@ -11,6 +11,13 @@
 //! their spans. The service map and the services list are computed from the
 //! traces held.
 //!
+//! Searches can carry a parsed TraceQL or LogQL query
+//! ([`TraceFilter::query`], [`LogFilter::query`]); a matching trace lists the
+//! spans the query matched. Stored traces, spans and logs can be removed again
+//! ([`Store::remove_trace`], [`Store::remove_spans`]) and read in place
+//! ([`Store::with_trace_spans`], [`Store::scan_traces`], [`Store::scan_logs`]),
+//! which is what the discard rules are built on.
+//!
 //! Everything goes through [`Store`]; the internals are free to change (the
 //! design replaces them with a spill-to-disk segment store later) as long as
 //! that API holds.
@@ -34,6 +41,6 @@ pub use failure::{FailedIn, TraceStatus, classify, trace_exception};
 pub use logs::LogFilter;
 pub use page::{Page, PageRequest};
 pub use service_map::{NodeKind, ServiceEdge, ServiceMap, ServiceNode, ServiceStats, TimeWindow};
-pub use store::{Store, StoreStats};
-pub use summary::{TraceFilter, TraceSummary};
+pub use store::{Removed, Store, StoreStats};
+pub use summary::{MATCHED_SPANS_MAX, TraceFilter, TraceSummary};
 pub use trace::TraceSnapshot;

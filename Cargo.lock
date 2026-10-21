@@ -3680,7 +3680,10 @@ dependencies = [
 name = "loctel-store"
 version = "0.1.0"
 dependencies = [
+ "loctel-ingest",
+ "loctel-meshgen",
  "loctel-model",
+ "loctel-query",
  "parking_lot",
  "serde",
  "serde_json",

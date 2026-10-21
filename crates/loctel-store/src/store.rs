@@ -1,7 +1,7 @@
 //! The in-memory store.
 
 use std::cmp::Reverse;
-use std::collections::{HashMap, VecDeque, hash_map::Entry};
+use std::collections::{BTreeMap, HashMap, hash_map::Entry};
 use std::sync::Arc;
 
 use loctel_model::{LogRecord, Span, SpanId, TraceId};
@@ -9,12 +9,12 @@ use parking_lot::RwLock;
 
 use crate::clock::{Clock, saturating_nanos};
 use crate::config::StoreConfig;
-use crate::failure::TraceStatus;
+use crate::failure::{TraceStatus, classify};
 use crate::logs::{LogFilter, LogStore};
 use crate::page::{Page, PageRequest};
 use crate::service_map::{Aggregate, ServiceMap, ServiceStats, TimeWindow};
 use crate::summary::{TraceFilter, TraceSummary, decode_cursor, encode_cursor};
-use crate::trace::{TraceEntry, TraceSnapshot};
+use crate::trace::{TraceEntry, TraceSnapshot, root_span};
 
 /// Counts of what the store holds and has received.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -33,6 +33,15 @@ pub struct StoreStats {
     pub logs_received: u64,
 }
 
+/// What a removal took out of the store.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Removed {
+    /// Spans removed.
+    pub spans: usize,
+    /// Log records removed.
+    pub logs: usize,
+}
+
 /// Holds traces and logs in memory. Cloning is cheap and the clones share
 /// the same data, so hand one to every thread that needs it.
 #[derive(Clone)]
@@ -49,9 +58,13 @@ struct Shared {
 #[derive(Default)]
 struct Inner {
     traces: HashMap<TraceId, TraceEntry>,
-    /// Trace IDs by first arrival, oldest first. Holds exactly the keys of
-    /// `traces`.
-    arrival_order: VecDeque<TraceId>,
+    /// Trace IDs by first arrival, oldest first: the key is the trace's
+    /// arrival number (`TraceEntry::arrival`). Holds exactly the traces of
+    /// `traces`. A map rather than a queue so that removing a trace from the
+    /// middle costs a lookup, not a pass over every trace.
+    arrival_order: BTreeMap<u64, TraceId>,
+    /// The arrival number the next new trace gets. Never reused.
+    next_arrival: u64,
     /// Spans across all held traces.
     span_count: usize,
     spans_received: u64,
@@ -120,6 +133,80 @@ impl Store {
         self.shared.inner.read().logs.for_span(trace, span)
     }
 
+    /// Removes the trace and every held log that carries its trace ID (with or
+    /// without a span ID), and says how many spans and logs that was. Costs the
+    /// trace's spans plus its logs, not the size of the store. A trace the
+    /// store does not hold removes only its logs (logs are stored
+    /// independently of spans).
+    ///
+    /// What the store holds goes down; `spans_received` and `logs_received` do
+    /// not change. The removed spans and logs are forgotten, so a retry of one
+    /// of them is accepted again as new.
+    pub fn remove_trace(&self, id: TraceId) -> Removed {
+        self.shared.inner.write().remove_trace(id)
+    }
+
+    /// Removes the given spans of trace `trace` and the logs emitted in them
+    /// (the logs whose trace ID and span ID both match, whether or not the span
+    /// itself is held). A span ID the trace does not have is ignored for the
+    /// spans, and a span listed twice counts once. Removing the last span of
+    /// the trace removes the trace; logs that name the trace but no span stay.
+    ///
+    /// The trace's start, duration and orphans follow the spans that are left.
+    /// Counters behave as for [`remove_trace`](Self::remove_trace).
+    pub fn remove_spans(&self, trace: TraceId, ids: &[SpanId]) -> Removed {
+        self.shared.inner.write().remove_spans(trace, ids)
+    }
+
+    /// Runs `f` on the spans the store holds for trace `id`, under the read
+    /// lock and without copying them, and returns its result. `None` (and `f`
+    /// does not run) if the trace is not held. The spans are in arrival order,
+    /// not sorted.
+    ///
+    /// `f` runs while the store is locked for reading: keep it short, and do
+    /// not call this store from inside it (a write would wait for the lock the
+    /// caller holds).
+    pub fn with_trace_spans<R>(&self, id: TraceId, f: impl FnOnce(&[Span]) -> R) -> Option<R> {
+        let inner = self.shared.inner.read();
+        inner.traces.get(&id).map(|entry| f(entry.spans()))
+    }
+
+    /// Calls `f` on every held trace that starts at or after `since_unix_nano`
+    /// with its ID, its spans (as held, in arrival order) and its status as
+    /// the failure rules read it now. Traces come in the order they first
+    /// arrived, oldest first. For the rules preview and anything else that has
+    /// to look at all of the data.
+    ///
+    /// The same locking rules as [`with_trace_spans`](Self::with_trace_spans):
+    /// `f` runs under the read lock, once per trace, so keep it short.
+    pub fn scan_traces(
+        &self,
+        since_unix_nano: u64,
+        mut f: impl FnMut(TraceId, &[Span], TraceStatus),
+    ) {
+        let inner = self.shared.inner.read();
+        for id in inner.arrival_order.values() {
+            let Some(entry) = inner.traces.get(id) else {
+                continue;
+            };
+            if entry.start_unix_nano() < since_unix_nano {
+                continue;
+            }
+            let spans = entry.spans();
+            let root = root_span(spans).map(|span| span.span_id);
+            let (status, _) = classify(spans, root);
+            f(*id, spans, status);
+        }
+    }
+
+    /// Calls `f` on every held log whose time is at or after
+    /// `since_unix_nano` (the log's own timestamp, or its observed time when it
+    /// has none), oldest first. Runs under the read lock, like
+    /// [`scan_traces`](Self::scan_traces).
+    pub fn scan_logs(&self, since_unix_nano: u64, f: impl FnMut(&LogRecord)) {
+        self.shared.inner.read().logs.scan(since_unix_nano, f);
+    }
+
     /// The service map over the spans that start inside `window`: services
     /// and their dependencies as nodes, calls between them as edges. Computed
     /// from the traces held, on every call. See `docs/areas/store.md`
@@ -165,7 +252,9 @@ impl Store {
     }
 
     /// The traces matching `filter`, newest first by trace start (a tie goes
-    /// to the higher trace ID), one page at a time.
+    /// to the higher trace ID), one page at a time. With a `filter.query`, a
+    /// trace matches when the query matches one of its spans (as the trace is
+    /// held now), and its summary lists the first 20 matched spans.
     ///
     /// The cursor is a keyset: `"{start_unix_nano}-{trace_id}"` of the last
     /// item, so the next page continues right after it even if newer traces
@@ -212,10 +301,20 @@ impl Store {
             {
                 continue;
             }
-            let summary = entry.summary(id, self.shared.is_complete(entry, now));
+            // The query before the summary: it is the condition that usually
+            // rejects, and a rejected trace then costs no summary at all.
+            let matched = match &filter.query {
+                None => Vec::new(),
+                Some(query) => match entry.matched_span_ids(query) {
+                    Some(matched) => matched,
+                    None => continue,
+                },
+            };
+            let mut summary = entry.summary(id, self.shared.is_complete(entry, now));
             if filter.errors_only && summary.status == TraceStatus::Ok {
                 continue;
             }
+            summary.matched_span_ids = matched;
             if items.len() == page.limit {
                 // One more match exists, so there is a next page.
                 next_cursor = items
@@ -270,8 +369,10 @@ impl Inner {
         let entry = match self.traces.entry(trace_id) {
             Entry::Occupied(occupied) => occupied.into_mut(),
             Entry::Vacant(vacant) => {
-                self.arrival_order.push_back(trace_id);
-                vacant.insert(TraceEntry::new(now))
+                let arrival = self.next_arrival;
+                self.next_arrival += 1;
+                self.arrival_order.insert(arrival, trace_id);
+                vacant.insert(TraceEntry::new(now, arrival))
             }
         };
         if entry.insert(span, now) {
@@ -283,12 +384,39 @@ impl Inner {
     /// Drops the oldest traces, whole, until at most `max_traces` remain.
     fn evict_beyond(&mut self, max_traces: usize) {
         while self.traces.len() > max_traces {
-            let Some(oldest) = self.arrival_order.pop_front() else {
+            let Some((_, oldest)) = self.arrival_order.pop_first() else {
                 break;
             };
             if let Some(entry) = self.traces.remove(&oldest) {
                 self.span_count -= entry.len();
             }
         }
+    }
+
+    /// Drops trace `id`, if held, from every place that lists it.
+    fn forget_trace(&mut self, id: TraceId) -> Option<TraceEntry> {
+        let entry = self.traces.remove(&id)?;
+        self.arrival_order.remove(&entry.arrival());
+        self.span_count -= entry.len();
+        Some(entry)
+    }
+
+    fn remove_trace(&mut self, id: TraceId) -> Removed {
+        let spans = self.forget_trace(id).map_or(0, |entry| entry.len());
+        let logs = self.logs.remove_trace(id);
+        Removed { spans, logs }
+    }
+
+    fn remove_spans(&mut self, trace: TraceId, ids: &[SpanId]) -> Removed {
+        let mut spans = 0;
+        if let Some(entry) = self.traces.get_mut(&trace) {
+            spans = entry.remove_spans(ids);
+            self.span_count -= spans;
+            if entry.len() == 0 {
+                self.forget_trace(trace);
+            }
+        }
+        let logs = self.logs.remove_spans(trace, ids);
+        Removed { spans, logs }
     }
 }

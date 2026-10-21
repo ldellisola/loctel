@@ -13,9 +13,11 @@ gives results that quietly differ from Grafana's.
 Status (Milestone 2, in progress): the shared pieces, the **TraceQL lexer,
 parser and evaluator** (`TraceView`, `evaluate`, `matches_span`) and **LogQL**
 (lexer, parser, label set and evaluator: `logql::parse`, `LogQuery::matches`,
-`logql::labels`) are implemented. The store filters and the rules that use
-them follow (the M2 plan, `superpowers/plans/2026-10-21-loctel-m2-query-rules.md`,
-Tasks 4 to 7). This page grows with each of them.
+`logql::labels`) are implemented, and the store uses both as search filters
+(`TraceFilter::query`, `LogFilter::query`; see [`store.md`](store.md), "Query
+filters"). The rules and MCP that use them follow (the M2 plan,
+`superpowers/plans/2026-10-21-loctel-m2-query-rules.md`, Tasks 5 to 7). This
+page grows with each of them.
 
 ## Shared pieces
 

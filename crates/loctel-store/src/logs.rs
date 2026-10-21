@@ -2,14 +2,16 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque, hash_map::Entry};
 use std::ops::Bound;
+use std::sync::Arc;
 
 use loctel_model::{LogRecord, Severity, SpanId, TraceId};
+use loctel_query::logql::LogQuery;
 
 use crate::page::{Page, PageRequest};
 
 /// What [`Store::search_logs`](crate::Store::search_logs) keeps. Every
 /// condition that is set must hold; the default keeps everything.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct LogFilter {
     /// Keep logs at or after this time (the log's own timestamp, or its
     /// observed time when it has none).
@@ -28,6 +30,10 @@ pub struct LogFilter {
     /// Keep logs emitted in a span with this ID (in any trace, unless
     /// `trace_id` is set too).
     pub span_id: Option<SpanId>,
+    /// Keep logs that this LogQL query matches (see
+    /// `loctel_query::logql::LogQuery::matches`). Parsed once by the caller
+    /// and shared, so a search never re-parses it.
+    pub query: Option<Arc<LogQuery>>,
 }
 
 /// Where a held log sits: when it happened, then when it arrived. Unique
@@ -53,6 +59,10 @@ pub(crate) struct LogStore {
     held: HashSet<u64>,
     /// The held logs of each span, oldest first.
     by_span: HashMap<(TraceId, SpanId), VecDeque<LogKey>>,
+    /// The held logs that carry a trace ID (with or without a span ID) by
+    /// trace, oldest first. Lets a whole trace's logs be found and removed
+    /// without a pass over every log.
+    by_trace: HashMap<TraceId, VecDeque<LogKey>>,
     /// Arrival counter for `LogKey`. Never reset, so a cursor taken before a
     /// `clear` cannot point at a later log.
     next_seq: u64,
@@ -87,10 +97,10 @@ impl LogStore {
         let key = (log_time(&record), self.next_seq);
         self.next_seq += 1;
         if let Some(link) = span_link(&record) {
-            let keys = self.by_span.entry(link).or_default();
-            // Almost always the end; a late log lands further in.
-            let at = keys.partition_point(|held| *held < key);
-            keys.insert(at, key);
+            insert_in_order(self.by_span.entry(link).or_default(), key);
+        }
+        if let Some(trace) = record.trace_id {
+            insert_in_order(self.by_trace.entry(trace).or_default(), key);
         }
         self.records.insert(key, Stored { record, dedup });
         true
@@ -103,15 +113,12 @@ impl LogStore {
                 break;
             };
             self.held.remove(&stored.dedup);
-            if let Some(link) = span_link(&stored.record)
-                && let Entry::Occupied(mut keys) = self.by_span.entry(link)
-            {
-                // The oldest log overall is the oldest of its span.
-                let oldest = keys.get_mut().pop_front();
-                debug_assert_eq!(oldest, Some(key));
-                if keys.get().is_empty() {
-                    keys.remove();
-                }
+            // The oldest log overall is the oldest of its span and of its trace.
+            if let Some(link) = span_link(&stored.record) {
+                pop_oldest(&mut self.by_span, link, key);
+            }
+            if let Some(trace) = stored.record.trace_id {
+                pop_oldest(&mut self.by_trace, trace, key);
             }
         }
     }
@@ -121,6 +128,67 @@ impl LogStore {
         self.records.clear();
         self.held.clear();
         self.by_span.clear();
+        self.by_trace.clear();
+    }
+
+    /// Removes every held log that carries `trace` as its trace ID, with or
+    /// without a span ID, and returns how many there were. Costs the number of
+    /// logs the trace has.
+    pub(crate) fn remove_trace(&mut self, trace: TraceId) -> usize {
+        let Some(keys) = self.by_trace.remove(&trace) else {
+            return 0;
+        };
+        let mut removed = 0;
+        for key in keys {
+            if let Some(stored) = self.records.remove(&key) {
+                self.held.remove(&stored.dedup);
+                // Every log of the span is in this trace, so the span's whole
+                // index entry goes (more than once, harmlessly).
+                if let Some(link) = span_link(&stored.record) {
+                    self.by_span.remove(&link);
+                }
+                removed += 1;
+            }
+        }
+        removed
+    }
+
+    /// Removes the held logs of the given spans of `trace` (whether or not the
+    /// spans themselves are held) and returns how many there were. A log with
+    /// the trace's ID but no span ID belongs to no span and stays. Costs the
+    /// number of logs the spans have, plus those of the trace as a whole.
+    pub(crate) fn remove_spans(&mut self, trace: TraceId, spans: &[SpanId]) -> usize {
+        let mut removed: HashSet<LogKey> = HashSet::new();
+        for &span in spans {
+            // Taking the entry makes a span listed twice count once.
+            let Some(keys) = self.by_span.remove(&(trace, span)) else {
+                continue;
+            };
+            for key in keys {
+                if let Some(stored) = self.records.remove(&key) {
+                    self.held.remove(&stored.dedup);
+                    removed.insert(key);
+                }
+            }
+        }
+        if removed.is_empty() {
+            return 0;
+        }
+        if let Entry::Occupied(mut keys) = self.by_trace.entry(trace) {
+            keys.get_mut().retain(|key| !removed.contains(key));
+            if keys.get().is_empty() {
+                keys.remove();
+            }
+        }
+        removed.len()
+    }
+
+    /// Calls `f` on every held log whose time is at or after `since`, oldest
+    /// first.
+    pub(crate) fn scan(&self, since: u64, mut f: impl FnMut(&LogRecord)) {
+        for (_, stored) in self.records.range((since, 0)..) {
+            f(&stored.record);
+        }
     }
 
     /// The logs of one span, oldest first.
@@ -150,6 +218,7 @@ impl LogStore {
             return Page::empty();
         }
         let needle = filter.contains.as_deref().map(str::to_lowercase);
+        let hint = filter.query.as_deref().and_then(LogQuery::service_hint);
 
         let mut items: Vec<LogRecord> = Vec::new();
         let mut last_key = (0, 0);
@@ -159,7 +228,7 @@ impl LogStore {
             if filter.since_unix_nano.is_some_and(|since| key.0 < since) {
                 break;
             }
-            if !matches(filter, needle.as_deref(), &stored.record) {
+            if !matches(filter, needle.as_deref(), hint, &stored.record) {
                 continue;
             }
             if items.len() == page.limit {
@@ -174,9 +243,39 @@ impl LogStore {
     }
 }
 
+/// Puts `key` into `keys`, which is in ascending order. Almost always at the
+/// end; a late log lands further in.
+fn insert_in_order(keys: &mut VecDeque<LogKey>, key: LogKey) {
+    let at = keys.partition_point(|held| *held < key);
+    keys.insert(at, key);
+}
+
+/// Drops `key`, the oldest of all held logs, from the front of the index entry
+/// `id` (it is the oldest of that entry too), and the entry once it is empty.
+fn pop_oldest<K: std::hash::Hash + Eq>(
+    index: &mut HashMap<K, VecDeque<LogKey>>,
+    id: K,
+    key: LogKey,
+) {
+    if let Entry::Occupied(mut keys) = index.entry(id) {
+        let oldest = keys.get_mut().pop_front();
+        debug_assert_eq!(oldest, Some(key));
+        if keys.get().is_empty() {
+            keys.remove();
+        }
+    }
+}
+
 /// Whether `record` passes every condition of `filter` except `since`, which
-/// the scan applies by time order. `needle` is `filter.contains`, lowercased.
-fn matches(filter: &LogFilter, needle: Option<&str>, record: &LogRecord) -> bool {
+/// the scan applies by time order. `needle` is `filter.contains`, lowercased,
+/// and `hint` is the service the query is known to match (its exact
+/// `service_name` selector, if any), a cheap test before the query itself.
+fn matches(
+    filter: &LogFilter,
+    needle: Option<&str>,
+    hint: Option<&str>,
+    record: &LogRecord,
+) -> bool {
     filter.min_severity.is_none_or(|min| record.severity >= min)
         && filter
             .trace_id
@@ -189,6 +288,11 @@ fn matches(filter: &LogFilter, needle: Option<&str>, record: &LogRecord) -> bool
             .as_deref()
             .is_none_or(|service| record.service() == service)
         && needle.is_none_or(|needle| contains_ignore_case(&record.body, needle))
+        && hint.is_none_or(|service| record.service() == service)
+        && filter
+            .query
+            .as_deref()
+            .is_none_or(|query| query.matches(record))
 }
 
 /// Whether `text` contains `needle_lower` (already lowercased), ignoring
