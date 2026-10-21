@@ -271,6 +271,16 @@ pub struct MarkerDto {
 
 // --- services and the map ---------------------------------------------------------
 
+/// `list_services`. An object holding the list, not a bare array: MCP
+/// 2025-11-25 requires an output schema and `structuredContent` to be objects,
+/// and a client that checks `tools/list` against that rule rejects the whole
+/// list if one tool has an array root.
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+pub struct ServiceListDto {
+    /// The services that sent spans, by name.
+    pub services: Vec<ServiceDto>,
+}
+
 /// One line of `list_services`.
 #[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
 pub struct ServiceDto {

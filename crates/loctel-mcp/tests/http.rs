@@ -278,7 +278,46 @@ async fn serves_2025_11_25_clients_with_a_session() {
         .unwrap();
     assert_eq!(list.status(), 200);
     let list = payload(list).await;
-    assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 9);
+    let tools = list["result"]["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 9);
+    // The 2025-11-25 schema requires `outputSchema.type == "object"`, and the
+    // TypeScript SDK Claude Code uses checks it with `z.literal("object")`: a
+    // single tool that fails it makes the client drop the whole list. Read the
+    // raw JSON, as a strict client does.
+    for tool in tools {
+        assert_eq!(
+            tool["outputSchema"]["type"], "object",
+            "{}: outputSchema must have root type object: {tool}",
+            tool["name"]
+        );
+    }
+
+    // And a call answers with an object as `structuredContent`, `list_services`
+    // included (the one tool the plan first made an array).
+    let call = http()
+        .post(&server.url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .header("Mcp-Session-Id", &session)
+        .header("MCP-Protocol-Version", "2025-11-25")
+        .body(
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_services","arguments":{}}}"#,
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(call.status(), 200);
+    let call = payload(call).await;
+    let result = &call["result"];
+    assert_eq!(result["isError"], false, "{call}");
+    assert!(result["structuredContent"].is_object(), "{call}");
+    let services = result["structuredContent"]["services"].as_array().unwrap();
+    assert!(
+        services.iter().any(|s| s["name"] == "payments-api"),
+        "{call}"
+    );
+    let text: Value = serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(text, result["structuredContent"]);
 }
 
 #[tokio::test]

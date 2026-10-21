@@ -194,7 +194,9 @@ other crates rely on:
 for `ListenerStatus`), `rmcp`, `axum`, `tokio`, `schemars`, `chrono` and
 `serde`. The details (the tool table, the sizing rules, how to connect Claude
 Code) are in [`areas/mcp.md`](areas/mcp.md); the choices and their reasons are
-in [`decisions/0006-mcp-server-choices.md`](decisions/0006-mcp-server-choices.md).
+in [`decisions/0006-mcp-server-choices.md`](decisions/0006-mcp-server-choices.md)
+(and [`0011`](decisions/0011-list-services-returns-an-object.md): every result is an
+object, which 2025-11-25 clients require).
 What other crates rely on:
 
 - **Read-only and small.** Nine tools (`get_status`, `get_marker`,

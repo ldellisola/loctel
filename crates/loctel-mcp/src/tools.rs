@@ -26,8 +26,8 @@ use serde_json::{Map, Value};
 
 use crate::dto::{
     ExceptionDto, FailureDto, GetSpanResult, GetTraceResult, LogDto, LogLevel, MarkerDto,
-    RecentFailuresResult, SearchLogsResult, SearchTracesResult, ServiceDto, ServiceMapDto,
-    SpanBriefDto, SpanDetailDto, StatusDto, TraceSummaryDto, rfc3339,
+    RecentFailuresResult, SearchLogsResult, SearchTracesResult, ServiceDto, ServiceListDto,
+    ServiceMapDto, SpanBriefDto, SpanDetailDto, StatusDto, TraceSummaryDto, rfc3339,
 };
 use crate::since::parse_since;
 use crate::trace_view::{self, Detail};
@@ -214,10 +214,12 @@ impl LoctelTools {
     fn list_services(
         &self,
         Parameters(args): Parameters<SinceArgs>,
-    ) -> Result<Json<Vec<ServiceDto>>, String> {
+    ) -> Result<Json<ServiceListDto>, String> {
         let window = window(args.since.as_deref())?;
         let services = self.store.services(window);
-        Ok(Json(services.iter().map(ServiceDto::from).collect()))
+        Ok(Json(ServiceListDto {
+            services: services.iter().map(ServiceDto::from).collect(),
+        }))
     }
 
     #[tool(

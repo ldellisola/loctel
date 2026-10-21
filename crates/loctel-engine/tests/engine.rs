@@ -504,7 +504,7 @@ fn agents_read_the_engine_status_and_the_stored_traces_over_mcp() {
         assert_eq!(traces["traces"][0]["root_service"], "checkout");
 
         let services = call(client, "list_services", serde_json::json!({})).await;
-        assert_eq!(services[0]["name"], "checkout");
+        assert_eq!(services["services"][0]["name"], "checkout");
         let marker = call(client, "get_marker", serde_json::json!({})).await;
         assert!(
             marker["marker"].as_str().unwrap().parse::<u64>().unwrap() > 1_700_000_000_000_000_000

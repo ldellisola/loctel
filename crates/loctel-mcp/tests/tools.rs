@@ -553,6 +553,10 @@ async fn results_have_structured_content_and_text() {
             .structured_content
             .clone()
             .unwrap_or_else(|| panic!("{name}: no structured content"));
+        assert!(
+            structured.is_object(),
+            "{name}: structuredContent must be an object (MCP 2025-11-25): {structured}"
+        );
         // The text is the same JSON.
         let text: Value = serde_json::from_str(&text_of(&result)).unwrap();
         assert_eq!(
@@ -590,6 +594,23 @@ fn there_are_exactly_nine_read_only_tools() {
         );
         let annotations = tool.annotations.as_ref().expect("annotations");
         assert_eq!(annotations.read_only_hint, Some(true), "{}", tool.name);
+    }
+}
+
+#[test]
+fn every_output_schema_has_root_type_object() {
+    // MCP 2025-11-25 requires `outputSchema.type == "object"`, and the
+    // TypeScript SDK Claude Code uses parses `tools/list` against
+    // `z.literal("object")`: one tool with an array root makes the whole list
+    // fail, and the agent sees none of the tools. (2026-07-28 would allow it.)
+    for tool in LoctelTools::definitions() {
+        let schema = tool.output_schema.as_ref().expect("output schema");
+        assert_eq!(
+            schema.get("type"),
+            Some(&json!("object")),
+            "{}: the output schema's root must be `type: object`: {schema:?}",
+            tool.name
+        );
     }
 }
 
@@ -760,7 +781,9 @@ async fn list_services_counts_requests_and_errors() {
 
     let r = fixture.call("list_services", json!({})).await;
 
-    let services = r.as_array().unwrap();
+    // An object, not a bare array: MCP 2025-11-25 clients accept nothing else.
+    assert_eq!(r.as_object().unwrap().len(), 1, "only `services`: {r}");
+    let services = r["services"].as_array().unwrap();
     let names: Vec<&str> = services
         .iter()
         .map(|s| s["name"].as_str().unwrap())
@@ -795,7 +818,7 @@ async fn list_services_counts_requests_and_errors() {
             json!({ "since": (BASE + 10 * SECOND).to_string() }),
         )
         .await;
-    assert_eq!(r, json!([]));
+    assert_eq!(r, json!({ "services": [] }));
 }
 
 #[tokio::test]

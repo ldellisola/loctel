@@ -10,7 +10,7 @@ and the shape of what they return, and it names the pieces (`serve`,
 `LoctelTools`, `StatusSource`, the `Origin` rule, `since`). It leaves open how
 rmcp 3.6 is used (the plan says "use whatever features rmcp 3.6 names") and the
 behavior at the edges. These are the choices a later agent might be tempted to
-undo, and the one risk to check on a Mac.
+undo, and the one risk that was found later (see Consequences).
 
 ## Decision
 
@@ -91,14 +91,13 @@ undo, and the one risk to check on a Mac.
 
 ## Consequences
 
-- **Risk to check on a Mac:** `list_services` returns a top-level array, as the
-  plan's table says, so its output schema has root type `array`. MCP 2026-07-28
-  allows that (rmcp 3.6 says output schemas are not limited to objects) but
-  2025-11-25 limits them to objects, and a client that validates `tools/list`
-  strictly against the older rule could reject the whole list. Linux tests cannot
-  show this. If "Claude Code connects and lists the tools" fails at the Milestone
-  1 check, wrap the result as `{services: [...]}` (one DTO and the tests that read
-  it, plus the table in `docs/areas/mcp.md`), and record it here.
+- **Resolved, see [0011](0011-list-services-returns-an-object.md):** the
+  plan's table made `list_services` return a top-level array, so its output
+  schema had root type `array`. MCP 2026-07-28 allows that, but 2025-11-25
+  requires objects, and the TypeScript SDK Claude Code uses rejects the whole
+  `tools/list` if one tool has a non-object root. That was found over a live
+  2025-11-25 session before the Mac check, and `list_services` now returns
+  `{services: [...]}`. Every tool's schema has an object root, and a test says so.
 - The tool contract (names, arguments, limits, shapes) is what agents learn from
   `tools/list`; change it only with the plan or a later milestone's plan, and
   update `docs/areas/mcp.md` with it.

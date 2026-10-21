@@ -74,10 +74,13 @@ changes rules.
 
 ## Things that go wrong
 
-- A top-level array result is allowed by the 2026-07-28 spec but not by
-  2025-11-25. Prefer an object so every client can read it
-  (`list_services` is the one array, fixed by the plan; see
-  `docs/decisions/0006-mcp-server-choices.md`).
+- **A result must be an object, never a bare array.** MCP 2025-11-25 requires
+  `outputSchema.type == "object"` and an object `structuredContent`, and the
+  TypeScript SDK Claude Code uses parses `tools/list` with `z.literal("object")`:
+  one tool with an array root makes the client drop the whole list. Wrap a list
+  in a struct (`{services: [...]}`, see `ServiceListDto` and
+  `docs/decisions/0011-list-services-returns-an-object.md`). The test
+  `every_output_schema_has_root_type_object` fails otherwise.
 - `Option<T>` fields are nullable and not required in the generated schema. A key
   that is always present and can be `null` needs
   `#[schemars(required, schema_with = "nullable_string")]` (see `dto.rs`), because

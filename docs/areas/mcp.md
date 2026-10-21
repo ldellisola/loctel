@@ -42,7 +42,7 @@ the tool's output schema, plus the same JSON as text.
 |---|---|---|
 | `get_status` | none | `{paused, listeners:[{name,address,state,error?}], spans_per_sec, logs_per_sec, traces_held, spans_held, logs_held}` |
 | `get_marker` | none | `{marker:"<unix nanos>", time:"<RFC 3339>"}` |
-| `list_services` | `since?` | `[{name, requests, errors, error_rate, last_seen}]` |
+| `list_services` | `since?` | `{services:[{name, requests, errors, error_rate, last_seen}]}` |
 | `get_service_map` | `since?` | `{nodes:[{id,kind,requests,errors}], edges:[{from,to,calls,errors}]}` |
 | `search_traces` | `since?, service?, errors_only?, min_duration_ms?, limit?=20 (max 100), cursor?` | `{traces:[TraceSummaryDto], next_cursor}` |
 | `recent_failures` | `since?, limit?=5 (max 20)` | `{failed:[{trace: TraceSummaryDto, failed_in_span: SpanBriefDto, exception?:{type,message,stacktrace}, error_logs:[LogDto]}], errors_inside:[TraceSummaryDto]}` |
@@ -76,11 +76,14 @@ The DTOs (`src/dto.rs`):
   a trace that has not arrived, `next_cursor` on the last page).
 - **Unknown arguments are errors**, so a misspelt filter is reported and not
   silently ignored (the input schemas say `additionalProperties: false`).
-- **`list_services` returns a top-level JSON array**, as the table says, and
-  its output schema has root type `array`. The 2026-07-28 spec allows that;
-  2025-11-25 limits output schemas to objects. If a client of the older
-  generation rejects `tools/list` because of it, wrap the array in an object
-  (see `docs/decisions/0006-mcp-server-choices.md`).
+- **Every result is an object**, and every output schema has root
+  `type: "object"`. MCP 2025-11-25 requires it, and the TypeScript SDK Claude
+  Code uses checks `tools/list` against `z.literal("object")`, so a single tool
+  with an array root would hide all nine from the agent. That is why
+  `list_services` returns `{services: [...]}` and not the bare array the plan's
+  table first said (see `docs/decisions/0011-list-services-returns-an-object.md`).
+  A new tool wraps a list in an object too; `every_output_schema_has_root_type_object`
+  fails if one does not.
 
 ### `since`
 
