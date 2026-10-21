@@ -24,10 +24,10 @@ diagram below it.
 |---|---|---|---|
 | `loctel-model` | core | Domain types (spans, logs, resources, IDs, severity), independent of OTLP | implemented (see "Domain model" below) |
 | `loctel-store` | core | In-memory store: trace assembly, completeness, dedup, eviction, failure semantics, search (with TraceQL and LogQL filters), logs, removal and scans, service map | implemented: assembly, completeness, dedup, eviction, failure semantics, trace summaries and search, logs, service map and services list, and (Milestone 2) query filters with matched spans, `remove_trace`, `remove_spans`, `with_trace_spans` and the scans (see "Store" below) |
-| `loctel-query` | core | TraceQL and LogQL lexers, parsers and evaluators, with errors that carry the position in the query. Pure: depends only on `loctel-model` (and `regex`) | in progress (Milestone 2): `QueryError`, `Pattern`, duration literals, the TraceQL lexer, parser and evaluator (`TraceView`, `evaluate`, `matches_span`) and LogQL (`logql::parse`, `LogQuery::matches`, `logql::labels`); the store and the rules use them, and MCP will in a later task (see "Query languages" below) |
+| `loctel-query` | core | TraceQL and LogQL lexers, parsers and evaluators, with errors that carry the position in the query. Pure: depends only on `loctel-model` (and `regex`) | in progress (Milestone 2): `QueryError`, `Pattern`, duration literals, the TraceQL lexer, parser and evaluator (`TraceView`, `evaluate`, `matches_span`) and LogQL (`logql::parse`, `LogQuery::matches`, `logql::labels`); the store, the rules and MCP (the `query` arguments of `search_traces` and `search_logs`) use them (see "Query languages" below) |
 | `loctel-rules` | core | Discard rules: the rule model and `rules.toml`, `RuleSet` (the ingest filter for spans and logs, with a bounded memory of what was dropped), and the preview | implemented (Milestone 2): `RuleSpec`, `RulesFile`, `RuleSet`, `preview`; the engine runs it at ingest (see "Discard rules" and "Engine" below) |
 | `loctel-ingest` | core | OTLP gRPC and HTTP receivers, protobuf and JSON to model conversion | implemented: gRPC and HTTP receivers, gzip, conversion, `partial_success` (see "Ingest" below) |
-| `loctel-mcp` | core | MCP server (rmcp, Streamable HTTP), tools and their DTOs | implemented: nine read-only tools, the `Origin` check, both protocol generations (see "MCP" below) |
+| `loctel-mcp` | core | MCP server (rmcp, Streamable HTTP), tools and their DTOs | implemented: nine read-only tools, the `Origin` check, both protocol generations and, from Milestone 2, the TraceQL and LogQL `query` arguments, the discard rules in `get_status` and the answer size budget (see "MCP" below) |
 | `loctel-engine` | core | Wires store, ingest, MCP and the discard rules; settings, pause, rates; owns threads and runtime | implemented: store, OTLP receivers and MCP server, `settings.toml`, pause, rates, and (Milestone 2) the discard rules at ingest with live reload of `rules.toml` and the handle API (see "Engine" below) |
 | `loctel-meshgen` | test tooling | Fake microservice mesh scenarios (library and `meshgen` binary) | implemented: six scenarios and a sender over gRPC, HTTP protobuf and HTTP JSON (see "Test tooling" below) |
 | `loctel-e2e` | test tooling | End-to-end tests through real OTLP and a real MCP client (`publish = false`) | implemented: a `Harness` over a real engine and six tests (see "Test tooling" below) |
@@ -44,6 +44,7 @@ are left out):
    |--> loctel-engine --+--> loctel-mcp ---+--> loctel-store ----> loctel-model
    |                    |                  |                 `---> loctel-query
    |                    |                  |--> loctel-ingest ---> loctel-model
+   |                    |                  |--> loctel-query
    |                    |                  `--> loctel-model
    |                    |--> loctel-rules --> loctel-store, loctel-query, loctel-model
    |                    |--> loctel-ingest
@@ -53,8 +54,7 @@ are left out):
    |--> loctel-ui     (Linux window; owns `menu_text`) --> loctel-engine
    `--> loctel-macos  (macOS only) --> loctel-engine, loctel-ui
 
- loctel-query   --> loctel-model                      (the store and the rules depend on it; MCP
-                                                       will, in Milestone 2)
+ loctel-query   --> loctel-model                      (the store, the rules and MCP depend on it)
  loctel-rules   --> loctel-store, loctel-query, loctel-model
                                                       (the engine depends on it)
 
@@ -302,9 +302,9 @@ other crates rely on:
 
 ## MCP
 
-`loctel-mcp` depends on `loctel-model`, `loctel-store`, `loctel-ingest` (only
-for `ListenerStatus`), `rmcp`, `axum`, `tokio`, `schemars`, `chrono` and
-`serde`. The details (the tool table, the sizing rules, how to connect Claude
+`loctel-mcp` depends on `loctel-model`, `loctel-store`, `loctel-query` (to parse
+the `query` arguments), `loctel-ingest` (only for `ListenerStatus`), `rmcp`,
+`axum`, `tokio`, `schemars`, `chrono` and `serde`. The details (the tool table, the sizing rules, how to connect Claude
 Code) are in [`areas/mcp.md`](areas/mcp.md); the choices and their reasons are
 in [`decisions/0006-mcp-server-choices.md`](decisions/0006-mcp-server-choices.md)
 (and [`0011`](decisions/0011-list-services-returns-an-object.md): every result is an
@@ -317,6 +317,13 @@ What other crates rely on:
   compact summary by default, `limit` and `cursor` to page, and
   `structuredContent` with an output schema plus the same JSON as text. No tool
   changes anything.
+- **Queries.** `search_traces` takes a TraceQL `query` and `search_logs` a LogQL
+  one. The tool parses it with `loctel-query` (a parse error is a tool error
+  with the column) and hands the parsed query to the store as a filter; a
+  trace's summary then lists the spans it matched (`matched_span_ids`).
+- **Answer size budget.** Every tool's default answer is at most
+  `ANSWER_TEXT_BUDGET` (24,000 characters) on the fixtures of
+  `crates/loctel-mcp/tests/budget.rs`.
 - **`serve(addr, store, status)`** mounts rmcp's Streamable HTTP service at
   `/mcp` in an axum router and returns the `mcp` `ListenerStatus` and an
   `McpShutdown` (drop it to stop). It runs on the caller's runtime and refuses
@@ -327,7 +334,10 @@ What other crates rely on:
   checks that one); no `Origin` is fine.
 - **`StatusSource`.** The engine implements it. It is the only thing the MCP
   crate needs from the engine, so `loctel-mcp` does not depend on
-  `loctel-engine`.
+  `loctel-engine`. The `StatusDto` it returns carries the discard rules
+  (`RuleDto`, with what each has dropped), the rules file error and the dropped
+  fraction, which the engine builds from the same `EngineStatus` the UI reads;
+  MCP never changes rules.
 - **Failure semantics are the store's.** The tools never re-derive "failed":
   they print `TraceSummary`, `TraceSnapshot` and `trace_exception`, so the UI
   and the agents agree (design 9.4).

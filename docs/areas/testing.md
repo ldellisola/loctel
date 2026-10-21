@@ -247,9 +247,12 @@ target). Times are distinct, so the store's duplicate check keeps them all.
   converter, with a `ManualClock` moved past the quiet period, and calls the
   MCP tools directly. Because the checkout scenario is frozen, it asserts the
   failed-in span, the exception, the log counts and the span counts it implies.
-  `tests/http.rs` there and the MCP tests in `loctel-engine` and `loctel-app`
-  talk to the real server with an rmcp client or raw HTTP; see
-  [`mcp.md`](mcp.md).
+  Its `query` tests (a structural TraceQL query, LogQL, the error texts) run on
+  the same data. `tests/budget.rs` there checks that every tool's default answer
+  fits `ANSWER_TEXT_BUDGET` (24,000 characters) on `CheckoutFailure`,
+  `HealthChecks{50}` and `HugeTrace{10000}`. `tests/http.rs` there and the MCP
+  tests in `loctel-engine` and `loctel-app` talk to the real server with an rmcp
+  client or raw HTTP; see [`mcp.md`](mcp.md).
 - **End-to-end tests** (`crates/loctel-e2e`) start the engine, drive these
   scenarios through real OTLP and assert through a real MCP client; see
   "End-to-end tests" below.

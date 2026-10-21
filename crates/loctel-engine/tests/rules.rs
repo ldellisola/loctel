@@ -545,3 +545,111 @@ fn paused_drops_before_rules() {
     );
     engine.shutdown();
 }
+
+// --- MCP `get_status` (plan Task 7) ----------------------------------------------
+
+/// Calls `get_status` with a real MCP client, as an agent does, on a runtime of
+/// the test's own (the engine has its own).
+fn mcp_status(engine: &EngineHandle) -> serde_json::Value {
+    use rmcp::ServiceExt;
+    use rmcp::transport::StreamableHttpClientTransport;
+    use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
+
+    let url = engine.mcp_url().expect("the MCP server is up");
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let transport = StreamableHttpClientTransport::from_config(
+                StreamableHttpClientTransportConfig::with_uri(url),
+            );
+            let client = rmcp::model::ClientConfig::default()
+                .serve(transport)
+                .await
+                .unwrap();
+            let result = client
+                .call_tool(rmcp::model::CallToolRequestParams::new("get_status"))
+                .await
+                .unwrap();
+            let _ = client.cancel().await;
+            assert_eq!(result.is_error, Some(false), "{result:?}");
+            result.structured_content.expect("structured content")
+        })
+}
+
+#[test]
+fn mcp_get_status_lists_the_rules_the_engine_has() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("rules.toml");
+    let engine = start(dir.path());
+    let mut span_scope = rule("Slow spans", RuleLanguage::TraceQl, r#"{ name = "SLOW" }"#);
+    span_scope.scope = DropScope::Span;
+    let mut debug_logs = rule("Debug logs", RuleLanguage::LogQl, r#"{level="debug"}"#);
+    debug_logs.enabled = false;
+    engine
+        .set_rules(vec![
+            example_rule(),
+            span_scope,
+            debug_logs,
+            rule("Typo", RuleLanguage::TraceQl, "{ name = }"),
+        ])
+        .unwrap();
+    let (_, checkout) = send(&engine, &Scenario::CheckoutFailure, 1);
+    let (health_traces, health) = send(&engine, &HEALTH, 2);
+
+    let status = mcp_status(&engine);
+
+    // The same rules, in the same order, with the same counts as the handle.
+    let rules = status["rules"].as_array().unwrap();
+    assert_eq!(rules.len(), 4, "{status}");
+    let own = engine.status();
+    assert_eq!(rules[0]["name"], own.rules[0].spec.name);
+    assert_eq!(rules[0]["language"], "traceql");
+    assert_eq!(rules[0]["scope"], "trace");
+    assert_eq!(rules[0]["enabled"], true);
+    assert!(rules[0].get("error").is_none(), "{}", rules[0]);
+    assert_eq!(
+        rules[0]["dropped_traces"],
+        health_traces.trace_ids.len() as u64
+    );
+    assert_eq!(rules[0]["dropped_spans"], health.spans as u64);
+    assert_eq!(rules[0]["dropped_logs"], health.logs as u64);
+    assert_eq!(rules[1]["scope"], "span");
+    assert_eq!(rules[2]["language"], "logql");
+    assert_eq!(rules[2]["enabled"], false);
+    assert!(rules[2].get("scope").is_none(), "no scope for LogQL");
+    assert_eq!(rules[3]["name"], "Typo");
+    assert_eq!(rules[3]["error"], own.rules[3].error.clone().unwrap());
+    assert!(
+        rules[3]["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("at column "),
+        "{}",
+        rules[3]
+    );
+
+    // The fraction is the engine's own, and no file error is the key with
+    // `null`.
+    assert_eq!(status["rules_file_error"], serde_json::Value::Null);
+    let dropped = (health.spans + health.logs) as f64;
+    let accepted = (checkout.spans + checkout.logs) as f64;
+    let fraction = status["dropped_fraction"].as_f64().unwrap();
+    assert!(
+        (fraction - dropped / (dropped + accepted)).abs() < 1e-9,
+        "{fraction}"
+    );
+    assert_eq!(status["spans_held"], checkout.spans as u64);
+
+    // A broken file shows up as the error, and the rules stay.
+    fs::write(&path, "[[rule]\n").unwrap();
+    wait_for("the error", || engine.status().rules_file_error.is_some());
+    let status = mcp_status(&engine);
+    assert_eq!(
+        status["rules_file_error"],
+        engine.status().rules_file_error.unwrap()
+    );
+    assert_eq!(status["rules"].as_array().unwrap().len(), 4);
+    engine.shutdown();
+}

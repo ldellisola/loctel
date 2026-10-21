@@ -3631,6 +3631,7 @@ dependencies = [
  "loctel-ingest",
  "loctel-meshgen",
  "loctel-model",
+ "loctel-query",
  "loctel-store",
  "reqwest",
  "rmcp",

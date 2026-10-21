@@ -16,8 +16,9 @@ parser and evaluator** (`TraceView`, `evaluate`, `matches_span`) and **LogQL**
 `logql::labels`) are implemented, and the store uses both as search filters
 (`TraceFilter::query`, `LogFilter::query`; see [`store.md`](store.md), "Query
 filters"). The discard rules use them too (`loctel-rules`; see
-[`rules.md`](rules.md)). MCP follows (the M2 plan,
-`superpowers/plans/2026-10-21-loctel-m2-query-rules.md`, Task 7). This page grows
+[`rules.md`](rules.md)), and so does MCP: `search_traces` and `search_logs` take
+a `query` argument (see [`mcp.md`](mcp.md), "`query`"), parse it with these
+parsers and show the error with its column as a tool error. This page grows
 with each of them.
 
 ## Shared pieces

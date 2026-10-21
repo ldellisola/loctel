@@ -244,6 +244,62 @@ pub struct StatusDto {
     pub traces_held: u64,
     pub spans_held: u64,
     pub logs_held: u64,
+    /// The discard rules, in the order they are applied (file order), each
+    /// with what it has dropped since launch. Empty when there are none: loctel
+    /// never decides what to discard.
+    pub rules: Vec<RuleDto>,
+    /// Why `rules.toml` could not be used the last time it was read, or `null`.
+    /// While it is set the rules listed are the last good ones.
+    #[schemars(required, schema_with = "nullable_string")]
+    pub rules_file_error: Option<String>,
+    /// Spans and logs the rules dropped, divided by those dropped plus those
+    /// accepted, since launch: 0 to 1, 0 when nothing has arrived.
+    pub dropped_fraction: f64,
+}
+
+/// The query language of a discard rule, as written in `rules.toml`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum RuleLanguageDto {
+    /// Judges spans (and, through them, traces).
+    TraceQl,
+    /// Judges logs.
+    LogQl,
+}
+
+/// What a TraceQL discard rule drops when it matches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum RuleScopeDto {
+    /// The whole trace: every span and every log of it, stored or still to
+    /// arrive.
+    Trace,
+    /// Only the matched spans, their descendants and the logs emitted in them.
+    Span,
+}
+
+/// One discard rule of `get_status`.
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+pub struct RuleDto {
+    /// What the user calls the rule.
+    pub name: String,
+    pub language: RuleLanguageDto,
+    /// What a match drops. Only for `traceql` rules: a `logql` rule only ever
+    /// drops the log that matched.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<RuleScopeDto>,
+    /// A rule that is off is kept and does nothing.
+    pub enabled: bool,
+    /// Why the query does not parse, with the column. A rule with an error does
+    /// nothing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Spans this rule has dropped since launch: incoming ones and stored ones.
+    pub dropped_spans: u64,
+    /// Logs this rule has dropped since launch.
+    pub dropped_logs: u64,
+    /// Traces this rule has dropped whole since launch.
+    pub dropped_traces: u64,
 }
 
 /// One endpoint (`otlp-grpc`, `otlp-http`, `mcp`).
@@ -390,6 +446,13 @@ pub struct TraceSummaryDto {
     /// No new span has arrived for a while (10 s by default). A trace that is
     /// not complete may still be gaining spans.
     pub complete: bool,
+    /// The spans a TraceQL `query` matched in this trace (span IDs, at most
+    /// 20, in the order the trace holds them). Only in `search_traces` with a
+    /// `query`; left out otherwise.
+    // `default` is what keeps the key out of the schema's `required` list:
+    // schemars drops only an `Option`'s from it for `skip_serializing_if`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub matched_span_ids: Vec<String>,
 }
 
 /// The span that explains a failure (design 9.4): the earliest-starting
@@ -474,6 +537,11 @@ impl From<&TraceSummary> for TraceSummaryDto {
                 .as_ref()
                 .map(ExceptionBriefDto::from),
             complete: summary.complete,
+            matched_span_ids: summary
+                .matched_span_ids
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
         }
     }
 }

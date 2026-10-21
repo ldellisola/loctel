@@ -27,7 +27,9 @@ use std::time::Duration;
 
 use anyhow::{Context as _, bail};
 use loctel_ingest::{DEFAULT_MAX_MESSAGE_BYTES, IngestConfig, IngestServers};
-use loctel_mcp::{ListenerDto, McpShutdown, StatusDto, StatusSource};
+use loctel_mcp::{
+    ListenerDto, McpShutdown, RuleDto, RuleLanguageDto, RuleScopeDto, StatusDto, StatusSource,
+};
 use loctel_store::{Clock, SystemClock};
 use tokio::runtime::{Builder, Handle, Runtime};
 
@@ -292,7 +294,36 @@ impl StatusSource for State {
             traces_held: status.stats.traces as u64,
             spans_held: status.stats.spans as u64,
             logs_held: status.stats.logs as u64,
+            rules: status.rules.iter().map(rule_dto).collect(),
+            rules_file_error: status.rules_file_error,
+            dropped_fraction: status.dropped_fraction,
         }
+    }
+}
+
+/// A rule as the MCP status tells it. A LogQL rule has no scope: it only ever
+/// drops the log that matched.
+fn rule_dto(rule: &RuleStatus) -> RuleDto {
+    let spec = &rule.spec;
+    let (language, scope) = match spec.language {
+        RuleLanguage::TraceQl => (
+            RuleLanguageDto::TraceQl,
+            Some(match spec.scope {
+                DropScope::Trace => RuleScopeDto::Trace,
+                DropScope::Span => RuleScopeDto::Span,
+            }),
+        ),
+        RuleLanguage::LogQl => (RuleLanguageDto::LogQl, None),
+    };
+    RuleDto {
+        name: spec.name.clone(),
+        language,
+        scope,
+        enabled: spec.enabled,
+        error: rule.error.clone(),
+        dropped_spans: rule.dropped_spans,
+        dropped_logs: rule.dropped_logs,
+        dropped_traces: rule.dropped_traces,
     }
 }
 

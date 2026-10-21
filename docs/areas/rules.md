@@ -9,8 +9,8 @@ languages) and §8 (MCP can see rules, not change them).
 Status (Milestone 2): this crate is implemented: the model, `rules.toml`, the
 ingest filter (`RuleSet`) and the preview. The engine runs every batch through
 it, reloads the file and reports the counts (Task 6, "In the engine" below). MCP
-shows the rules in `get_status` in Task 7, and the menu and status window show
-the rules line in Task 8 (see the M2 plan,
+shows the rules in `get_status` (Task 7, "In MCP" below), and the menu and
+status window show the rules line in Task 8 (see the M2 plan,
 `superpowers/plans/2026-10-21-loctel-m2-query-rules.md`). The rules screen is
 Milestone 4. This page grows with them.
 
@@ -322,7 +322,19 @@ arrives last is `whole_trace_drop_covers_stored_and_late_spans`, and
 `late_out_of_order_trace_is_dropped_when_its_root_arrives` runs it on the real
 `LateOutOfOrder` scenario.
 
+## In MCP
+
+`get_status` lists the rules, read-only (design §7: MCP cannot change rules; the
+server has no tool that does). The engine builds the list from the same
+`EngineStatus` the menu and the window read, so they cannot disagree: `rules`
+(name, `language`, `scope` for TraceQL only, `enabled`, `error` if the query does
+not parse, `dropped_spans`, `dropped_logs`, `dropped_traces`), `rules_file_error`
+and `dropped_fraction`. Names and errors are cut at 2,000 characters. The shapes
+and the reasons are in [`mcp.md`](mcp.md), "Rules in `get_status`"; the engine
+test `mcp_get_status_lists_the_rules_the_engine_has` reads them through a real
+MCP client.
+
 ## Not here
 
-The MCP view of the rules is Task 7, and the menu and window rules line is Task
-8. Prefilling a rule from a log line and the rules screen are M4.
+The menu and window rules line is Task 8. Prefilling a rule from a log line and
+the rules screen are M4.

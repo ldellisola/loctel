@@ -5,7 +5,9 @@
 //!
 //! The first nine tests are the plan's own. The rest pin what the plan fixes
 //! in its tables: the argument and result shapes, the limits, `since`, the
-//! two kinds of failure, truncation and the error texts.
+//! two kinds of failure, truncation and the error texts. The last section is
+//! Milestone 2's (plan Task 7): the `query` arguments and the rules in
+//! `get_status`; the answer size budget has its own file, `budget.rs`.
 
 mod common;
 
@@ -13,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use common::*;
-use loctel_mcp::LoctelTools;
+use loctel_mcp::{LoctelTools, RuleDto, RuleLanguageDto, RuleScopeDto, StatusDto, StatusSource};
 use loctel_meshgen::Scenario;
 use loctel_meshgen::checkout::{EXCEPTION_MESSAGE, EXCEPTION_STACKTRACE, EXCEPTION_TYPE};
 use loctel_model::{Severity, SpanKind};
@@ -44,8 +46,13 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Fixture {
+        Fixture::with_status(fake_status())
+    }
+
+    /// A fixture whose `get_status` says what `status` says.
+    fn with_status(status: Arc<dyn StatusSource>) -> Fixture {
         let (store, clock) = manual_store();
-        let tools = LoctelTools::new(store.clone(), fake_status());
+        let tools = LoctelTools::new(store.clone(), status);
         let validators = LoctelTools::definitions()
             .into_iter()
             .map(|tool| {
@@ -1283,4 +1290,494 @@ async fn orphans_are_listed_even_without_their_parent() {
     assert_eq!(r["summary"]["root_name"], Value::Null);
     assert_eq!(r["summary"]["root_service"], Value::Null);
     assert_eq!(r["omitted"], 0);
+}
+
+// --- query arguments (Milestone 2) -------------------------------------------------------
+
+/// The user's example: spans named X with an ancestor from service Y.
+const STRUCTURAL_QUERY: &str =
+    r#"{ resource.service.name = "web-bff" } >> { name = "POST /charges" }"#;
+
+/// The LogQL example the `search_logs` description gives.
+const LOGQL_EXAMPLE: &str = r#"{service_name="payments-api"} |= "declined" | level = "error""#;
+
+/// The column an error text names, after `prefix` ("invalid TraceQL").
+fn column_of(text: &str, prefix: &str) -> usize {
+    let rest = text
+        .strip_prefix(prefix)
+        .and_then(|rest| rest.strip_prefix(": at column "))
+        .unwrap_or_else(|| panic!("`{prefix}: at column N: ...` expected, got {text:?}"));
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    digits
+        .parse()
+        .unwrap_or_else(|_| panic!("no column number in {text:?}"))
+}
+
+#[tokio::test]
+async fn search_traces_with_traceql_structural_query() {
+    let (fixture, trace_id) = Fixture::with_checkout_failure();
+    // Traces the query must pass over.
+    load(
+        &fixture.store,
+        &Scenario::HealthChecks { count: 3 },
+        2,
+        BASE + 5 * SECOND,
+    );
+    settle(&fixture.clock);
+    // The span the query is after, found without the query: the one server
+    // span called `POST /charges`.
+    let full = fixture
+        .call(
+            "get_trace",
+            json!({ "trace_id": trace_id, "detail": "full" }),
+        )
+        .await;
+    let charges: Vec<&str> = full["spans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|span| span["name"] == "POST /charges")
+        .map(|span| span["span_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(charges.len(), 1, "{full}");
+
+    let r = fixture
+        .call("search_traces", json!({ "query": STRUCTURAL_QUERY }))
+        .await;
+
+    assert_eq!(ids(&r["traces"], "trace_id"), vec![trace_id.clone()]);
+    assert_eq!(r["traces"][0]["matched_span_ids"], json!(charges));
+    assert_eq!(r["traces"][0]["status"], "failed", "a summary as usual");
+    assert!(r["next_cursor"].is_null());
+
+    // Without a query there are no matched spans, and the key is not there.
+    let all = fixture.call("search_traces", json!({})).await;
+    assert_eq!(all["traces"].as_array().unwrap().len(), 16);
+    for trace in all["traces"].as_array().unwrap() {
+        assert!(trace.get("matched_span_ids").is_none(), "{trace}");
+    }
+    // Other tools never carry them either: `get_trace` is a summary of the
+    // trace, not of a search.
+    let one = fixture
+        .call("get_trace", json!({ "trace_id": trace_id }))
+        .await;
+    assert!(one["summary"].get("matched_span_ids").is_none());
+
+    // A query that matches nothing finds nothing, without an error.
+    let none = fixture
+        .call(
+            "search_traces",
+            json!({ "query": r#"{ resource.service.name = "no-such-service" } >> { }"# }),
+        )
+        .await;
+    assert_eq!(none["traces"], json!([]));
+    assert!(none["next_cursor"].is_null());
+
+    // A blank query is no query, as a blank `service` or `cursor` is.
+    for blank in ["", "  \n"] {
+        let r = fixture
+            .call("search_traces", json!({ "query": blank, "limit": 100 }))
+            .await;
+        assert_eq!(r["traces"].as_array().unwrap().len(), 16, "{blank:?}");
+    }
+}
+
+#[tokio::test]
+async fn search_traces_query_combines_with_filters_and_pages() {
+    let fixture = Fixture::new();
+    load(&fixture.store, &Scenario::CheckoutSuccess, 1, BASE);
+    let failed = load(
+        &fixture.store,
+        &Scenario::CheckoutFailure,
+        1,
+        BASE + 10 * SECOND,
+    );
+    settle(&fixture.clock);
+    let query = r#"{ name = "POST /charges" }"#;
+    let count = |r: &Value| r["traces"].as_array().unwrap().len();
+
+    // Both checkouts have the span; newest first, one at a time.
+    let first = fixture
+        .call("search_traces", json!({ "query": query, "limit": 1 }))
+        .await;
+    assert_eq!(count(&first), 1);
+    assert_eq!(first["traces"][0]["trace_id"], failed[0].to_string());
+    assert_eq!(
+        first["traces"][0]["matched_span_ids"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let second = fixture
+        .call(
+            "search_traces",
+            json!({ "query": query, "limit": 1, "cursor": first["next_cursor"] }),
+        )
+        .await;
+    assert_eq!(count(&second), 1);
+    assert_ne!(
+        second["traces"][0]["trace_id"],
+        first["traces"][0]["trace_id"]
+    );
+    assert!(
+        second["next_cursor"].is_null(),
+        "two traces match, so the second page is the last"
+    );
+
+    // Every other argument still applies, and all must hold.
+    let errors = fixture
+        .call(
+            "search_traces",
+            json!({ "query": query, "errors_only": true }),
+        )
+        .await;
+    assert_eq!(ids(&errors["traces"], "trace_id"), [failed[0].to_string()]);
+    let service = fixture
+        .call(
+            "search_traces",
+            json!({ "query": query, "service": "no-such-service" }),
+        )
+        .await;
+    assert_eq!(count(&service), 0);
+    let since = fixture
+        .call(
+            "search_traces",
+            json!({ "query": query, "since": (BASE + 5 * SECOND).to_string() }),
+        )
+        .await;
+    assert_eq!(count(&since), 1);
+
+    // A query can count spans, like Tempo's pipelines.
+    let busy = fixture
+        .call(
+            "search_traces",
+            json!({ "query": "{ kind = client } | count() > 100" }),
+        )
+        .await;
+    assert_eq!(count(&busy), 0);
+}
+
+#[tokio::test]
+async fn search_traces_invalid_traceql_is_tool_error_with_column() {
+    let fixture = Fixture::new();
+
+    // A feature Grafana has and loctel does not: named, with its position.
+    let text = fixture
+        .call_error(
+            "search_traces",
+            json!({ "query": "{ status = error } | select(span.foo)" }),
+        )
+        .await;
+    assert_eq!(
+        text,
+        "invalid TraceQL: at column 22: select is not supported yet"
+    );
+
+    // A typo: the column is the one `loctel_query` reports (1-based).
+    let text = fixture
+        .call_error("search_traces", json!({ "query": "{ name = }" }))
+        .await;
+    assert_eq!(column_of(&text, "invalid TraceQL"), 10, "{text}");
+    let text = fixture
+        .call_error("search_traces", json!({ "query": r#"{ name = "x""# }))
+        .await;
+    assert!(text.starts_with("invalid TraceQL: at column "), "{text}");
+    let text = fixture
+        .call_error("search_traces", json!({ "query": "name = 1" }))
+        .await;
+    assert_eq!(column_of(&text, "invalid TraceQL"), 1, "{text}");
+
+    // It is a tool error even beside a good `since`, and a LogQL query is not
+    // a TraceQL one.
+    let text = fixture
+        .call_error(
+            "search_traces",
+            json!({ "since": "1800000000000000000", "query": r#"{service_name="a"}"# }),
+        )
+        .await;
+    assert!(text.starts_with("invalid TraceQL: at column "), "{text}");
+}
+
+#[tokio::test]
+async fn search_logs_with_logql() {
+    let (fixture, trace_id) = Fixture::with_checkout_failure();
+    let call = |args: Value| fixture.call("search_logs", args);
+    let count = |r: &Value| r["logs"].as_array().unwrap().len();
+
+    // A stream selector: the service's logs, newest first.
+    let payments = call(json!({ "query": r#"{service_name="payments-api"}"# })).await;
+    assert_eq!(count(&payments), 4);
+    assert!(
+        payments["logs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|log| log["service"] == "payments-api")
+    );
+    let times = ids(&payments["logs"], "time");
+    assert!(times.windows(2).all(|w| w[0] >= w[1]), "{times:?}");
+
+    // A label filter on the severity label.
+    let errors =
+        call(json!({ "query": r#"{service_name="payments-api"} | level = "error""# })).await;
+    assert_eq!(count(&errors), 2);
+    assert!(
+        errors["logs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|log| log["level"] == "error")
+    );
+    // Line filters: `|~` is unanchored, `!=` drops lines that contain the text.
+    let attempt =
+        call(json!({ "query": r#"{service_name="payments-api"} |~ "attempt [0-9]""# })).await;
+    assert_eq!(count(&attempt), 1);
+    assert!(
+        attempt["logs"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("attempt")
+    );
+    let rest = call(json!({ "query": r#"{service_name="payments-api"} != "card-gateway""# })).await;
+    assert_eq!(count(&rest), 1);
+    // Label matchers are anchored.
+    let partial = call(json!({ "query": r#"{service_name=~"payments"}"# })).await;
+    assert_eq!(count(&partial), 0);
+    let anchored = call(json!({ "query": r#"{service_name=~"payments.*"}"# })).await;
+    assert_eq!(count(&anchored), 4);
+    // The log's trace stays linked.
+    assert!(
+        payments["logs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|log| log["trace_id"] == trace_id)
+    );
+
+    // Every other argument still applies, and all must hold.
+    let both = call(json!({
+        "query": r#"{service_name="payments-api"}"#,
+        "min_level": "error",
+        "contains": "gateway",
+    }))
+    .await;
+    assert_eq!(count(&both), 2);
+    let other_service = call(json!({
+        "query": r#"{service_name="payments-api"}"#,
+        "service": "orders-api",
+    }))
+    .await;
+    assert_eq!(count(&other_service), 0);
+    let in_trace = call(json!({
+        "query": r#"{service_name="payments-api"}"#,
+        "trace_id": "00000000000000000000000000000001",
+    }))
+    .await;
+    assert_eq!(count(&in_trace), 0);
+
+    // Pages: two at a time, nothing repeated, the cursor ends.
+    let first = call(json!({ "query": r#"{service_name=~".+"}"#, "limit": 4 })).await;
+    assert_eq!(count(&first), 4);
+    let second = call(json!({
+        "query": r#"{service_name=~".+"}"#,
+        "limit": 4,
+        "cursor": first["next_cursor"],
+    }))
+    .await;
+    assert_eq!(count(&second), 3, "seven logs in all");
+    assert!(second["next_cursor"].is_null());
+
+    // A blank query is no query.
+    let blank = call(json!({ "query": "" })).await;
+    assert_eq!(count(&blank), 7);
+}
+
+#[tokio::test]
+async fn search_logs_invalid_logql_is_tool_error() {
+    let fixture = Fixture::new();
+
+    let text = fixture
+        .call_error(
+            "search_logs",
+            json!({ "query": r#"{service_name="x"} | line_format "{{.a}}""# }),
+        )
+        .await;
+    assert_eq!(
+        text,
+        "invalid LogQL: at column 22: line_format is not supported yet"
+    );
+
+    let text = fixture
+        .call_error("search_logs", json!({ "query": "{}" }))
+        .await;
+    assert_eq!(column_of(&text, "invalid LogQL"), 1, "{text}");
+    assert!(text.contains("at least one matcher"), "{text}");
+
+    // A TraceQL query is not a LogQL one (`resource.service.name` is no label).
+    let text = fixture
+        .call_error("search_logs", json!({ "query": STRUCTURAL_QUERY }))
+        .await;
+    assert!(text.starts_with("invalid LogQL: at column "), "{text}");
+}
+
+#[test]
+fn the_search_tools_describe_their_query_language() {
+    let definitions = LoctelTools::definitions();
+    let describe = |name: &str| -> String {
+        let tool = definitions.iter().find(|tool| tool.name == name).unwrap();
+        let schema = Value::Object((*tool.input_schema).clone());
+        format!(
+            "{} {}",
+            tool.description.as_deref().unwrap_or_default(),
+            schema["properties"]["query"]["description"]
+                .as_str()
+                .unwrap_or_default()
+        )
+    };
+
+    let traces = describe("search_traces");
+    assert!(traces.contains("TraceQL"), "{traces}");
+    assert!(traces.contains("Tempo"), "{traces}");
+    assert!(
+        traces.contains(STRUCTURAL_QUERY),
+        "one structural example: {traces}"
+    );
+    assert!(traces.contains("anchored"), "{traces}");
+
+    let logs = describe("search_logs");
+    assert!(logs.contains("LogQL"), "{logs}");
+    assert!(logs.contains("Loki"), "{logs}");
+    assert!(logs.contains(LOGQL_EXAMPLE), "one example: {logs}");
+    assert!(logs.contains("anchored"), "{logs}");
+
+    // An example an agent copies must work.
+    loctel_query::traceql::parse(STRUCTURAL_QUERY).expect("the TraceQL example parses");
+    loctel_query::logql::parse(LOGQL_EXAMPLE).expect("the LogQL example parses");
+}
+
+#[tokio::test]
+async fn status_lists_rules_and_dropped_fraction() {
+    let status = StatusDto {
+        rules: vec![
+            RuleDto {
+                name: "Health checks".to_owned(),
+                language: RuleLanguageDto::TraceQl,
+                scope: Some(RuleScopeDto::Trace),
+                enabled: true,
+                error: None,
+                dropped_spans: 12,
+                dropped_logs: 3,
+                dropped_traces: 4,
+            },
+            RuleDto {
+                name: "Noisy spans".to_owned(),
+                language: RuleLanguageDto::TraceQl,
+                scope: Some(RuleScopeDto::Span),
+                enabled: true,
+                error: Some("at column 3: expected an operator".to_owned()),
+                dropped_spans: 0,
+                dropped_logs: 0,
+                dropped_traces: 0,
+            },
+            RuleDto {
+                name: "Debug logs".to_owned(),
+                language: RuleLanguageDto::LogQl,
+                scope: None,
+                enabled: false,
+                error: None,
+                dropped_spans: 0,
+                dropped_logs: 41,
+                dropped_traces: 0,
+            },
+        ],
+        rules_file_error: Some("TOML parse error at line 3, column 1".to_owned()),
+        dropped_fraction: 0.3125,
+        ..sample_status()
+    };
+    let fixture = Fixture::with_status(Arc::new(FakeStatus(status)));
+
+    let r = fixture.call("get_status", json!({})).await;
+
+    assert_eq!(
+        r["rules"],
+        json!([
+            {
+                "name": "Health checks",
+                "language": "traceql",
+                "scope": "trace",
+                "enabled": true,
+                "dropped_spans": 12,
+                "dropped_logs": 3,
+                "dropped_traces": 4
+            },
+            {
+                "name": "Noisy spans",
+                "language": "traceql",
+                "scope": "span",
+                "enabled": true,
+                "error": "at column 3: expected an operator",
+                "dropped_spans": 0,
+                "dropped_logs": 0,
+                "dropped_traces": 0
+            },
+            {
+                "name": "Debug logs",
+                "language": "logql",
+                "enabled": false,
+                "dropped_spans": 0,
+                "dropped_logs": 41,
+                "dropped_traces": 0
+            }
+        ]),
+        "`scope` only for TraceQL, `error` only when there is one"
+    );
+    assert_eq!(
+        r["rules_file_error"],
+        "TOML parse error at line 3, column 1"
+    );
+    assert_eq!(r["dropped_fraction"], 0.3125);
+    // The rest of the status is as before.
+    assert_eq!(r["paused"], true);
+    assert_eq!(r["traces_held"], 4);
+}
+
+#[tokio::test]
+async fn status_without_rules_says_so() {
+    // The default source (no rules, a good file): an empty list, a `null`
+    // file error that is still there, and nothing dropped.
+    let fixture = Fixture::new();
+
+    let r = fixture.call("get_status", json!({})).await;
+
+    assert_eq!(r["rules"], json!([]));
+    assert_eq!(r.get("rules_file_error"), Some(&Value::Null), "{r}");
+    assert_eq!(r["dropped_fraction"], 0.0);
+}
+
+#[tokio::test]
+async fn status_cuts_long_rule_text_at_2000_characters() {
+    let long = "x".repeat(2_500);
+    let cut = format!("{}…(truncated)", "x".repeat(2_000));
+    let status = StatusDto {
+        rules: vec![RuleDto {
+            name: long.clone(),
+            language: RuleLanguageDto::LogQl,
+            scope: None,
+            enabled: true,
+            error: Some(long.clone()),
+            dropped_spans: 0,
+            dropped_logs: 0,
+            dropped_traces: 0,
+        }],
+        rules_file_error: Some(long),
+        ..sample_status()
+    };
+    let fixture = Fixture::with_status(Arc::new(FakeStatus(status)));
+
+    let r = fixture.call("get_status", json!({})).await;
+
+    assert_eq!(r["rules"][0]["name"], cut.as_str());
+    assert_eq!(r["rules"][0]["error"], cut.as_str());
+    assert_eq!(r["rules_file_error"], cut.as_str());
 }
