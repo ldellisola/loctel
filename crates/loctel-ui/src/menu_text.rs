@@ -37,6 +37,48 @@ pub fn status_line(status: &StatusModel) -> String {
     )
 }
 
+/// The discard rules, in one line, the first of these that applies:
+///
+/// - `Discard rules file has an error` when `rules.toml` could not be used.
+///   This wins over everything: what is running is not what the file says.
+/// - `1 discard rule on · 1 has an error` (or `3 discard rules on · 2 have
+///   errors`) when a rule that is on does not parse and so drops nothing.
+/// - `No discard rules on` when none is on.
+/// - `1 discard rule on · 31% dropped` (or `3 discard rules on · 0% dropped`)
+///   otherwise: the share of what arrived that the rules dropped, since launch,
+///   as a whole percent.
+pub fn rules_line(status: &StatusModel) -> String {
+    if status.rules_file_error {
+        return "Discard rules file has an error".to_owned();
+    }
+    let on = status.rules_on;
+    let rules = if on == 1 { "rule" } else { "rules" };
+    if status.rules_with_errors > 0 {
+        let errors = match status.rules_with_errors {
+            1 => "1 has an error".to_owned(),
+            count => format!("{count} have errors"),
+        };
+        return format!("{on} discard {rules} on \u{b7} {errors}");
+    }
+    if on == 0 {
+        return "No discard rules on".to_owned();
+    }
+    format!(
+        "{on} discard {rules} on \u{b7} {}% dropped",
+        percent(status.dropped_fraction)
+    )
+}
+
+/// A share from 0 to 1 as a whole percent. A value that is not a number reads
+/// 0, as in [`format_rate`], and one outside 0 to 1 is cut to it.
+fn percent(fraction: f64) -> u32 {
+    if fraction.is_finite() {
+        (fraction.clamp(0.0, 1.0) * 100.0).round() as u32
+    } else {
+        0
+    }
+}
+
 fn reason(error: Option<&str>) -> String {
     match error {
         None => "unknown error".to_owned(),

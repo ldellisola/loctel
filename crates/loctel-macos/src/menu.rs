@@ -11,6 +11,8 @@ pub(crate) enum Command {
     CopyMcpAddress,
     /// Pause receiving, or resume it.
     TogglePause,
+    /// Open `rules.toml` in the default text editor.
+    EditRules,
     /// Turn the login item on, or off.
     ToggleStartAtLogin,
     /// Stop the engine and quit.
@@ -20,7 +22,8 @@ pub(crate) enum Command {
 /// One row of the menu.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Row {
-    /// The status line: shown greyed out, it does nothing.
+    /// A line of text: shown greyed out, it does nothing. The menu has two,
+    /// the status line and the discard rules line under it.
     Header(String),
     /// A choice.
     Item {
@@ -40,19 +43,26 @@ pub(crate) enum Row {
 pub(crate) struct MenuState {
     /// `loctel_ui::menu_text::status_line(..)`.
     pub header: String,
+    /// `loctel_ui::menu_text::rules_line(..)`.
+    pub rules: String,
     /// Whether receiving is paused.
     pub paused: bool,
     /// Whether the login item is on (the system's answer, not a setting).
     pub start_at_login: bool,
     /// Whether the MCP server is listening, so there is an address to copy.
     pub has_mcp_address: bool,
+    /// Whether the engine has a rules file (`rules_path()` is not `None`), so
+    /// there is something to open.
+    pub has_rules_file: bool,
 }
 
-/// The menu, top to bottom: the status line, copy the MCP address, pause or
-/// resume, a separator, start at login, a separator, quit.
+/// The menu, top to bottom: the status line, the discard rules line, copy the
+/// MCP address, pause or resume, edit the discard rules, a separator, start at
+/// login, a separator, quit.
 pub(crate) fn rows(state: &MenuState) -> Vec<Row> {
     vec![
         Row::Header(state.header.clone()),
+        Row::Header(state.rules.clone()),
         Row::Item {
             command: Command::CopyMcpAddress,
             label: "Copy MCP address",
@@ -68,6 +78,12 @@ pub(crate) fn rows(state: &MenuState) -> Vec<Row> {
             },
             checked: false,
             enabled: true,
+        },
+        Row::Item {
+            command: Command::EditRules,
+            label: "Edit discard rules\u{2026}",
+            checked: false,
+            enabled: state.has_rules_file,
         },
         Row::Separator,
         Row::Item {
@@ -93,9 +109,11 @@ mod tests {
     fn state() -> MenuState {
         MenuState {
             header: "Receiving \u{b7} 412 spans/s \u{b7} 1.2k logs/s".to_owned(),
+            rules: "1 discard rule on \u{b7} 31% dropped".to_owned(),
             paused: false,
             start_at_login: true,
             has_mcp_address: true,
+            has_rules_file: true,
         }
     }
 
@@ -114,14 +132,90 @@ mod tests {
             rows(&state()),
             vec![
                 Row::Header("Receiving \u{b7} 412 spans/s \u{b7} 1.2k logs/s".to_owned()),
+                Row::Header("1 discard rule on \u{b7} 31% dropped".to_owned()),
                 item(Command::CopyMcpAddress, "Copy MCP address", false, true),
                 item(Command::TogglePause, "Pause receiving", false, true),
+                item(
+                    Command::EditRules,
+                    "Edit discard rules\u{2026}",
+                    false,
+                    true
+                ),
                 Row::Separator,
                 item(Command::ToggleStartAtLogin, "Start at login", true, true),
                 Row::Separator,
                 item(Command::Quit, "Quit loctel", false, true),
             ]
         );
+    }
+
+    #[test]
+    fn rows_include_rules_header_and_edit_item() {
+        let rows = rows(&state());
+
+        // The exact order: status header, rules header, Copy MCP address,
+        // Pause, Edit discard rules, separator, Start at login, separator,
+        // Quit.
+        let order: Vec<&str> = rows
+            .iter()
+            .map(|row| match row {
+                Row::Header(text) => text.as_str(),
+                Row::Item { label, .. } => label,
+                Row::Separator => "---",
+            })
+            .collect();
+        assert_eq!(
+            order,
+            [
+                "Receiving \u{b7} 412 spans/s \u{b7} 1.2k logs/s",
+                "1 discard rule on \u{b7} 31% dropped",
+                "Copy MCP address",
+                "Pause receiving",
+                "Edit discard rules\u{2026}",
+                "---",
+                "Start at login",
+                "---",
+                "Quit loctel",
+            ]
+        );
+
+        // The rules line is a header (greyed out, does nothing), right under
+        // the status line.
+        assert!(matches!(&rows[1], Row::Header(_)));
+        // The edit item is a plain action, with no checkmark.
+        assert_eq!(
+            rows[4],
+            item(
+                Command::EditRules,
+                "Edit discard rules\u{2026}",
+                false,
+                true
+            )
+        );
+    }
+
+    #[test]
+    fn the_rules_header_is_whatever_the_rules_line_says() {
+        let mut state = state();
+        state.rules = "Discard rules file has an error".to_owned();
+        assert_eq!(
+            rows(&state)[1],
+            Row::Header("Discard rules file has an error".to_owned())
+        );
+    }
+
+    #[test]
+    fn edit_rules_is_disabled_when_the_engine_has_no_rules_file() {
+        // `rules_path()` is `None` when the rules live in memory only: there
+        // is nothing to open.
+        let mut state = state();
+        state.has_rules_file = false;
+        assert!(rows(&state).contains(&item(
+            Command::EditRules,
+            "Edit discard rules\u{2026}",
+            false,
+            false
+        )));
     }
 
     #[test]
@@ -178,14 +272,15 @@ mod tests {
     }
 
     #[test]
-    fn only_the_header_is_not_an_action() {
+    fn only_the_two_headers_are_not_actions() {
         let rows = rows(&state());
         let headers = rows
             .iter()
             .filter(|row| matches!(row, Row::Header(_)))
             .count();
-        assert_eq!(headers, 1);
+        assert_eq!(headers, 2);
         assert!(matches!(rows.first(), Some(Row::Header(_))));
+        assert!(matches!(rows.get(1), Some(Row::Header(_))));
         assert!(matches!(
             rows.last(),
             Some(Row::Item {

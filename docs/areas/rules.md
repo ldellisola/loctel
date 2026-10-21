@@ -10,7 +10,8 @@ Status (Milestone 2): this crate is implemented: the model, `rules.toml`, the
 ingest filter (`RuleSet`) and the preview. The engine runs every batch through
 it, reloads the file and reports the counts (Task 6, "In the engine" below). MCP
 shows the rules in `get_status` (Task 7, "In MCP" below), and the menu and
-status window show the rules line in Task 8 (see the M2 plan,
+status window show the rules line and the macOS menu opens the file for editing
+(Task 8, "In the menu and the window" below; see the M2 plan,
 `superpowers/plans/2026-10-21-loctel-m2-query-rules.md`). The rules screen is
 Milestone 4. This page grows with them.
 
@@ -334,7 +335,37 @@ and the reasons are in [`mcp.md`](mcp.md), "Rules in `get_status`"; the engine
 test `mcp_get_status_lists_the_rules_the_engine_has` reads them through a real
 MCP client.
 
+## In the menu and the window
+
+The menu bar menu (macOS) and the status window (Linux) show the rules in one
+line, `loctel_ui::menu_text::rules_line`, built from the same `EngineStatus` as
+everything else (never from the file). In priority order:
+
+| Line | When |
+|---|---|
+| `Discard rules file has an error` | `rules_file_error` is set: `rules.toml` could not be used, and the rules in force are the last good ones |
+| `1 discard rule on · 1 has an error` (`3 discard rules on · 2 have errors`) | a rule that is on has a query that does not parse, so it drops nothing |
+| `No discard rules on` | no rule is on (none in the file, or all switched off) |
+| `1 discard rule on · 31% dropped`, `3 discard rules on · 0% dropped` | rules are on and working; the share of what arrived that they dropped since launch, as a whole percent |
+
+"On" means `enabled`, whether or not the query parses. A rule that is switched
+off is not counted as on, and is not counted as having an error either, even if
+its saved draft query does not parse (the status still lists that error for it):
+the line warns about what you expect to be working. Because of that, the number
+of rules with errors never exceeds the number on, which keeps "3 discard rules on
+· 2 have errors" from ever reading "0 on · 1 has an error".
+
+On macOS the menu also has **Edit discard rules…**, which opens
+`engine.rules_path()` in the default text editor (`NSWorkspace` `openURL`, and
+`open -t` if no app handles `.toml`). Editing the file by hand is the way to edit
+rules until the rules screen (M4); the engine reloads the file within about 2
+seconds (`RULES_POLL`, see "In the engine"). The item is greyed out when the
+engine has no rules file. Saving through the handle (the future rules screen)
+rewrites the file and drops hand-written comments, but keeps the header, so the
+menu item and the screen must not be offered as if both were lossless (decision
+0018). See [`macos.md`](macos.md) for what is unverified until the Mac check, and
+[`ui.md`](ui.md) for the strings and the view.
+
 ## Not here
 
-The menu and window rules line is Task 8. Prefilling a rule from a log line and
-the rules screen are M4.
+Prefilling a rule from a log line and the rules screen are M4.

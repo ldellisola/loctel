@@ -2,12 +2,13 @@
 //! reports, and the text the menu bar shares with them.
 //!
 //! - [`StatusView`] is Milestone 1's only view: whether loctel is receiving,
-//!   the rates and counts, and every listener with its problem if it has one.
+//!   the rates and counts, the discard rules line (Milestone 2) and every
+//!   listener with its problem if it has one.
 //!   [`open_status_window`] shows it in a window that refreshes every second
 //!   from [`loctel_engine::EngineHandle::status`] (the Linux development
 //!   window; on macOS the menu bar item comes first).
-//! - [`menu_text`] holds the exact strings for the status line and the
-//!   rates, so the macOS menu and the view cannot drift apart.
+//! - [`menu_text`] holds the exact strings for the status line, the discard
+//!   rules line and the rates, so the macOS menu and the view cannot drift apart.
 //! - [`Theme`] holds the colours; [`register_fonts`] the bundled typeface.
 //! - `testing` (behind the `screenshot` feature) renders any view headlessly
 //!   to a PNG and compares it pixel for pixel with a reference.

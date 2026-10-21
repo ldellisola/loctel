@@ -11,8 +11,9 @@
 //! - `login_item` turns start at login on and off (`SMAppService`).
 //!
 //! All `objc2` and `unsafe` code in the project lives in this crate. See
-//! `docs/areas/macos.md`, and read its "Unverified until the M1 Mac check"
-//! list before treating anything here as proven.
+//! `docs/areas/macos.md`, and read its "Unverified until the M1 Mac check" and
+//! "Unverified until the M2 Mac check" lists before treating anything here as
+//! proven.
 
 #[cfg(any(target_os = "macos", test))]
 mod first_launch;

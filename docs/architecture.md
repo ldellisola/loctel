@@ -31,8 +31,8 @@ diagram below it.
 | `loctel-engine` | core | Wires store, ingest, MCP and the discard rules; settings, pause, rates; owns threads and runtime | implemented: store, OTLP receivers and MCP server, `settings.toml`, pause, rates, and (Milestone 2) the discard rules at ingest with live reload of `rules.toml` and the handle API (see "Engine" below) |
 | `loctel-meshgen` | test tooling | Fake microservice mesh scenarios (library and `meshgen` binary) | implemented: six scenarios and a sender over gRPC, HTTP protobuf and HTTP JSON (see "Test tooling" below) |
 | `loctel-e2e` | test tooling | End-to-end tests through real OTLP and a real MCP client (`publish = false`) | implemented: a `Harness` over a real engine and six tests (see "Test tooling" below) |
-| `loctel-ui` | UI | GPUI views and the headless screenshot harness | implemented: the status view, the shared menu text, the theme, and `testing::{render_png, assert_snapshot}` behind the `screenshot` feature (see "UI" below) |
-| `loctel-macos` | macOS | Status item, activation policy, login item (`cfg(target_os = "macos")`) | implemented, never run: the menu bar item and its menu, the login item and the first-launch step; empty off macOS apart from three plain-Rust modules that the Linux tests cover (see "macOS shell" below) |
+| `loctel-ui` | UI | GPUI views and the headless screenshot harness | implemented: the status view (with the discard rules line, from Milestone 2), the shared menu text, the theme, and `testing::{render_png, assert_snapshot}` behind the `screenshot` feature (see "UI" below) |
+| `loctel-macos` | macOS | Status item, activation policy, login item (`cfg(target_os = "macos")`) | implemented, never run: the menu bar item and its menu (with the discard rules line and Edit discard rules…), the login item and the first-launch step; empty off macOS apart from three plain-Rust modules that the Linux tests cover (see "macOS shell" below) |
 | `loctel-app` | binary | The `loctel` binary: headless mode and GUI, bundle metadata | implemented: headless mode, on Linux the status window and on macOS the menu bar app (see "Headless mode", "UI" and "macOS shell" below); `[package.metadata.bundle]` and `bundle/` hold what goes into `loctel.app` (see "Release pipeline" below) |
 | `xtask` | tooling | Screenshots, next-version, release notes, MCP smoke test | implemented: `screenshots [--update]`, `run-shot`, `next-version`, `release-notes` and `mcp-smoke --url URL` (see "UI" and "Release pipeline" below) |
 
@@ -465,11 +465,14 @@ details, the theme tokens and the workflow are in
 [`areas/ui.md`](areas/ui.md); the choices and their reasons are in
 [`decisions/0008-ui-and-screenshot-choices.md`](decisions/0008-ui-and-screenshot-choices.md).
 
-- **Milestone 1 has one view.** `StatusView` draws a `StatusModel`, a plain
-  copy of what `EngineHandle::status()` returns (`StatusModel::from_status`),
-  so it is tested by building the model by hand. The window refreshes it every
-  second. The text of the status line and the rates is in `menu_text`, shared
-  with the macOS menu so the two cannot drift.
+- **Milestones 1 and 2 have one view.** `StatusView` draws a `StatusModel`, a
+  plain copy of what `EngineHandle::status()` returns
+  (`StatusModel::from_status`, which now also counts the discard rules that
+  are on and the ones among them that do not parse, and carries the rules
+  file error as a flag and the share dropped), so it is tested by building the
+  model by hand. The window refreshes it every second and shows the rules line
+  under the rates. The text of the status line, the rules line and the rates is
+  in `menu_text`, shared with the macOS menu so the two cannot drift.
 - **Screenshot tests** (`crates/loctel-ui/tests/screenshots.rs`) render views
   through GPUI's headless renderer (software wgpu, no GPU or display) with a
   bundled font, and compare pixel for pixel with references in
@@ -498,10 +501,12 @@ their reasons are in
   by `loctel-app` inside `Application::run` after it set
   `ActivationPolicy::Accessory` and `QuitMode::Explicit`. It opens no window.
   The main window is Milestone 3.
-- **The menu** is the status line (the `menu_text` the Linux window uses),
-  Copy MCP address, Pause or Resume, Start at login (checkmark from the
-  system) and Quit, rebuilt on every click and when its state changes (checked
-  every 2 s).
+- **The menu** is the status line and the discard rules line under it (both
+  `menu_text`, the same functions the Linux window uses), Copy MCP address,
+  Pause or Resume, Edit discard rules… (opens `engine.rules_path()` in the
+  default text editor; greyed out when the rules have no file), Start at login
+  (checkmark from the system) and Quit, rebuilt on every click and when its
+  state changes (checked every 2 s).
 - **Start at login** is `SMAppService.mainAppService`, and the system is the
   source of truth. The first launch turns it on once (`first_launch_done`).
 - **Checked from Linux.** `script/check-macos.sh` type-checks and lints the

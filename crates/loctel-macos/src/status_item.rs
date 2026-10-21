@@ -8,7 +8,8 @@
 //! commands.
 
 use std::cell::RefCell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command as Process;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -17,7 +18,9 @@ use gpui::{App, ClipboardItem, Global, KeyBinding, MenuItem, NoAction, actions};
 use gpui_tray::Tray;
 use loctel_engine::EngineHandle;
 use loctel_ui::StatusModel;
-use loctel_ui::menu_text::status_line;
+use loctel_ui::menu_text::{rules_line, status_line};
+use objc2_app_kit::NSWorkspace;
+use objc2_foundation::{NSString, NSURL};
 
 use crate::first_launch::first_launch;
 use crate::icon;
@@ -26,11 +29,17 @@ use crate::menu::{Command, MenuState, Row, rows};
 
 actions!(
     loctel_macos,
-    [CopyMcpAddress, TogglePause, ToggleStartAtLogin, Quit]
+    [
+        CopyMcpAddress,
+        TogglePause,
+        EditRules,
+        ToggleStartAtLogin,
+        Quit
+    ]
 );
 
 /// How often the menu is checked against the engine. The header holds the
-/// rates, which move all the time.
+/// rates, and the rules line the share dropped; both move all the time.
 const REFRESH_EVERY: Duration = Duration::from_secs(2);
 
 /// Keeps the tray alive: dropping the last handle removes the item from the
@@ -42,9 +51,9 @@ struct StatusItem {
 impl Global for StatusItem {}
 
 /// Puts loctel in the menu bar: the first-launch step, the icon and its menu
-/// (header, Copy MCP address, Pause or Resume, Start at login, Quit), the
-/// actions behind them, and a 2 second refresh of the header. It opens no
-/// window.
+/// (status line, discard rules line, Copy MCP address, Pause or Resume, Edit
+/// discard rules, Start at login, Quit), the actions behind them, and a 2
+/// second refresh of the two lines. It opens no window.
 ///
 /// `settings_path` is only for the first-launch step. If the status item
 /// cannot be created there is nothing to see or click, so loctel says why on
@@ -79,9 +88,11 @@ fn menu_state(engine: &EngineHandle) -> MenuState {
     let status = StatusModel::from_status(&engine.status());
     MenuState {
         header: status_line(&status),
+        rules: rules_line(&status),
         paused: status.paused,
         start_at_login: login_item::is_enabled(),
         has_mcp_address: engine.mcp_url().is_some(),
+        has_rules_file: engine.rules_path().is_some(),
     }
 }
 
@@ -142,6 +153,7 @@ fn menu_items(rows: &[Row]) -> Vec<MenuItem> {
                 let item = match command {
                     Command::CopyMcpAddress => MenuItem::action(*label, CopyMcpAddress),
                     Command::TogglePause => MenuItem::action(*label, TogglePause),
+                    Command::EditRules => MenuItem::action(*label, EditRules),
                     Command::ToggleStartAtLogin => MenuItem::action(*label, ToggleStartAtLogin),
                     Command::Quit => MenuItem::action(*label, Quit),
                 };
@@ -169,6 +181,19 @@ fn register_actions(cx: &mut App, engine: &EngineHandle) {
         let engine = engine.clone();
         move |_: &TogglePause, _| engine.set_paused(!engine.is_paused())
     });
+    cx.on_action({
+        let engine = engine.clone();
+        move |_: &EditRules, _| match engine.rules_path() {
+            Some(path) => {
+                if let Err(error) = open_in_text_editor(&path) {
+                    eprintln!("loctel: cannot open {}: {error:#}", path.display());
+                }
+            }
+            None => {
+                eprintln!("loctel: the discard rules are not in a file, so there is none to edit")
+            }
+        }
+    });
     cx.on_action(|_: &ToggleStartAtLogin, _| {
         if let Err(error) = login_item::set_enabled(!login_item::is_enabled()) {
             eprintln!("loctel: {error:#}");
@@ -178,6 +203,28 @@ fn register_actions(cx: &mut App, engine: &EngineHandle) {
         let engine = engine.clone();
         move |_: &Quit, cx| quit(&engine, cx)
     });
+}
+
+/// Opens `path` in the default text editor. First the way Finder opens a file
+/// (`NSWorkspace` `openURL` with the file URL, which uses whatever app the
+/// system has for `.toml`); if no app handles that type, or the path is not
+/// text, `open -t`, which asks for the default text editor outright. The file
+/// is there because the engine writes it at start, so a failure here means it
+/// was deleted since, or the system has no text editor to offer.
+fn open_in_text_editor(path: &Path) -> anyhow::Result<()> {
+    if let Some(text) = path.to_str() {
+        let url = NSURL::fileURLWithPath(&NSString::from_str(text));
+        if NSWorkspace::sharedWorkspace().openURL(&url) {
+            return Ok(());
+        }
+    }
+    let status = Process::new("open")
+        .arg("-t")
+        .arg(path)
+        .status()
+        .context("cannot run `open -t`")?;
+    anyhow::ensure!(status.success(), "`open -t` failed ({status})");
+    Ok(())
 }
 
 /// Stops the engine, takes the icon out of the menu bar, then quits.

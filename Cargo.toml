@@ -82,8 +82,8 @@ image = { version = "0.25.1", default-features = false, features = ["png"] }
 # one copy of each.
 gpui-tray = { version = "0.2", default-features = false, features = ["gpui-kit", "menu-state"] }
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSBitmapImageRep", "NSImage", "NSImageRep"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSError", "NSGeometry", "NSString"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSBitmapImageRep", "NSImage", "NSImageRep", "NSWorkspace"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSError", "NSGeometry", "NSString", "NSURL"] }
 objc2-service-management = "0.3.2"
 
 # Line tables only: full debug info made a clean test build about 12 GB of

@@ -1,7 +1,8 @@
-//! The status line the menu bar header shows, and the rate format it uses.
-//! The strings are exact: the macOS menu and the status view both print them.
+//! The status line the menu bar header shows, the rules line under it, and the
+//! rate format they use. The strings are exact: the macOS menu and the status
+//! view both print them.
 
-use loctel_ui::menu_text::{format_rate, status_line};
+use loctel_ui::menu_text::{format_rate, rules_line, status_line};
 use loctel_ui::{ListenerLine, StatusModel};
 
 fn listening(name: &str, address: &str) -> ListenerLine {
@@ -30,6 +31,26 @@ fn model(paused: bool, listeners: Vec<ListenerLine>, spans: f64, logs: f64) -> S
         logs_per_sec: logs,
         traces_held: 0,
         logs_held: 0,
+        rules_on: 0,
+        rules_with_errors: 0,
+        rules_file_error: false,
+        dropped_fraction: 0.0,
+    }
+}
+
+/// A model that differs from the quiet one only in what the rules line reads.
+fn with_rules(
+    rules_on: usize,
+    rules_with_errors: usize,
+    rules_file_error: bool,
+    dropped_fraction: f64,
+) -> StatusModel {
+    StatusModel {
+        rules_on,
+        rules_with_errors,
+        rules_file_error,
+        dropped_fraction,
+        ..model(false, all_listening(), 0.0, 0.0)
     }
 }
 
@@ -171,4 +192,105 @@ fn format_rate_cases() {
     assert_eq!(format_rate(f64::NAN), "0");
     assert_eq!(format_rate(f64::INFINITY), "0");
     assert_eq!(format_rate(-3.0), "0");
+}
+
+#[test]
+fn rules_line_cases() {
+    // The file could not be used.
+    assert_eq!(
+        rules_line(&with_rules(0, 0, true, 0.0)),
+        "Discard rules file has an error"
+    );
+    // A rule is on and its query does not parse.
+    assert_eq!(
+        rules_line(&with_rules(1, 1, false, 0.0)),
+        "1 discard rule on \u{b7} 1 has an error"
+    );
+    // Nothing is on.
+    assert_eq!(
+        rules_line(&with_rules(0, 0, false, 0.0)),
+        "No discard rules on"
+    );
+    // Rules are working: the share of what arrived that they dropped, as a
+    // whole percent.
+    assert_eq!(
+        rules_line(&with_rules(1, 0, false, 0.31)),
+        "1 discard rule on \u{b7} 31% dropped"
+    );
+    assert_eq!(
+        rules_line(&with_rules(3, 0, false, 0.0)),
+        "3 discard rules on \u{b7} 0% dropped"
+    );
+}
+
+#[test]
+fn rules_line_file_error_wins() {
+    // Over a rule error, over "no rules on" and over a share dropped: the
+    // rules in force are the last good ones, and the line must not hide that
+    // the file on disk is not what is running.
+    assert_eq!(
+        rules_line(&with_rules(2, 1, true, 0.5)),
+        "Discard rules file has an error"
+    );
+    assert_eq!(
+        rules_line(&with_rules(2, 0, true, 0.5)),
+        "Discard rules file has an error"
+    );
+    assert_eq!(
+        rules_line(&with_rules(0, 0, true, 0.0)),
+        "Discard rules file has an error"
+    );
+}
+
+#[test]
+fn rules_line_rule_error_wins_over_the_share_dropped() {
+    assert_eq!(
+        rules_line(&with_rules(3, 1, false, 0.9)),
+        "3 discard rules on \u{b7} 1 has an error"
+    );
+    // More than one: "has an error" would be wrong.
+    assert_eq!(
+        rules_line(&with_rules(3, 2, false, 0.9)),
+        "3 discard rules on \u{b7} 2 have errors"
+    );
+}
+
+#[test]
+fn rules_line_percentage_is_rounded_to_a_whole_number() {
+    assert_eq!(
+        rules_line(&with_rules(1, 0, false, 0.3)),
+        "1 discard rule on \u{b7} 30% dropped"
+    );
+    // Under half a percent is still "0%", over it rounds up.
+    assert_eq!(
+        rules_line(&with_rules(1, 0, false, 0.004)),
+        "1 discard rule on \u{b7} 0% dropped"
+    );
+    assert_eq!(
+        rules_line(&with_rules(1, 0, false, 0.006)),
+        "1 discard rule on \u{b7} 1% dropped"
+    );
+    assert_eq!(
+        rules_line(&with_rules(1, 0, false, 0.996)),
+        "1 discard rule on \u{b7} 100% dropped"
+    );
+}
+
+#[test]
+fn rules_line_never_shows_a_percentage_that_is_not_one() {
+    // Nothing that is not a share leaks a "NaN", a minus sign or "250%": a
+    // value that is not a number reads 0, as in `format_rate`, and a share
+    // outside 0 to 1 is cut to it.
+    for (fraction, shown) in [
+        (f64::NAN, "0%"),
+        (f64::INFINITY, "0%"),
+        (-0.2, "0%"),
+        (2.5, "100%"),
+    ] {
+        assert_eq!(
+            rules_line(&with_rules(1, 0, false, fraction)),
+            format!("1 discard rule on \u{b7} {shown} dropped"),
+            "fraction {fraction}"
+        );
+    }
 }

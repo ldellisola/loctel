@@ -4,8 +4,9 @@ The GPUI layer, kept thin on purpose: views draw what the engine reports and
 hold no logic of their own. Design references: §9.2 (screens), §9.3 (look and
 feel), §10.3 (screenshot tests) and §10.5 (gotchas from the spike).
 
-Status: Milestone 1 has one view, the **status view**, and the Linux window
-that shows it. The main window (Map & traces, Trace view) is Milestone 3, the
+Status: Milestones 1 and 2 have one view, the **status view**, and the Linux
+window that shows it. Milestone 2 added the discard rules line to it and to the
+macOS menu; the rules screen is Milestone 4. The main window (Map & traces, Trace view) is Milestone 3, the
 remaining screens and the popover Milestone 4. The macOS menu bar item is in
 `loctel-macos`; it only borrows the strings from `menu_text`.
 
@@ -18,17 +19,19 @@ moved.
 
 | Item | What it is |
 |---|---|
-| `StatusModel`, `ListenerLine` | plain values for the view and the menu. `StatusModel::from_status(&EngineStatus)` builds one. A failed listener keeps the address it was asked for, and its error |
-| `StatusView` | the GPUI view: a headline pill, four numbers (spans/s, logs/s, traces held, logs held) and the endpoint list. `StatusView::new(model, theme)`, `set_model(model, cx)` (redraws only when the model changed) and `refresh_from(engine, cx)` (once a second, until the view is dropped) |
+| `StatusModel`, `ListenerLine` | plain values for the view and the menu. `StatusModel::from_status(&EngineStatus)` builds one. A failed listener keeps the address it was asked for, and its error. The rules fields: `rules_on` (enabled rules, whether or not their queries parse), `rules_with_errors` (the enabled ones that do not parse; a switched-off draft with a bad query is not counted, so it never exceeds `rules_on`), `rules_file_error` (a flag: `rules.toml` could not be used; the text stays in `EngineStatus`) and `dropped_fraction` (0 to 1, since launch) |
+| `StatusView` | the GPUI view: a headline pill, four numbers (spans/s, logs/s, traces held, logs held), the discard rules line under them (a dot and the words of `rules_line`; red dot and text when the file or a rule has an error, green when rules are on, grey when none is) and the endpoint list. `StatusView::new(model, theme)`, `set_model(model, cx)` (redraws only when the model changed) and `refresh_from(engine, cx)` (once a second, until the view is dropped) |
 | `open_status_window(engine, cx)` | opens the 900 by 600 window on an `App`: dark theme, refreshed every second from `EngineHandle::status()`. This is what `loctel` (no `--headless`) shows on Linux |
 | `menu_text::status_line(&StatusModel)` | the one-line status: `Receiving · 412 spans/s · 1.2k logs/s`, `Paused` or `Port problem: otlp-http (address in use)`. A failed listener wins over paused, paused over receiving. The reason is `address in use` when the OS error contains "in use", otherwise the raw error cut to 40 characters. The first failed listener is the one named |
+| `menu_text::rules_line(&StatusModel)` | the discard rules in one line, the first that applies: `Discard rules file has an error`; `1 discard rule on · 1 has an error` (for more than one, `3 discard rules on · 2 have errors`); `No discard rules on`; `1 discard rule on · 31% dropped` or `3 discard rules on · 0% dropped`. The percentage is the share the rules dropped of what arrived since launch, rounded to a whole number; a value that is not a number reads `0%` and one outside 0 to 1 is cut to it. A file error wins over a rule error, a rule error over "no rules on" |
 | `menu_text::format_rate(f64)` | `412` is `412`, `1234` is `1.2k`, `0.4` is `0`. One decimal under ten thousand, none above, never `.0` (`1k`, `10k`, `1.3M`); NaN, infinity and negatives read `0` |
 | `Theme` | the colours below. `Theme::dark()` and `Theme::light()` |
 | `register_fonts(cx)`, `FONT_FAMILY` | the bundled typeface (below) |
 | `testing` (feature `screenshot`) | `render_png` and `assert_snapshot` |
 
 The strings in `menu_text` are the contract: the macOS menu header and the
-status view's pill both use `status_line`, and `crates/loctel-ui/tests/menu_text.rs`
+status view's pill both use `status_line`, the macOS menu's rules header and the
+view's rules row both use `rules_line`, and `crates/loctel-ui/tests/menu_text.rs`
 pins them.
 
 ## Theme tokens
@@ -55,7 +58,8 @@ literal.
 | `service_palette` | `#4c9dff #3cc8b4 #f0a04b #b18cff #f07fb0` | `#0a62d6 #0f7f70 #b45f06 #6f42c1 #c2306f` | one per service, in order, wrapped |
 
 Errors are never marked by colour alone: a failed listener says `Failed` and
-the error in words, and the pill says `Port problem`.
+the error in words, the pill says `Port problem`, and the rules row says
+`has an error` or `Discard rules file has an error`.
 
 The Linux window always uses the dark theme. Following the system appearance
 (§9.3) arrives with the main window in Milestone 3.
