@@ -30,7 +30,14 @@ pub enum DropScope {
 /// spec: a rule with a query that does not parse is kept as written and
 /// reported with its error (`RuleStatus::error`), so that one typo in a
 /// hand-edited file does not take the other rules with it.
+///
+/// A key the file has that is not one of these fields is an error, not
+/// something to skip. `scope` is the only optional key, so without that a typo
+/// in its name (`scpoe = "span"`) would load as a rule without one and drop
+/// whole traces and their logs for good, where the person asked for only the
+/// matching spans to go.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RuleSpec {
     /// What the user calls the rule.
     pub name: String,

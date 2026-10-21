@@ -109,6 +109,19 @@ later agent might be tempted to undo, and the one place the plan was adapted.
   the status). A missing key or a wrong `language` or `scope` is a file error
   too, so a typo there keeps the previous rules; only a bad *query* disables a
   single rule.
+- **An unknown key is a file error too** (`#[serde(deny_unknown_fields)]` on
+  `RuleSpec` and on the file's top-level table). `scope` is the only optional
+  key, so without this a misspelled `scpoe = "span"` (or `Scope`) loaded as a
+  rule without a scope and got the default, the whole trace: it dropped traces
+  and their logs for good when the person asked for only the matched spans to go.
+  A typo in any other key already failed as a missing field, and `[[rules]]` for
+  `[[rule]]` loaded as a file with no rules, so every rule in it silently did
+  nothing. Both are now an error that names the key and the line, which keeps the
+  previous rules and sets `rules_file_error` (the same handling as bad TOML).
+  The plan's derives are unchanged; the attribute is the only addition. Do not
+  remove it to make a future key "forward compatible": a new key is added to
+  `RuleSpec` and the header together, and an older loctel reading a newer file
+  should refuse it, not guess.
 - **The save rewrites the whole file** (header plus tables, through a temporary
   file and a rename, like settings). Hand-written comments do not survive a save
   by loctel; the header does.

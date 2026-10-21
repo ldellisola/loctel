@@ -72,9 +72,16 @@ query = '{ name = "MGET" }'
 - **Rules apply in file order,** and only the enabled ones with a valid query.
 - **`RulesFile::load(path)`** gives `Ok(None)` when the file does not exist and
   `Ok(Some(rules))` otherwise. Bad TOML, an unknown `language` or `scope`, a wrong
-  type, or a rule without `name`, `enabled`, `language` or `query` is an `Err`
-  whose one-line text names the file and, for TOML syntax, the line. The caller
-  keeps the rules it had (the engine does, see "In the engine").
+  type, a rule without `name`, `enabled`, `language` or `query`, or a key that is
+  not one of the five above is an `Err` whose one-line text names the file and,
+  for TOML syntax and unknown keys, the line. The caller keeps the rules it had
+  (the engine does, see "In the engine").
+- **An unknown key is a file error.** A misspelled key (`scpoe = "span"`,
+  `Scope`, `[[rules]]`) is not skipped: `scope` is the only optional key, so
+  skipping a typo in it would give the rule the default scope, the whole trace,
+  and drop traces and logs the person meant to keep. The file is refused with
+  the key named, the previous rules stay and `rules_file_error` is set, as for
+  bad TOML (decision 0017).
 - **A bad query is not a file error.** The file loads, and the rule with the typo
   is reported by `RuleSet` (`RuleStatus::error`, the parser's text with its
   column) and does nothing, while the other rules apply. One typo in a hand-edited
@@ -307,7 +314,8 @@ rules_watch.rs}`). The reasons are in decision 0018.
 
 `crates/loctel-engine/tests/rules.rs` runs the engine on real sockets with the
 fake mesh (the file at start, health checks dropped, a trace whose root arrives
-last, live reload, a broken file, the handle API, the preview, the dropped
+last, live reload, a broken file or a misspelled key that keeps the previous
+rules, the handle API, the preview, the dropped
 fraction, rates and pause), `rules_watch.rs` has unit tests for the file polling,
 and `crates/loctel-app/tests/headless.rs` checks the `rules` line of the binary.
 
@@ -320,7 +328,7 @@ drop; and an edit of `enabled` in the file that takes effect on a running
 engine. See [`testing.md`](testing.md), "End-to-end tests".
 
 `crates/loctel-rules/tests/`: `file.rs` (the file: missing, round trip, defaults,
-the empty file and its example, errors), `filter.rs` (the filter with a
+the empty file and its example, errors, including a misspelled key), `filter.rs` (the filter with a
 `ManualClock`, a `Store` and the fake mesh: whole-trace drops that cover stored
 and late spans, structural rules over stored spans, span scope and its
 descendants (including stored ones that arrived before their ancestor), LogQL

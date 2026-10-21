@@ -307,6 +307,62 @@ fn broken_rules_file_keeps_previous_rules() {
 }
 
 #[test]
+fn a_misspelled_key_in_the_file_keeps_previous_rules() {
+    // `scope` is the only optional key. A person who writes `scpoe = "span"`
+    // meant to drop only the matching spans; read as a rule without a scope it
+    // would drop whole traces and their logs for good. So the file is refused
+    // and reported, and the rules in force stay.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("rules.toml");
+    let engine = start(dir.path());
+    engine.set_rules(vec![example_rule()]).unwrap();
+    let before = engine.rules();
+
+    fs::write(
+        &path,
+        concat!(
+            "[[rule]]\n",
+            "name = \"Cache calls\"\n",
+            "enabled = true\n",
+            "language = \"traceql\"\n",
+            "scpoe = \"span\"\n",
+            "query = '{ name = \"POST /api/checkout\" }'\n",
+        ),
+    )
+    .unwrap();
+    wait_for("the error", || engine.status().rules_file_error.is_some());
+
+    let error = engine.status().rules_file_error.unwrap();
+    assert!(error.contains("rules.toml"), "{error}");
+    assert!(error.contains("scpoe"), "the key is named: {error}");
+    assert!(!error.contains('\n'), "{error}");
+    // The rules stay as they were: the typo'd rule was not applied, with the
+    // default scope or any other, so a failing checkout is stored whole, and
+    // the health checks are still dropped by the rule that was in force.
+    assert_eq!(engine.rules(), before);
+    assert_eq!(engine.status().rules, before);
+    let (_, checkout) = send(&engine, &Scenario::CheckoutFailure, 1);
+    send(&engine, &HEALTH, 2);
+    let stats = engine.store().stats();
+    assert_eq!((stats.traces, stats.spans), (1, checkout.spans));
+    assert_eq!(stats.logs, checkout.logs);
+
+    // Spelling it right is picked up, and the error goes.
+    // (The comment makes the file a different length, so the edit is noticed
+    // whatever the file system's clock resolution.)
+    let fixed = fs::read_to_string(&path).unwrap().replace("scpoe", "scope");
+    fs::write(&path, format!("{fixed}# fixed\n")).unwrap();
+    wait_for("the error to clear", || {
+        engine.status().rules_file_error.is_none()
+    });
+    let rules = engine.rules();
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules[0].spec.name, "Cache calls");
+    assert_eq!(rules[0].spec.scope, DropScope::Span);
+    engine.shutdown();
+}
+
+#[test]
 fn a_bad_query_in_the_file_disables_only_that_rule() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("rules.toml");

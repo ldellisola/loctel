@@ -19,8 +19,11 @@ use crate::spec::RuleSpec;
 /// state to hold, the engine keeps the path.
 pub struct RulesFile;
 
-/// The whole file as TOML sees it: `rule` is the `[[rule]]` tables.
+/// The whole file as TOML sees it: `rule` is the `[[rule]]` tables. A top-level
+/// key other than `rule` is an error (`[[rules]]` would otherwise load as a
+/// file with no rules, and every rule in it would silently do nothing).
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Document {
     #[serde(default)]
     rule: Vec<RuleSpec>,
@@ -59,8 +62,10 @@ query = '{ span.url.path =~ "/(health|healthz|alive|livez|ready|readyz)(/.*)?" |
     /// Reads the rules, in file order. `Ok(None)` when the file does not
     /// exist. A file that cannot be read, or is not valid rules (bad TOML, an
     /// unknown `language` or `scope`, a rule without a name, `enabled`,
-    /// `language` or `query`), is an error whose one-line text names the file
-    /// and, for bad TOML, the line. The file is never rewritten by this call.
+    /// `language` or `query`, or a key that is not one of those and `scope`:
+    /// a misspelled `scope` must not load as a rule without one), is an error
+    /// whose one-line text names the file and, for bad TOML, the line. The file
+    /// is never rewritten by this call.
     ///
     /// The queries are not checked here: a rule whose query does not parse is
     /// returned as written, and `RuleSet` reports it.
@@ -125,7 +130,8 @@ fn header() -> String {
 # good. loctel ships no rules: nothing is discarded unless you write a rule
 # here. Rules apply in the order they appear below. Changes to this file take
 # effect within a few seconds, and a mistake in one rule's query switches off
-# only that rule.
+# only that rule. A misspelled key or a bad value anywhere else makes loctel
+# keep the rules it had and report an error, until the file is fixed.
 #
 # Each rule is a [[rule]] table with these keys:
 #

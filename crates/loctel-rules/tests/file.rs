@@ -320,6 +320,58 @@ fn a_rule_missing_a_key_is_an_error() {
 }
 
 #[test]
+fn a_misspelled_key_is_an_error_not_a_default() {
+    // `scope` is the only optional key, so a typo in its name must not load as
+    // a rule without one: that rule would drop whole traces and their logs
+    // when the person asked for only the matching spans to go.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("rules.toml");
+    for typo in ["scpoe", "Scope", "scopes", "quey", "Enabled"] {
+        let text = format!(
+            "[[rule]]\nname = \"a\"\nenabled = true\nlanguage = \"traceql\"\nquery = \"{{ }}\"\n{typo} = \"span\"\n"
+        );
+        std::fs::write(&path, &text).unwrap();
+
+        let error = RulesFile::load(&path).unwrap_err().to_string();
+
+        assert!(error.contains("rules.toml"), "{error}");
+        assert!(error.contains(typo), "the key is named: {error}");
+        assert!(error.contains("line 6"), "{error}");
+        assert!(!error.contains('\n'), "{error}");
+    }
+}
+
+#[test]
+fn an_unknown_top_level_key_is_an_error() {
+    // `[[rules]]` for `[[rule]]`: without this the file would load as a file
+    // with no rules at all, and every rule in it would silently do nothing.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("rules.toml");
+    std::fs::write(
+        &path,
+        "[[rules]]\nname = \"a\"\nenabled = true\nlanguage = \"traceql\"\nquery = \"{ }\"\n",
+    )
+    .unwrap();
+
+    let error = RulesFile::load(&path).unwrap_err().to_string();
+
+    assert!(error.contains("rules.toml"), "{error}");
+    assert!(error.contains("rules"), "{error}");
+    assert!(!error.contains('\n'), "{error}");
+}
+
+#[test]
+fn every_key_the_header_documents_is_known() {
+    // The other side of `deny_unknown_fields`: a saved file, with every key
+    // the header lists, still loads.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("rules.toml");
+    RulesFile::save(&path, &sample_rules()).unwrap();
+
+    assert_eq!(RulesFile::load(&path).unwrap(), Some(sample_rules()));
+}
+
+#[test]
 fn a_bad_query_is_not_a_file_error() {
     // Queries are checked when the rules are applied, one rule at a time
     // (RuleSet), so that one typo cannot switch every other rule off.
