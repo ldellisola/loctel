@@ -24,17 +24,18 @@ the task that creates a crate changes its row.
 | `loctel-store` | core | In-memory store: trace assembly, completeness, dedup, eviction, failure semantics, search, logs, service map | implemented: assembly, completeness, dedup, eviction, failure semantics, trace summaries and search, logs, service map and services list (see "Store" below) |
 | `loctel-ingest` | core | OTLP gRPC and HTTP receivers, protobuf and JSON to model conversion | implemented: gRPC and HTTP receivers, gzip, conversion, `partial_success` (see "Ingest" below) |
 | `loctel-mcp` | core | MCP server (rmcp, Streamable HTTP), tools and their DTOs | planned |
-| `loctel-engine` | core | Wires store, ingest and MCP; settings, pause, rates; owns threads and runtime | planned |
+| `loctel-engine` | core | Wires store, ingest and MCP; settings, pause, rates; owns threads and runtime | implemented: store and OTLP receivers, `settings.toml`, pause, rates (MCP is wired in by a later task; see "Engine" below) |
 | `loctel-meshgen` | test tooling | Fake microservice mesh scenarios (library and `meshgen` binary) | planned |
 | `loctel-e2e` | test tooling | End-to-end tests through real OTLP and a real MCP client (`publish = false`) | planned |
 | `loctel-ui` | UI | GPUI views and the headless screenshot harness | planned |
 | `loctel-macos` | macOS | Status item, activation policy, login item (`cfg(target_os = "macos")`) | planned |
-| `loctel-app` | binary | The `loctel` binary: headless mode and GUI, bundle metadata | planned |
+| `loctel-app` | binary | The `loctel` binary: headless mode and GUI, bundle metadata | implemented: headless mode only (see "Headless mode" below); the GUI comes with the UI tasks |
 | `xtask` | tooling | Screenshots, next-version, release notes, MCP smoke test | placeholder (empty `main`) |
 
 ## Data flow
 
-Target shape for Milestone 1:
+Target shape for Milestone 1 (MCP and the UI are not wired in yet; the rest is
+what runs today):
 
 ```
  services (Docker or bare metal)
@@ -42,18 +43,24 @@ Target shape for Milestone 1:
         v
  loctel-ingest ---- proto -> loctel-model types, invalid items -> partial_success
         |
+        |  Sink::spans / Sink::logs
         v
- loctel-store  ---- assembles traces, marks complete, finds failed-in span,
-        |           keeps logs and the service map, evicts oldest whole trace
-        v
- loctel-engine ---- settings, pause, rates; owns the runtime
-     |         |
-     v         v
+ loctel-engine ---- EngineSink: paused? drop. Otherwise meter the rate and
+     |    |          hand the batch to the store. Also: settings, status,
+     |    |          shutdown; owns the runtime.
+     |    v
+     |  loctel-store -- assembles traces, marks complete, finds failed-in span,
+     |    |             keeps logs and the service map, evicts oldest whole trace
+     |    |
+     v    v
  loctel-mcp   loctel-ui  (status view, menu text)  <-- loctel-macos (status item)
      |
      v
  AI agents  (MCP 2026-07-28, http://127.0.0.1:4319/mcp, read-only)
 ```
+
+Readers (MCP, UI) get the same `EngineHandle` and ask the store or the status
+directly; the engine is not in the read path.
 
 Telemetry is never persisted. Only `settings.toml` (and discard rules from
 Milestone 2) is written to disk.
@@ -158,6 +165,86 @@ other crates rely on:
   Metrics are accepted and dropped.
 - **Lifetime.** The servers run on the runtime that called `start`. Dropping
   `IngestServers`, or `shutdown(self)`, stops them gracefully.
+
+## Engine
+
+`loctel-engine` depends on `loctel-model`, `loctel-store`, `loctel-ingest`,
+`tokio`, `toml`, `serde`, `dirs` and `anyhow`. It is the one object the menu
+bar, the window and the headless binary hold, so none of them knows how the
+store and the receivers are put together. Decisions and reasons:
+[`decisions/0004-engine-lifecycle-and-settings.md`](decisions/0004-engine-lifecycle-and-settings.md).
+
+- **Starting.** `Engine::start(EngineConfig { bind_ip, settings, store })`
+  returns an `EngineHandle`. It builds the `Store` (with `SystemClock`), a
+  multi-thread tokio runtime on threads named `loctel-engine`, and the OTLP
+  receivers on `bind_ip` and the ports in `Settings` (loopback by default).
+  The caller needs no async `main`. Calling it from inside a tokio runtime is
+  an `Err`, not a panic.
+- **Ports.** A port that cannot be bound is a `ListenerState::Failed` in
+  `EngineStatus::listeners` and does not stop the other receivers (design §4).
+  Port 0 picks a free one, and the listener status carries the real address.
+- **The handle.** `EngineHandle` is `Clone`, and every clone is the same
+  engine: `store()`, `status()`, `set_paused`, `is_paused`, `mcp_url()` (`None`
+  until MCP is wired in) and `shutdown()`. `shutdown` is idempotent and safe
+  from any thread, including inside a runtime (where it does not wait). The
+  engine also stops when the last handle is dropped.
+- **Pause.** `EngineSink` is the receivers' `Sink`. While paused it drops
+  every batch before it reaches the store or the rate meters, and the receivers
+  keep answering success, so exporters neither buffer nor retry (design §4).
+  Dropped items are not counted anywhere, and they are not recoverable on
+  resume.
+- **Rates.** `EngineStatus::spans_per_sec` and `logs_per_sec` come from two
+  `RateMeter`s: the count over the last 5 seconds divided by 5, in 100 ms
+  buckets. Time is passed in, never read, so tests need no sleeping. The
+  first 5 seconds after start understate the rate.
+- **Status.** `EngineStatus { paused, listeners, spans_per_sec, logs_per_sec,
+  stats }` is a snapshot by value. Callers poll it (the UI) or print it (the
+  headless binary).
+- **Settings.** `Settings` is `settings.toml`: `otlp_grpc_port` (4317),
+  `otlp_http_port` (4318), `mcp_port` (4319), `disk_cap_bytes` (4 GiB),
+  `start_at_login` (true) and `first_launch_done` (false). Every key is
+  optional, unknown keys are ignored, and `Settings::save` writes through a
+  temporary file and a rename. `Settings::default_path()` is
+  `dirs::config_dir()/loctel/settings.toml`, which on macOS is
+  `~/Library/Application Support/loctel/settings.toml`. `load` is strict (a
+  missing file is the defaults, an unreadable or invalid one is an `Err`
+  naming the file); `load_or_default` never fails and never rewrites a bad file.
+  `disk_cap_bytes` is stored but not enforced until the spill-to-disk store
+  exists (Milestone 5).
+
+## Headless mode
+
+`loctel --headless` runs the engine with no window and no menu bar item. It is
+what the end-to-end tests, the release smoke test and agents on Linux use.
+
+```
+loctel [--headless] [--grpc-port N] [--http-port N] [--mcp-port N]
+       [--settings PATH] [--completeness-ms N]
+```
+
+- **Configuration.** Settings come from `--settings PATH`, else the per-user
+  file; a missing file is fine, and a broken one is reported on stderr and
+  replaced by the defaults for this run. The port flags win over the file.
+  `--completeness-ms` sets how long a trace must be quiet to count as complete
+  (tests use small values). Port 0 picks a free port. The file is only read:
+  headless mode never writes it.
+- **Output.** Stdout carries one JSON line per listener, once, when the
+  engine is up, and nothing else:
+  `{"event":"listener","name":"otlp-grpc","state":"listening","address":"127.0.0.1:4317"}`
+  or `{"event":"listener","name":"otlp-http","state":"failed","error":"..."}`.
+  A script that starts loctel with ports 0 reads its real ports from these
+  lines. Logs and warnings go to stderr (quiet by default, `RUST_LOG` to
+  change).
+- **Lifetime.** The signal handlers are installed before the lines are
+  printed, so a signal sent as soon as a line is read is never lost. SIGINT or
+  SIGTERM shuts the engine down and exits 0. A taken port is not fatal: the
+  process runs with what it could bind. An unknown flag exits 2, and an
+  engine that cannot start exits 1.
+- **Without `--headless`** the binary does the same for now. The menu bar app
+  and the window arrive with the UI tasks (Linux window, then the macOS status
+  item), and those branches will live in `main`.
+- **Tests.** `crates/loctel-app/tests/headless.rs` runs the built binary:
+  the lines, SIGTERM and SIGINT, a taken port, settings file and flags.
 
 ## Platform
 

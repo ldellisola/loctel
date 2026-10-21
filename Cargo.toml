@@ -11,6 +11,9 @@ rust-version = "1.98.1"
 # Exact pins are added by the task that first needs each crate.
 [workspace.dependencies]
 loctel-model = { path = "crates/loctel-model" }
+loctel-store = { path = "crates/loctel-store" }
+loctel-ingest = { path = "crates/loctel-ingest" }
+loctel-engine = { path = "crates/loctel-engine" }
 parking_lot = "0.12.5"
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = "1.0.154"
@@ -23,6 +26,14 @@ tower-http = { version = "0.6", features = ["decompression-gzip"] }
 tokio = { version = "1.54.0", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
 prost = "0.14.4"
 flate2 = "1.1.10"
+
+# Engine and app (loctel-engine, loctel-app)
+anyhow = "1.0.104"
+toml = "1.1.8"
+dirs = "7.0.0"
+clap = { version = "4.6.7", features = ["derive"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "env-filter", "ansi"] }
+tempfile = "3.27.0"
 
 [workspace.lints.clippy]
 all = "warn"

@@ -45,6 +45,15 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
+Run the app headless (no window; prints one JSON line per listener and runs
+until SIGINT or SIGTERM). Port 0 picks a free port, and the lines say which.
+Point `--settings` at a scratch file so you never touch the real one:
+
+```bash
+cargo run -p loctel-app -- --headless --grpc-port 0 --http-port 0 --mcp-port 0 \
+  --settings /tmp/loctel-settings.toml
+```
+
 Commits use the conventional style (`feat(store): ...`, `fix(mcp): ...`,
 `docs: ...`, `chore: ...`).
 
