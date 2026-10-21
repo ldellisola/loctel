@@ -1,0 +1,11 @@
+# Cargo build output (includes target/screenshot-diffs)
+/target
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local-only Claude Code settings
+.claude/settings.local.json

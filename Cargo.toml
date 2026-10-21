@@ -1,0 +1,15 @@
+[workspace]
+members = ["crates/*", "xtask"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+rust-version = "1.98.1"
+
+# Every crate takes its dependencies from here with `dep.workspace = true`.
+# Exact pins are added by the task that first needs each crate.
+[workspace.dependencies]
+
+[workspace.lints.clippy]
+all = "warn"

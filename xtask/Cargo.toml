@@ -1,0 +1,10 @@
+[package]
+name = "xtask"
+description = "Repo automation: screenshots, version, release notes, MCP smoke test"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true

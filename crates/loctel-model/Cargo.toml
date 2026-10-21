@@ -1,0 +1,10 @@
+[package]
+name = "loctel-model"
+description = "Domain types for loctel: spans, logs, resources (OTLP-independent)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
