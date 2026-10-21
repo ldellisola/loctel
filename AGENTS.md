@@ -54,6 +54,17 @@ cargo run -p loctel-app -- --headless --grpc-port 0 --http-port 0 --mcp-port 0 \
   --settings /tmp/loctel-settings.toml
 ```
 
+Send fake traffic (the fake microservice mesh; see
+[`docs/areas/testing.md`](docs/areas/testing.md) for the scenarios). With the
+app running headless on its default ports (the command above without the port
+flags), this sends the failing checkout trace and prints
+`sent 15 spans and 7 logs (trace ...)`:
+
+```bash
+cargo run -p loctel-meshgen -- --scenario checkout-failure \
+  --transport http-json --endpoint http://127.0.0.1:4318
+```
+
 Commits use the conventional style (`feat(store): ...`, `fix(mcp): ...`,
 `docs: ...`, `chore: ...`).
 

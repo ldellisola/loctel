@@ -25,7 +25,7 @@ the task that creates a crate changes its row.
 | `loctel-ingest` | core | OTLP gRPC and HTTP receivers, protobuf and JSON to model conversion | implemented: gRPC and HTTP receivers, gzip, conversion, `partial_success` (see "Ingest" below) |
 | `loctel-mcp` | core | MCP server (rmcp, Streamable HTTP), tools and their DTOs | planned |
 | `loctel-engine` | core | Wires store, ingest and MCP; settings, pause, rates; owns threads and runtime | implemented: store and OTLP receivers, `settings.toml`, pause, rates (MCP is wired in by a later task; see "Engine" below) |
-| `loctel-meshgen` | test tooling | Fake microservice mesh scenarios (library and `meshgen` binary) | planned |
+| `loctel-meshgen` | test tooling | Fake microservice mesh scenarios (library and `meshgen` binary) | implemented: six scenarios and a sender over gRPC, HTTP protobuf and HTTP JSON (see "Test tooling" below) |
 | `loctel-e2e` | test tooling | End-to-end tests through real OTLP and a real MCP client (`publish = false`) | planned |
 | `loctel-ui` | UI | GPUI views and the headless screenshot harness | planned |
 | `loctel-macos` | macOS | Status item, activation policy, login item (`cfg(target_os = "macos")`) | planned |
@@ -245,6 +245,27 @@ loctel [--headless] [--grpc-port N] [--http-port N] [--mcp-port N]
   item), and those branches will live in `main`.
 - **Tests.** `crates/loctel-app/tests/headless.rs` runs the built binary:
   the lines, SIGTERM and SIGINT, a taken port, settings file and flags.
+
+## Test tooling
+
+`loctel-meshgen` generates the data every test, screenshot and manual run
+uses, and sends it to a running loctel. It depends on `loctel-model`, the OTLP
+types, `tonic` and `reqwest` (clients), and a seeded ChaCha RNG; `loctel-ingest`
+and `loctel-store` are only dev-dependencies, used to check that what it
+generates is valid and reaches the right verdict. The scenarios, the frozen
+`CheckoutFailure` table and the command line are in
+[`areas/testing.md`](areas/testing.md); the choices and their reasons are in
+[`decisions/0005-meshgen-scenario-choices.md`](decisions/0005-meshgen-scenario-choices.md).
+
+- **Generate, then send.** `generate(&Scenario, seed, base_unix_nano)` is a pure
+  function to `Generated { batches, trace_ids }`: the same inputs give the same
+  bytes. `send(&Generated, &Transport, time_scale)` delivers the batches and
+  sleeps their `delay_before * time_scale`. Tests use `generate` alone when
+  they feed a store directly, and both when they go through real OTLP.
+- **Frozen content.** `CheckoutFailure` is what the mockups show. Changing it
+  means updating screenshots and e2e expectations.
+- **Scenarios do not share IDs.** Each reads its own RNG stream, so one seed
+  can feed several scenarios into the same loctel.
 
 ## Platform
 

@@ -14,6 +14,7 @@ loctel-model = { path = "crates/loctel-model" }
 loctel-store = { path = "crates/loctel-store" }
 loctel-ingest = { path = "crates/loctel-ingest" }
 loctel-engine = { path = "crates/loctel-engine" }
+loctel-meshgen = { path = "crates/loctel-meshgen" }
 parking_lot = "0.12.5"
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = "1.0.154"
@@ -34,6 +35,13 @@ dirs = "7.0.0"
 clap = { version = "4.6.7", features = ["derive"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "env-filter", "ansi"] }
 tempfile = "3.27.0"
+
+# Fake mesh and its sender (loctel-meshgen). reqwest is built without default
+# features on purpose: the default `system-proxy` would send requests for
+# 127.0.0.1 through HTTP(S)_PROXY, and loctel's own endpoints are local.
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "gzip"] }
+rand = { version = "0.10.3", default-features = false }
+rand_chacha = "0.10.0"
 
 [workspace.lints.clippy]
 all = "warn"
