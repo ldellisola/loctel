@@ -7,6 +7,10 @@
 //!   [`open_status_window`] shows it in a window that refreshes every second
 //!   from [`loctel_engine::EngineHandle::status`] (the Linux development
 //!   window; on macOS the menu bar item comes first).
+//! - [`model`] holds the pure models of the main window (Milestone 3): the
+//!   formats of durations, clock times, rates and error shares, the colour a
+//!   service keeps, the trace table's rows and the query bar's state. No GPUI
+//!   in them, so plain tests pin every string.
 //! - [`menu_text`] holds the exact strings for the status line, the discard
 //!   rules line and the rates, so the macOS menu and the view cannot drift apart.
 //! - [`Theme`] holds the colours; [`register_fonts`] the bundled typeface.
@@ -16,6 +20,7 @@
 //! See `docs/areas/ui.md` for the theme tokens and the screenshot workflow.
 
 pub mod menu_text;
+pub mod model;
 mod status_view;
 mod theme;
 

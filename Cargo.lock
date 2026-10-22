@@ -3717,11 +3717,17 @@ name = "loctel-ui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "gpui-pre",
  "gpui-pre-platform",
  "gpui-pre-wgpu",
  "image",
  "loctel-engine",
+ "loctel-ingest",
+ "loctel-meshgen",
+ "loctel-model",
+ "loctel-query",
+ "loctel-store",
  "loctel-ui",
  "tempfile",
 ]

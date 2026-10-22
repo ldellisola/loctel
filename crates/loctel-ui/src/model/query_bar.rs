@@ -1,0 +1,59 @@
+//! What the query bar knows about the text in it: nothing typed, a TraceQL
+//! query that parses, or one that does not and where.
+//!
+//! The bar parses as the user types and never throws the last good results
+//! away on an error: the table keeps its rows and the bar shows the message
+//! under the input (design 9.2, review focus 4 of the M3 plan).
+
+use std::sync::Arc;
+
+use loctel_query::traceql::{self, TraceQuery};
+
+/// The result of reading the bar's text.
+#[derive(Clone, Debug, PartialEq)]
+pub enum QueryState {
+    /// Nothing but blanks: no filter.
+    Empty,
+    /// A query, parsed once and shared, ready for `TraceFilter::query`.
+    Valid(Arc<TraceQuery>),
+    /// The text is not a query `loctel` can run.
+    Invalid {
+        /// Where the problem is, counted from 1 in characters of the text as
+        /// typed (`{ status = ` is wrong at column 12, the end).
+        column: usize,
+        /// What is wrong, without the column: `select is not supported yet`.
+        message: String,
+    },
+}
+
+/// Reads the bar's text. All-whitespace text is [`QueryState::Empty`].
+/// Anything else goes to the TraceQL parser as it is, so the column of an
+/// error counts the blanks the user typed.
+pub fn validate(text: &str) -> QueryState {
+    if text.trim().is_empty() {
+        return QueryState::Empty;
+    }
+    match traceql::parse(text) {
+        Ok(query) => QueryState::Valid(Arc::new(query)),
+        Err(error) => QueryState::Invalid {
+            column: error.position + 1,
+            message: error.message,
+        },
+    }
+}
+
+/// The query a click on a service writes into the bar:
+/// `{ resource.service.name = "payments-api" }`. A `"` or `\` in the name is
+/// escaped with a backslash, the only escapes a name needs inside a TraceQL
+/// string, so whatever the name holds the text is a valid query for exactly
+/// that service.
+pub fn service_filter(service: &str) -> String {
+    let mut escaped = String::with_capacity(service.len());
+    for c in service.chars() {
+        if matches!(c, '"' | '\\') {
+            escaped.push('\\');
+        }
+        escaped.push(c);
+    }
+    format!("{{ resource.service.name = \"{escaped}\" }}")
+}

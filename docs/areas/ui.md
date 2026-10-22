@@ -6,7 +6,8 @@ feel), §10.3 (screenshot tests) and §10.5 (gotchas from the spike).
 
 Status: Milestones 1 and 2 have one view, the **status view**, and the Linux
 window that shows it. Milestone 2 added the discard rules line to it and to the
-macOS menu; the rules screen is Milestone 4. The main window (Map & traces, Trace view) is Milestone 3, the
+macOS menu; the rules screen is Milestone 4. The main window (Map & traces, Trace view) is Milestone 3
+(in progress: the pure models in `src/model` are done, see "Models" below), the
 remaining screens and the popover Milestone 4. The macOS menu bar item is in
 `loctel-macos`; it only borrows the strings from `menu_text`.
 
@@ -25,6 +26,7 @@ moved.
 | `menu_text::status_line(&StatusModel)` | the one-line status: `Receiving · 412 spans/s · 1.2k logs/s`, `Paused` or `Port problem: otlp-http (address in use)`. A failed listener wins over paused, paused over receiving. The reason is `address in use` when the OS error contains "in use", otherwise the raw error cut to 40 characters. The first failed listener is the one named |
 | `menu_text::rules_line(&StatusModel)` | the discard rules in one line, the first that applies: `Discard rules file has an error`; `1 discard rule on · 1 has an error` (for more than one, `3 discard rules on · 2 have errors`); `No discard rules on`; `1 discard rule on · 31% dropped` or `3 discard rules on · 0% dropped`. The percentage is the share the rules dropped of what arrived since launch, rounded to a whole number; a value that is not a number reads `0%` and one outside 0 to 1 is cut to it. A file error wins over a rule error, a rule error over "no rules on" |
 | `menu_text::format_rate(f64)` | `412` is `412`, `1234` is `1.2k`, `0.4` is `0`. One decimal under ten thousand, none above, never `.0` (`1k`, `10k`, `1.3M`); NaN, infinity and negatives read `0` |
+| `model` | the pure models of the main window: `format`, `colors`, `trace_table`, `query_bar` (see "Models" below) |
 | `Theme` | the colours below. `Theme::dark()` and `Theme::light()` |
 | `register_fonts(cx)`, `FONT_FAMILY` | the bundled typeface (below) |
 | `testing` (feature `screenshot`) | `render_png` and `assert_snapshot` |
@@ -33,6 +35,104 @@ The strings in `menu_text` are the contract: the macOS menu header and the
 status view's pill both use `status_line`, the macOS menu's rules header and the
 view's rules row both use `rules_line`, and `crates/loctel-ui/tests/menu_text.rs`
 pins them.
+
+## Models
+
+`loctel_ui::model` holds everything the main window shows that is not a pixel.
+The models are plain Rust over the store's types (`TraceSummary`, `FailedIn`)
+and the TraceQL parser, with no GPUI in them: a colour is an index into
+`Theme::service_palette`, and a view only lays out the strings and numbers it
+is given. The rules of the design (the formats, the failure display of §9.4,
+the colours of §9.3) are therefore tested with plain `assert_eq!`s, in
+`tests/model_format.rs` and `tests/model_table.rs`.
+
+### Formats (`model::format`)
+
+These strings are the contract, like those of `menu_text`. Every view uses
+them and nothing formats a number or a time by itself.
+
+| What | Function | Rule | Examples |
+|---|---|---|---|
+| duration | `duration(nanos)` | 1 s or more: two decimals; 1 ms or more: whole ms; otherwise whole µs | `1.84 s`, `212 ms`, `850 µs`, `0 µs` |
+| clock | `clock(unix_nano, utc_offset_secs)` | `HH:MM:SS.mmm` in the zone `utc_offset_secs` east of UTC; no date; milliseconds are cut, not rounded | `14:32:07.412` |
+| rate | `rate(per_sec, unit)` | 10 or more: whole; below: one decimal (so zero is `0.0`); not a non-negative number reads as zero | `84 req/s`, `0.3 req/s` |
+| error share | `error_pct(errors, total)` | one decimal; no errors, or no total, is `0%` | `2.1% err`, `0% err` |
+| cut-off text | `truncate_end(s, max_chars)`, `truncate_middle(s, max_chars)` | at most `max_chars` characters, `…` included; text that fits is unchanged | `abc…` (`abcdef`, 4), `ab…ij` (`abcdefghij`, 5) |
+
+Details that the examples do not show, each pinned by a test:
+
+- **The unit of a duration comes from the exact value, then the number is
+  rounded in that unit.** The unit never rolls over: 999,999,999 ns is
+  `1000 ms` (not `1.00 s`), and 999,500 ns is `1000 µs` (not `1 ms`). Rounding
+  is half up on integers, so `1.845 s` is `1.85 s` on every machine.
+- **`rate`** has no thousands separator and no `k`: `1234.5` is `1235 req/s`.
+  A value that rounds up to 10.0 reads `10 req/s`, not `10.0 req/s`. (The
+  status line's `menu_text::format_rate` is a different, compact format for
+  the spans/s and logs/s counters.)
+- **`error_pct`**: `0% err` means exactly no errors. An error count too small
+  to show, one in 100,000, reads `0.0% err`, so the two can be told apart. More
+  errors than total (which cannot happen) reads `100.0% err`.
+- **Truncation counts characters, not bytes**, so it never cuts inside one.
+  It does not know about grapheme clusters. With `max_chars` 0 the result is
+  empty and with 1 it is just `…`. `truncate_middle` gives the extra character
+  to the start when the kept characters cannot be shared equally (`abc…ij` at
+  6). Long span names and attribute values are cut for rows and tooltips with
+  these, so a 300-character name never widens the layout.
+- **`local_utc_offset()`** is the system zone's offset now, which the app
+  passes to `clock`. Tests always pass 0.
+
+### Service colours (`model::colors`)
+
+`ServiceColors` numbers services in the order the session first sees them.
+`index(&mut self, service)` assigns the next number the first time and gives the
+same one ever after; `peek(&self, service)` looks without assigning. The index
+counts on past the palette, and the palette slot is `index % 5`, so the sixth
+service shares the first one's colour. One `ServiceColors` lives as long as the
+window's data, so a service keeps its colour in the map, the table dots, the
+waterfall and the logs for the whole run.
+
+### Trace table rows (`model::trace_table`)
+
+`rows(summaries, &mut colors, utc_offset)` turns the store's summaries into
+`TraceRow`s, in the same order, asking `colors` for every service of every row
+in order. A row holds each column as the exact string or number the view draws:
+
+| Field | Content |
+|---|---|
+| `started` | `format::clock` of the earliest span start |
+| `root` | the root span's name, or `(root not arrived)` while it has not arrived |
+| `failed_in` | the red `Failed in` text, only for a **failed** trace (the root span is erroring) |
+| `errors_inside` | the amber `errors inside`, only when the root is fine and another span is erroring |
+| `services` | `(name, colour index)` per service, in the order of its first span |
+| `span_count`, `complete` | as in the summary |
+| `duration`, `duration_fraction` | `format::duration`, and the bar: the duration over the longest of the rows given (0 to 1; 0 when none has any length) |
+
+`failed_in` and `errors_inside` are never both set: the store also names a
+lowest erroring span for a trace with errors inside, but §9.4 shows that case
+as the amber `errors inside` and keeps `Failed in` for failures. A trace with
+only an exception event and no error status has neither (the marker is the
+waterfall's).
+
+`failed_in_text(&FailedIn)` is `service · span name` (a middle dot, U+00B7),
+then ` peer` for a span with a peer (a client or producer span), then ` +N` when
+`more > 0`: `payments-api · POST card-gateway +1`. The text is whole; the view
+cuts it to the width it has.
+
+### Query bar (`model::query_bar`)
+
+`validate(text)` reads the bar: `Empty` for text that is all whitespace,
+`Valid(Arc<TraceQuery>)` (parsed once, ready for `TraceFilter::query`), or
+`Invalid { column, message }`. The column counts from 1 in characters of the
+text as typed (blanks included), and the message has no column in it:
+`{ status = ` is `Invalid { column: 12, .. }`, the end of the text. A TraceQL
+feature that loctel does not support yet is an `Invalid` too, never a quiet
+mismatch. The bar keeps the last good results on an `Invalid` (Milestone 3
+plan, review focus 4).
+
+`service_filter(service)` is `{ resource.service.name = "<name>" }`, written
+into the bar when a service is clicked. `"` and `\` in the name are escaped
+with a backslash, the only escapes a name needs, so any name gives a valid
+query for exactly that service.
 
 ## Theme tokens
 

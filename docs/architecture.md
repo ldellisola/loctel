@@ -33,7 +33,7 @@ crate updates this table and the diagram below it.
 | `loctel-engine` | core | Wires store, ingest, MCP and the discard rules; settings, pause, rates; owns threads and runtime | implemented: store, OTLP receivers and MCP server, `settings.toml`, pause, rates, and (Milestone 2) the discard rules at ingest with live reload of `rules.toml` and the handle API (see "Engine" below) |
 | `loctel-meshgen` | test tooling | Fake microservice mesh scenarios (library and `meshgen` binary) | implemented: six scenarios and a sender over gRPC, HTTP protobuf and HTTP JSON (see "Test tooling" below) |
 | `loctel-e2e` | test tooling | End-to-end tests through real OTLP and a real MCP client (`publish = false`) | implemented: a `Harness` over a real engine (with or without a rules file) and the tests of the transports, assembly, service map, agent flow, pause, release fixture, discard rules and queries (see "Test tooling" below) |
-| `loctel-ui` | UI | GPUI views and the headless screenshot harness | implemented: the status view (with the discard rules line, from Milestone 2), the shared menu text, the theme, and `testing::{render_png, assert_snapshot}` behind the `screenshot` feature (see "UI" below) |
+| `loctel-ui` | UI | GPUI views, the pure view models and the headless screenshot harness | implemented: the status view (with the discard rules line, from Milestone 2), the shared menu text, the theme, the pure models of the main window (`model`: formats, service colours, trace table rows, query bar state; Milestone 3 in progress) and `testing::{render_png, assert_snapshot}` behind the `screenshot` feature (see "UI" below) |
 | `loctel-macos` | macOS | Status item, activation policy, login item (`cfg(target_os = "macos")`) | implemented, never run: the menu bar item and its menu (with the discard rules line and Edit discard rules…), the login item and the first-launch step; empty off macOS apart from three plain-Rust modules that the Linux tests cover (see "macOS shell" below) |
 | `loctel-app` | binary | The `loctel` binary: headless mode and GUI, bundle metadata | implemented: headless mode, on Linux the status window and on macOS the menu bar app (see "Headless mode", "UI" and "macOS shell" below); `[package.metadata.bundle]` and `bundle/` hold what goes into `loctel.app` (see "Release pipeline" below) |
 | `xtask` | tooling | Screenshots, next-version, release notes, MCP smoke test | implemented: `screenshots [--update]`, `run-shot`, `next-version`, `release-notes` and `mcp-smoke --url URL` (see "UI" and "Release pipeline" below) |
@@ -53,7 +53,8 @@ are left out):
    |                    |--> loctel-store
    |                    |--> loctel-query  (the `QueryError` of the preview)
    |                    `--> loctel-model
-   |--> loctel-ui     (Linux window; owns `menu_text`) --> loctel-engine
+   |--> loctel-ui     (Linux window; owns `menu_text` and the `model`s) --> loctel-engine,
+   |                                                    loctel-store, loctel-query, loctel-model
    `--> loctel-macos  (macOS only) --> loctel-engine, loctel-ui
 
  loctel-query   --> loctel-model                      (the store, the rules and MCP depend on it)
@@ -470,7 +471,8 @@ loctel [--headless] [--grpc-port N] [--http-port N] [--mcp-port N]
 ## UI
 
 `loctel-ui` is the thin GPUI layer: it depends on the engine (for
-`EngineStatus` and `EngineHandle`) and on GPUI (`gpui-pre`, `gpui-pre-platform`,
+`EngineStatus` and `EngineHandle`), on the store, the query crate and the model
+(for the `model` module below) and on GPUI (`gpui-pre`, `gpui-pre-platform`,
 `gpui-pre-wgpu`, all pinned `=0.3.9`), and the core depends on none of it. The
 details, the theme tokens and the workflow are in
 [`areas/ui.md`](areas/ui.md); the choices and their reasons are in
@@ -484,6 +486,16 @@ details, the theme tokens and the workflow are in
   model by hand. The window refreshes it every second and shows the rules line
   under the rates. The text of the status line, the rules line and the rates is
   in `menu_text`, shared with the macOS menu so the two cannot drift.
+- **The `model` module** (`crates/loctel-ui/src/model/`, from Milestone 3) is
+  everything the main window shows that is not a pixel, as plain Rust over the
+  store's `TraceSummary` and the TraceQL parser: `format` (durations, clock
+  times, rates, error shares, truncation), `colors` (`ServiceColors`, the
+  first-seen order of services), `trace_table` (`TraceRow`, `rows`,
+  `failed_in_text`) and `query_bar` (`QueryState`, `validate`,
+  `service_filter`). It has no GPUI types, so `tests/model_format.rs` and
+  `tests/model_table.rs` pin every string with plain assertions. Later
+  milestone 3 tasks add the map layout, the waterfall and the inspector models
+  beside them. The formats are in [`areas/ui.md`](areas/ui.md) ("Models").
 - **Screenshot tests** (`crates/loctel-ui/tests/screenshots.rs`) render views
   through GPUI's headless renderer (software wgpu, no GPU or display) with a
   bundled font, and compare pixel for pixel with references in

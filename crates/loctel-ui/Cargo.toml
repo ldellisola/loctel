@@ -1,6 +1,6 @@
 [package]
 name = "loctel-ui"
-description = "The loctel GPUI views (the status view in M1), the menu text and the headless screenshot harness"
+description = "The loctel GPUI views (the status view in M1), the pure view models, the menu text and the headless screenshot harness"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -23,6 +23,12 @@ screenshot = [
 gpui-pre.workspace = true
 gpui-pre-platform.workspace = true
 loctel-engine.workspace = true
+# The models (src/model) read the store's summaries and parse TraceQL; chrono's
+# `clock` feature gives the system zone's offset for the clock times.
+loctel-store.workspace = true
+loctel-query.workspace = true
+loctel-model.workspace = true
+chrono = { workspace = true, features = ["clock"] }
 anyhow.workspace = true
 image.workspace = true
 # The software-capable text system the screenshot harness uses (Linux).
@@ -31,6 +37,9 @@ gpui-pre-wgpu = { workspace = true, optional = true }
 [dev-dependencies]
 loctel-ui = { path = ".", features = ["screenshot"] }
 tempfile.workspace = true
+# The model tests load the fake mesh into a store through the real converter.
+loctel-meshgen.workspace = true
+loctel-ingest.workspace = true
 
 [lints]
 workspace = true
