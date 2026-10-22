@@ -1,7 +1,7 @@
 # 0046: Log chunks, and counts from their metadata
 
 Date: 2026-10-22
-Status: accepted
+Status: accepted. `logs_at` and the record of a chunk changed in decision 0050 (blocks), which the numbers at the end of this file led to.
 
 Milestone 5, Task 3. The plan fixes the shape (an open chunk and sealed chunks,
 `ChunkMeta`, indexed filters, `Store::log_count` and `Store::logs_at`, a histogram

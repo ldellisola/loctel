@@ -104,11 +104,25 @@ impl SegmentSet {
     /// the next append is as good as this one (unless writes are
     /// [suspended](Self::suspend), when it fails at once).
     pub(crate) fn append(&mut self, kind: Kind, payload: &[u8]) -> io::Result<Location> {
+        self.append_with(kind, |writer| writer.append(payload))
+    }
+
+    /// [`append`](Self::append) for a record of blocks (`Writer::append_blocks`):
+    /// every block compressed on its own, one record in the file.
+    pub(crate) fn append_blocks(&mut self, kind: Kind, blocks: &[Vec<u8>]) -> io::Result<Location> {
+        self.append_with(kind, |writer| writer.append_blocks(blocks))
+    }
+
+    fn append_with(
+        &mut self,
+        kind: Kind,
+        write: impl FnOnce(&mut Writer) -> io::Result<Location>,
+    ) -> io::Result<Location> {
         self.check_writable()?;
         let result = if self.inject_failure {
             Err(io::Error::from_raw_os_error(libc::ENOSPC))
         } else {
-            self.write(kind, payload)
+            self.write(kind, write)
         };
         if result.is_err() {
             self.failed_attempts += 1;
@@ -116,7 +130,11 @@ impl SegmentSet {
         result
     }
 
-    fn write(&mut self, kind: Kind, payload: &[u8]) -> io::Result<Location> {
+    fn write(
+        &mut self,
+        kind: Kind,
+        write: impl FnOnce(&mut Writer) -> io::Result<Location>,
+    ) -> io::Result<Location> {
         if !self.open.contains_key(&kind) {
             let writer = self.create(kind)?;
             self.open.insert(kind, writer);
@@ -124,7 +142,7 @@ impl SegmentSet {
         let Some(writer) = self.open.get_mut(&kind) else {
             return Err(io::Error::other("no segment is open"));
         };
-        let location = writer.append(payload)?;
+        let location = write(writer)?;
         let (seq, bytes) = (writer.seq(), writer.bytes());
         if let Some(segment) = self.segments.get_mut(&seq) {
             self.total = self
@@ -171,6 +189,20 @@ impl SegmentSet {
     /// The payload of the record at `location`.
     pub(crate) fn read(&self, location: Location) -> Result<Vec<u8>, SegmentError> {
         self.reader(location)?.read(location)
+    }
+
+    /// Block `index` of the record of blocks at `location`, decompressed.
+    pub(crate) fn read_block(
+        &self,
+        location: Location,
+        index: usize,
+    ) -> Result<Vec<u8>, SegmentError> {
+        self.reader(location)?.read_block(location, index)
+    }
+
+    /// Every block of the record of blocks at `location`, decompressed, in order.
+    pub(crate) fn read_blocks(&self, location: Location) -> Result<Vec<Vec<u8>>, SegmentError> {
+        self.reader(location)?.read_blocks(location)
     }
 
     /// A map of the file of `location` that covers the record.

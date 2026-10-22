@@ -13,10 +13,25 @@
 //! record again.
 //!
 //! The store keeps a trace as one record (an encoded [`Span`] list, see
-//! [`encode_trace`]) and a sealed chunk of logs as one record
-//! ([`encode_logs`]). Both intern the resources: a service's resource is
-//! written once per record and every span or log points at it, which is what
-//! lets 100,000 spans of a few services compress to a fraction of their size.
+//! [`encode_trace`]) and a sealed chunk of logs as one record of **blocks**
+//! ([`Writer::append_blocks`], each block an [`encode_logs`] blob). Both intern
+//! the resources: a service's resource is written once per record (per block,
+//! for logs) and every span or log points at it, which is what lets 100,000 spans
+//! of a few services compress to a fraction of their size.
+//!
+//! A record of blocks is the same record around a different body:
+//!
+//! ```text
+//! [u32 len][u32 crc32 of the body][ [u32 n][u32 length of frame 0 .. n-1][zstd frame 0][zstd frame 1]... ]
+//! ```
+//!
+//! Every block is compressed on its own, so [`Reader::read_block`] decodes one
+//! block (about a thousand logs) of a chunk of 65,536 without the other 63,
+//! which is what lets a position of ten million logs be read in milliseconds
+//! (decision 0049). The checksum is still the record's, over the whole body, and
+//! is checked by every read of any of its blocks. [`Reader::read`] and
+//! [`Reader::iter`] know only the one-frame record, and report a record of blocks
+//! as a decode error.
 //!
 //! A [`Writer`] appends to one segment, a [`Reader`] maps a finished one and
 //! reads it back. Damage is reported, never fatal: a record whose checksum does
@@ -224,17 +239,52 @@ impl Writer {
     /// Compresses `payload` and appends it as one record.
     pub fn append(&mut self, payload: &[u8]) -> io::Result<Location> {
         if self.failed {
-            return Err(io::Error::other(
-                "the segment cannot be written to after an earlier write to it failed",
-            ));
+            return Err(self.refused());
         }
         let body = compress(payload)?;
+        self.append_body(&body)
+    }
+
+    /// Compresses every block of `blocks` on its own and appends them as one
+    /// record of blocks (see the module's description). Any number of blocks,
+    /// empty ones too.
+    pub fn append_blocks(&mut self, blocks: &[Vec<u8>]) -> io::Result<Location> {
+        if self.failed {
+            return Err(self.refused());
+        }
+        let frames = blocks
+            .iter()
+            .map(|block| compress(block))
+            .collect::<io::Result<Vec<_>>>()?;
+        let count = u32::try_from(frames.len())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "over 4 billion blocks"))?;
+        let mut body =
+            Vec::with_capacity(4 * (1 + frames.len()) + frames.iter().map(Vec::len).sum::<usize>());
+        body.extend_from_slice(&count.to_le_bytes());
+        for frame in &frames {
+            let len = u32::try_from(frame.len())
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a block over 4 GiB"))?;
+            body.extend_from_slice(&len.to_le_bytes());
+        }
+        for frame in &frames {
+            body.extend_from_slice(frame);
+        }
+        self.append_body(&body)
+    }
+
+    fn refused(&self) -> io::Error {
+        io::Error::other("the segment cannot be written to after an earlier write to it failed")
+    }
+
+    /// Appends `body` (already compressed, or a table of compressed blocks) as
+    /// one record: its header, then it, in a single write.
+    fn append_body(&mut self, body: &[u8]) -> io::Result<Location> {
         let len = u32::try_from(body.len())
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a record over 4 GiB"))?;
         let mut record = Vec::with_capacity(body.len() + HEADER_BYTES as usize);
         record.extend_from_slice(&len.to_le_bytes());
-        record.extend_from_slice(&crc32fast::hash(&body).to_le_bytes());
-        record.extend_from_slice(&body);
+        record.extend_from_slice(&crc32fast::hash(body).to_le_bytes());
+        record.extend_from_slice(body);
         if let Err(error) = self.file.write_all_at(&record, self.bytes) {
             // Take the half-written record off again, so the file ends on a
             // record boundary and the next append lands where the Location
@@ -429,6 +479,89 @@ impl Reader {
             self.note(error, loc.offset);
         }
         result
+    }
+
+    /// The record of blocks at `loc`, its checksum checked, as its table: the
+    /// body and the number of blocks in it. `Decode` when the record is not one
+    /// of blocks (a table that does not fit in its body, or lengths that do not
+    /// add up to it) or is not the record `loc` describes.
+    fn blocks_of(&self, loc: Location) -> Result<(&[u8], usize), SegmentError> {
+        let frame = self.frame(loc.offset)?;
+        if crc32fast::hash(frame.body) != frame.stored_crc {
+            return Err(SegmentError::Checksum);
+        }
+        if frame.body.len() as u64 != u64::from(loc.len) {
+            return Err(SegmentError::Decode);
+        }
+        let count = frame
+            .body
+            .first_chunk::<4>()
+            .map(|bytes| u32::from_le_bytes(*bytes))
+            .ok_or(SegmentError::Decode)? as usize;
+        let table_end = count
+            .checked_add(1)
+            .and_then(|words| words.checked_mul(4))
+            .filter(|end| *end <= frame.body.len())
+            .ok_or(SegmentError::Decode)?;
+        let frames: usize = frame.body[4..table_end]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|word| u32::from_le_bytes(*word) as usize)
+            .try_fold(0usize, |sum, len| sum.checked_add(len))
+            .ok_or(SegmentError::Decode)?;
+        if table_end.checked_add(frames) != Some(frame.body.len()) {
+            return Err(SegmentError::Decode);
+        }
+        Ok((frame.body, count))
+    }
+
+    /// The compressed frame of block `index` of a body [`blocks_of`] checked.
+    fn block_frame(body: &[u8], count: usize, index: usize) -> Result<&[u8], SegmentError> {
+        if index >= count {
+            return Err(SegmentError::Decode);
+        }
+        let length = |i: usize| {
+            let at = 4 * (1 + i);
+            u32::from_le_bytes([body[at], body[at + 1], body[at + 2], body[at + 3]]) as usize
+        };
+        let start = 4 * (1 + count) + (0..index).map(length).sum::<usize>();
+        body.get(start..start + length(index))
+            .ok_or(SegmentError::Decode)
+    }
+
+    fn noting<T>(&self, loc: Location, result: Result<T, SegmentError>) -> Result<T, SegmentError> {
+        if let Err(error) = result {
+            self.note(error, loc.offset);
+        }
+        result
+    }
+
+    /// How many blocks the record of blocks at `loc` has.
+    pub fn block_count(&self, loc: Location) -> Result<usize, SegmentError> {
+        let result = self.blocks_of(loc).map(|(_, count)| count);
+        self.noting(loc, result)
+    }
+
+    /// Block `index` of the record of blocks at `loc`, decompressed: the bytes
+    /// [`Writer::append_blocks`] was given for it. The other blocks are not
+    /// decompressed (the record's checksum is checked, which reads all its bytes
+    /// but does not decode them).
+    pub fn read_block(&self, loc: Location, index: usize) -> Result<Vec<u8>, SegmentError> {
+        let result = self
+            .blocks_of(loc)
+            .and_then(|(body, count)| decompress(Self::block_frame(body, count, index)?));
+        self.noting(loc, result)
+    }
+
+    /// Every block of the record of blocks at `loc`, decompressed, in order.
+    pub fn read_blocks(&self, loc: Location) -> Result<Vec<Vec<u8>>, SegmentError> {
+        let result = self.blocks_of(loc).and_then(|(body, count)| {
+            (0..count)
+                .map(|index| decompress(Self::block_frame(body, count, index)?))
+                .collect()
+        });
+        self.noting(loc, result)
     }
 
     /// Every record in the file, in order, with where it is. A record that

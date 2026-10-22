@@ -6,10 +6,9 @@ and manual run draws its data from. Design references: §10.1 (the fake mesh),
 means).
 
 Status: the per-crate unit and integration tests, `loctel-meshgen`, the
-end-to-end crate (`loctel-e2e`) and the screenshot harness (`loctel-ui`, see
-"Screenshot tests" below) exist. The performance tests are planned (see
-`architecture.md`); they will add their own section here and use the scenarios
-below.
+end-to-end crate (`loctel-e2e`), the screenshot harness (`loctel-ui`, see
+"Screenshot tests" below) and, since Milestone 5, the performance budgets
+(`loctel-perf`, see "Performance budgets" below) exist.
 
 The gate, which is the only quality gate:
 
@@ -18,6 +17,10 @@ cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
+
+The performance budgets are a second check, `cargo xtask perf` (the `perf` job of
+`ci.yml`, beside `gate`): a release build and minutes of work, so not part of
+`cargo test`. A pull request merges on both.
 
 ## The fake mesh: `loctel-meshgen`
 
@@ -233,6 +236,38 @@ children in time. Nothing errors. Zero spans give no batches and no traces.
 over the five services, 20 microseconds apart (the design's 50,000 per second
 target). Times are distinct, so the store's duplicate check keeps them all.
 
+### Bulk data: `bulk_logs` and `bulk_traces`
+
+Not scenarios (nothing is fixed content, and the command line does not send
+them): iterators that make ten million logs or spans a batch at a time, without
+holding them, for the performance budgets and the Logs list at ten million lines
+(Milestone 5, `crates/loctel-meshgen/src/bulk.rs`, decision 0049).
+
+```rust
+for batch in bulk_logs(10_000_000, seed) { /* Batch { logs: Some(request), .. } */ }
+let spans = bulk_traces(10_000_000, seed).starting_at(now).in_batches_of(5_000);
+```
+
+- Batches of 1,000 (`BULK_BATCH`); `in_batches_of(n)` and `starting_at(unix_nano)` change
+  that and the time of the first item (`BULK_START_UNIX_NANO`, 2027-01-15T08:00:00Z,
+  by default). Deterministic for a seed, on streams of their own (so they never share
+  IDs with a scenario given the same seed).
+- **Logs** are 20 microseconds apart (50,000 a second), over the five services: 35%
+  DBG, 50% INF, 10% WRN, 5% ERR. A quarter carry a trace and a span ID, sixteen
+  consecutive logs sharing a trace. About 1 in 100 of `payments-api`'s says
+  `upstream timeout calling card-gateway after N ms (attempt K)` (a WRN or an ERR);
+  nothing else says `timeout`. Bodies differ, so the store's duplicate check keeps all of
+  them. A request groups its logs by service, so the order inside a batch is the
+  services', not the clock's.
+- **Traces** are ten spans over four services (`GET /api/items` through `web-bff`,
+  `orders-api`, `inventory-api` and `payments-api`, with a database or cache call
+  beside), a trace starting every 200 microseconds (50,000 spans a second), the whole
+  trace stretched by 1 to 2 so that durations differ, every span inside its parent. About 1
+  in 100 traces fails: the spans from the failed leaf (`SELECT prices`) up to the root are
+  in error (and answer 500), so the trace is `Failed`. A trace is never split across
+  batches while the batch size is a multiple of ten; the last trace is cut short when the
+  span count is not.
+
 ## How tests use it
 
 - **`crates/loctel-meshgen/tests/scenarios.rs`** pins the content: the
@@ -267,7 +302,13 @@ target). Times are distinct, so the store's duplicate check keeps them all.
   "End-to-end tests" below.
 - **Screenshot tests** (Task 11 and later) render views from fixed meshgen
   data (a fixed seed and base time), which is why `CheckoutFailure` is frozen.
-- **Benchmarks** (Milestone 5) use `HugeTrace` and `LogFlood`.
+- **`crates/loctel-meshgen/tests/bulk.rs`** pins the bulk generators: the batches, the
+  spacing, determinism per seed, the mix the budgets' queries rely on (levels, the thin
+  slice of `payments-api` timeouts, a quarter of logs with trace context, 1 in 100 traces
+  failed, each trace one tree with parents holding their children) and that the real
+  converter and the store take them.
+- **The performance budgets** (Milestone 5) use `HugeTrace` for the trace they open and
+  the bulk generators for everything else: see "Performance budgets" below.
 
 Add a scenario by adding a variant to `Scenario`, a module for it, a stream
 constant in `scenario.rs` (so it never shares IDs), a CLI value in `main.rs`,
@@ -391,6 +432,74 @@ rules and the queries).
   proof it works through the whole path.
 
 
+## Performance budgets: `loctel-perf`
+
+Design §10.3 turns the throughput and latency targets into a check that fails CI. It
+is `crates/loctel-perf` (`publish = false`, binary `loctel-perf`), run by `cargo xtask
+perf [--only ID] [--json PATH]`, which builds `loctel-perf` and `loctel` in release (one
+`cargo build --release -p loctel-perf -p loctel-app`), runs it from the workspace root and
+exits non-zero when a budget is missed. The `perf` job of `ci.yml` runs `cargo xtask perf
+--json perf.json` on `ubuntu-24.04` beside `gate` and uploads `perf.json` as the `perf`
+artifact even when it fails. The way to run one budget, read the table, profile a breach
+and the rule about changing a budget is the `perf-budgets` skill
+(`.claude/skills/perf-budgets/SKILL.md`); the reasons for the scenarios are decision
+[`0049`](../decisions/0049-performance-harness-choices.md).
+
+**A budget is never raised to get green.** Raising one takes a decision file with the
+measurements, and is acceptable only for `first_frame`, which software rendering (lavapipe)
+cannot hold to the Mac's 500 ms.
+
+| id | measure | budget | measured here |
+|---|---|---|---|
+| `ingest` | items accepted a second: OTLP HTTP protobuf, batches of 1,000 spans and 1,000 logs, one discard rule on, spill on, 20 s | >= 50,000 items/s | 389,000 items/s |
+| `ingest` | items sent and not accepted (rejected, failed, cut by a rule) | 0 | 0 |
+| `ingest` | p99 latency of a batch | < 250 ms | 95 ms |
+| `trace_open_hot` | `store.trace(id)` and `Waterfall::new`, a 100,000-span trace in memory, median of 5 | < 250 ms | 137 ms |
+| `trace_open_cold` | the same, the trace in a segment file (five traces, each read once), median of 5 | < 250 ms | 201 ms |
+| `logs_count` | `log_count` over 10M logs, levels and service, median of 5 | < 50 ms | 0.005 ms |
+| `logs_at` | `logs_at(offset, 50)` at 100 random offsets over 10M logs, p95 | < 20 ms | 4.9 ms |
+| `histogram` | 48 buckets over 10M logs, levels and service, a window of whole seconds, median of 5 | < 100 ms | 0.015 ms |
+| `traceql_first_page` | `{ status = error }` over 10M spans (1% of traces fail), limit 20, median of 5 | < 1 s | 110 ms |
+| `logql_first_page` | `{service_name="payments-api"} \|= "timeout"` over 10M logs, limit 50, median of 5 | < 1 s | 3.1 ms |
+| `startup_headless` | process start to the last listener line, release `loctel --headless`, median of 5 | < 300 ms | 5.4 ms |
+| `first_frame` | main window construction and the first headless render (lavapipe), release, a process each, median of 5 | < 1.5 s (Mac target 500 ms, by hand) | 504 ms |
+| `rss_10m` | resident memory after 10M logs and 1M spans, spill on | < 1.5 GB | 920 MB |
+
+"Measured here" is one run on the development container (4 vCPU, release), for
+orientation, **not a gate**. Timings are the median of 5 runs except `logs_at`'s p95,
+`ingest`'s p99 and the rate; `rss_10m` is read once and is "not measured" off Linux.
+A whole run takes about two minutes after the release build (eight minutes the first time).
+
+How each is measured:
+
+- **The data** is built in the process through the store, with `loctel-meshgen`'s bulk
+  generators and the real OTLP converter, on a `ManualClock` that follows the data (so
+  traces complete and spill, and logs seal, as in a long run); the limits of the store
+  are raised past what a budget loads (`max_traces` 20M, `max_log_records` 100M, 64 GiB
+  of disk cap) and the run fails if the store does not hold everything it was given.
+  The log budgets share one store (1M spans, then 10M logs) and `rss_10m` is read first,
+  before a query has filled the caches; `traceql_first_page` has a store of 10M spans of
+  its own, settled so that they are in segment files. `ingest` is the exception: a real
+  engine with its run directory and one rule, fed over HTTP by two senders in a closed
+  loop for 20 s.
+- **`startup_headless`** starts the release `loctel` five times on scratch files and a
+  scratch `TMPDIR`, and times to the third listener line. **`first_frame`** runs
+  `loctel-perf --first-frame-once` five times, a process each.
+- **Tiny scale in the gate.** `cargo test -p loctel-perf` (part of `cargo test
+  --workspace`) runs every scenario on `Scale::SMOKE` in a debug build in seven seconds,
+  so that a scenario that stops working fails the gate, and unit-tests the table
+  (`budget_table_flags_breaches`: a measurement over its budget is a `BREACH` row and exit
+  code 1) and the startup reader against a fake `loctel`.
+
+```bash
+cargo xtask perf                       # the table, exit 1 on a breach
+cargo xtask perf --only logs_at        # one id (`ingest` is three rows)
+cargo run --release -p loctel-perf -- --smoke   # tiny scale, numbers mean nothing
+```
+
+Exit codes of `loctel-perf`: 0 every budget held, 1 a budget was missed, 2 a scenario
+could not run.
+
 ## Release tooling: `xtask`
 
 ```bash
@@ -406,8 +515,9 @@ parts of the pipeline cannot be tested here; see [`release.md`](release.md)):
 - `notes.rs`: the three sections in order (Changes, Check on your Mac,
   Installing), the checklist carried over unchanged, the Open Anyway and
   `xattr -dr com.apple.quarantine` steps present.
-- `main.rs`: the command line, and the git glue against scratch repositories
-  (the commits since the highest version tag, the tags of a repository).
+- `main.rs`: the command line (`perf` takes `--only ID` and `--json PATH`, each once, in
+  either order), and the git glue against scratch repositories (the commits since the
+  highest version tag, the tags of a repository).
 - `smoke.rs`: `mcp-smoke` passes against a real engine (the same one
   `loctel --headless` runs) and fails when nothing listens or the tool is
   missing.

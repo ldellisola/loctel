@@ -28,7 +28,8 @@ way: the segment files and the run directory it spills into exist (see "Segment
 files" below), **traces** spill through them (see "Hot and cold traces" below)
 and **logs** are held in chunks, the sealed ones in segment files, with the
 count of a filter, the log at a position and the histogram answered from what is
-kept about each chunk (see "Log chunks" below). The **disk cap** is enforced: the oldest
+kept about each chunk (see "Log chunks" below; the log at a position is read from a
+block of about a thousand logs, not a whole chunk, see "Blocks"). The **disk cap** is enforced: the oldest
 segment files are deleted whole when the files take more than it, and a write that
 fails is waited out and reported (see "The disk cap" and "A failing disk" below).
 The searches over traces do bounded work: a summary is made only for a trace that
@@ -103,12 +104,13 @@ store.clear();
   | `disk_cap_bytes` | 4 GiB | the most the segment files may take: past it the oldest segment goes whole (see "The disk cap") |
   | `spill_retry` | 60 s | how long the store waits after a failed write before it tries to write again (see "A failing disk") |
   | `log_chunk_max` | 65,536 | logs the open chunk takes before it is sealed |
+  | `log_block_rows` | 1,024 | logs in a block of a chunk written to a segment: the unit `logs_at` reads (see "Blocks") |
   | `log_chunk_age` | 10 s | how long the open chunk may stay open, from its first log, before it is sealed |
 
   `StoreConfig::spilling_for_tests(dir)` (hidden from the docs) is the config
   the tests spill with: `spill_after` 0, `segment_max_bytes` 4 KiB,
-  `hot_max_spans` 16, `log_chunk_max` 7 (so that every log test of the crate
-  runs over sealed chunks) and `spill_retry` 0 (a failed write is tried again at
+  `hot_max_spans` 16, `log_chunk_max` 7 and `log_block_rows` 3 (so that every log test of the crate
+  runs over sealed chunks of several blocks) and `spill_retry` 0 (a failed write is tried again at
   the next step), the rest the defaults.
 
 - `StoreStats`: `traces`, `spans` and `logs` are what the store holds now.
@@ -852,6 +854,26 @@ used once (`Writer::create` refuses an existing file).
   order and gives `(Location, payload)`. Open a segment that is sealed: the map
   covers the file as it was at `open`. An empty file opens and has no records.
 
+### A record of blocks
+
+A sealed chunk of logs is written as one record of **blocks** (Milestone 5, Task 6,
+[`decisions/0050-log-chunks-as-blocks.md`](../decisions/0050-log-chunks-as-blocks.md)):
+the same header, `[u32 len][u32 crc32 of the body]`, around a different body,
+
+```text
+[u32 n][u32 length of frame 0 .. n-1][zstd frame 0][zstd frame 1]...
+```
+
+where each frame is one block (an `encode_logs` blob of `log_block_rows` logs)
+compressed on its own. `Writer::append_blocks(&[Vec<u8>]) -> Location` writes it,
+`Reader::block_count(loc)`, `read_block(loc, index)` (one block, decompressed; the other
+frames are not touched) and `read_blocks(loc)` (all of them, in order) read it. The
+checksum is the record's, over the whole body, and every read of any block checks it. A
+body whose table does not fit it or whose lengths do not add up to it, an index past the
+last block, or a record that is not of blocks (its first bytes are not a table) is
+`Decode`; `read` and `iter` know only the one-frame record and say `Decode` for a record
+of blocks. Traces are still one frame.
+
 ### Damage
 
 Every record is checked, and a record that fails is an error **value**, never a
@@ -1059,10 +1081,11 @@ in `src/logs.rs`), with or without a `spill_dir`:
   the dedup keys, and an index of the held logs of each span and of each trace so
   that removing a trace's logs is a lookup).
 - A **sealed chunk** is a closed open chunk: its logs sorted by `LogId` in one
-  immutable record, of a logs segment file when the store has them (the format of
-  "Blobs": one resource table, then the logs) and in memory as they were when it
-  has not, or when the write failed. A sealed chunk keeps no index of spans or
-  traces: it has the metadata below, and its record is read when it is needed.
+  immutable record, of a logs segment file when the store has them (a record of
+  **blocks**, see "Blocks" below: each block the format of "Blobs", a resource
+  table and then its logs) and in memory as they were when it has not, or when
+  the write failed. A sealed chunk keeps no index of spans or traces: it has the
+  metadata below, and its record is read when it is needed.
 
 Nothing outside the crate can tell which a log is in (the hidden
 `Store::log_chunks()` says how many chunks there are and how many are on disk, for
@@ -1142,19 +1165,14 @@ where it is not. The answer is always what a pass over the logs gives.
   condition, the sum of `level_counts` for the levels, `service_counts` for the
   service, and the cells for both. A chunk the window does not touch counts 0, and
   one that a window edge cuts through is read and its logs in the window counted.
-- **`logs_at`.** Let `at_or_above(b)` be the number of matching logs with id `b` or
-  above, from the same counts. The ids where it can change are the first id of each
-  chunk and the id after its last, so a binary search over those, `at_or_above`
-  being non-decreasing as the id goes down, finds the last of them that has no more
-  than `offset` matching logs at or above it. The position is below it: the walk
-  starts there with `offset - at_or_above` matches left to step over, and then gives
-  `limit` rows. When chunks do not overlap, no chunk is cut through by any of those
-  ids and **the search reads nothing**; the walk then reads the chunk the position
-  is in, and the next one if the rows run over its edge: at most two. When chunks
-  overlap, the chunks an id falls inside are read, which are the ones that overlap
-  there. Offset 0 skips the search. The rows are read newest first, each tested
-  against the levels and service, so the step over matches costs the matching logs
-  between the start of that chunk and the position: up to a chunk's worth.
+- **`logs_at`** works on **units** (see "Blocks") and reads a block or two, not a
+  chunk: units whose id ranges overlap are one group, every log of a group is newer
+  than every log of the groups after it, so the groups are counted from the newest
+  (each unit from its metadata: `count_matching`) until the one the position is in;
+  only its units are read, and the rows are the ones from the position on. A unit a
+  window edge cuts through is read to be counted. Decision 0050 has the algorithm
+  and why the binary search over chunk bounds of Task 3 (three to eight chunk reads
+  at ten million logs, 211 ms at p95) is gone.
 - **`log_histogram`.** A chunk inside the window and inside **one bucket** (its
   first and last log fall in the same) adds its whole counts to that bucket. A chunk
   inside the window that spans buckets adds its **cells** if each cell (a second of a
@@ -1171,6 +1189,24 @@ where it is not. The answer is always what a pass over the logs gives.
 A filter that is not indexed gets none of this: search and `logs_at` walk and test
 every log (skipping the chunks the metadata rules out), `log_count` is `None` and
 the histogram reads every chunk in the window.
+
+### Blocks
+
+A chunk written to a segment is a record of blocks of `log_block_rows` logs (1,024),
+each compressed on its own ("A record of blocks"), and the chunk keeps in memory what
+it knows of each: the first and the last id, and the logs per service and level
+(`BlockMeta`, about 3 MB for ten million logs). A **unit** is a block of such a chunk,
+or any other chunk whole: the open chunk, one in memory (no segment files, or the write
+failed) and one that lost its oldest logs by eviction (its first block is no longer the
+one that was written, so the chunk drops its blocks and is read as one run, as before). A
+chunk that is rewritten after a removal gets blocks again.
+
+Units are what `logs_at` counts and reads. Whole chunks are still what everything else
+reads (`decoded()`, which reads the blocks one after the other): search, `log_count` at a
+window edge, the histogram, `Store::log`, `logs_around`, removal, eviction. The hidden
+`Store::log_chunks()` says how many blocks the chunks on disk have (`blocks`) and how
+many single blocks have been decoded (`block_decodes`), which is how the tests show
+how little a position reads.
 
 ### Eviction
 
@@ -1217,6 +1253,12 @@ segment files, or a failed write) is never decoded and never in the cache. The
 hidden `Store::log_chunks()` has the number cached and the number of decodes, which
 is how the tests show how few chunks a call reads.
 
+`logs_at` reads single blocks through a cache of its own, the last **32** decoded blocks
+(`BLOCK_CACHE`), keyed by the record and the number of the block: a screenful of rows
+is one block or two, and scrolling stays in them. It is not the cache above and not in
+its `cached`, and a removal or an eviction that makes a record dead takes its blocks
+out of it.
+
 ### Damage and failed writes
 
 A record that cannot be read (checksum, truncated, undecodable) leaves its chunk
@@ -1232,7 +1274,8 @@ then on go to disk): see "A failing disk" for what waits and for how long.
 ### What it costs
 
 One-off figures from the development container (4 vCPU, release build, **not a
-gate**; the performance budgets are Task 6 of the milestone): 10,000,000 logs of 8
+gate**; the budgets are measured by `cargo xtask perf`, see `docs/areas/testing.md`
+"Performance budgets"): 10,000,000 logs of 8
 services, 70-byte bodies, a trace and a span ID on each, in 152 sealed chunks and
 38,528 open, ingested in batches of 1,000 with segment files on:
 
@@ -1242,16 +1285,15 @@ services, 70-byte bodies, a trace and a span ID on each, in 152 sealed chunks an
 | sealed chunks | 186 MB on disk (the bodies are repetitive); one chunk is read in about 33 ms: 6 ms of zstd, 20 ms of postcard and 12 ms making the logs |
 | `log_count`, levels and a service, no window | 0.17 ms |
 | `log_count` with a window cutting through two chunks | 73 ms (two reads) |
-| `logs_at`, 50 rows at a random position | p50 32 ms, p95 about 40 ms: one chunk read; 2 ms when it is in the cache |
+| `logs_at`, 50 rows at a random position | p50 32 ms, p95 about 40 ms: one chunk read; 2 ms when it is in the cache (this was before Task 6: the budget run had it at 165 ms and 211 ms, three to eight chunk reads, and blocks made it 2.8 ms and 4.9 ms, see "Blocks") |
 | `log_histogram`, 48 buckets of whole seconds | 0.24 ms |
 | `log_histogram`, 48 buckets with edges inside seconds | 1.7 s (every chunk with an edge in it is read) |
 | the first page of a LogQL query for one service | 0.8 ms |
 
-What a chunk costs to read is most of every slow row: Task 6 of the milestone
-(budgets) and Task 7 (the Logs list) work from it. Reading less of a chunk (a
-record of independent blocks with an index of their first ids) or faster, are the
-two ways to make `logs_at` fast; the window of the Logs screen can snap to whole
-seconds for the histogram.
+What a chunk costs to read is most of every slow row. Task 6 made `logs_at` read a
+block (about 1,000 logs, 0.5 ms) and not a chunk, which is what its budget needed
+(decision 0050); the window of the Logs screen should snap to whole seconds for the
+histogram.
 
 ## The disk cap
 
@@ -1384,6 +1426,15 @@ and failed) are how `disk_cap.rs` tests this without a full volume.
   logs, retries, trace context), removals and clock steps against a plain list and compares
   every read of the store with it after each one, for chunk sizes from 3 to 500, with and
   without segment files.
+  Task 6 added the tests of the blocks (the end of the file): the block size as a config
+  field, a chunk on disk being a run of blocks and one in memory not,
+  `logs_at_reads_a_few_blocks_and_no_chunk_even_when_chunks_overlap` (the counters
+  `decodes` and `block_decodes`, with and without a filter), the two ends and past the end,
+  a window that reads only the blocks its edges cut, a block read twice decoded once, a
+  chunk that was trimmed by eviction and one that was rewritten by a removal, and
+  `logs_at` against the walk for random indexed filters at three block sizes.
+  `tests/segment.rs` has the records of blocks (each block alone, damage and cut-off
+  records, none and empty blocks).
 - `disk_cap.rs`: Milestone 5, Task 4. `cap_evicts_oldest_segments_whole` (the files that
   go are the oldest, the newest traces stay whole, it stops as soon as it is under the cap),
   `the_cap_holds_while_data_arrives`, `log_segments_go_with_their_chunks` (and the

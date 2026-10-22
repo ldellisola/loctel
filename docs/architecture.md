@@ -25,7 +25,10 @@ to `loctel-ui`, `loctel-macos` and `loctel-app` and no crate. Milestone 4
 Discard rules screens, the Settings window and the popover view to `loctel-ui`,
 the popover to `loctel-macos` (it replaces the menu), live port rebinding to
 `loctel-engine` and log IDs, level and window filters, the histogram and the
-lines around a log to `loctel-store`, and no crate. Everything
+lines around a log to `loctel-store`, and no crate. Milestone 5
+(`superpowers/plans/2026-10-22-loctel-m5-scale.md`) made the store spill to segment
+files under a disk cap (`loctel-store`, `loctel-engine`, `loctel-mcp`) and added the
+performance budgets as `loctel-perf`, run by `cargo xtask perf`. Everything
 Mac-only in it is unverified until the milestone check
 (`milestones/mac-checklist.md`). The change that adds a
 crate updates this table and the diagram below it.
@@ -39,12 +42,13 @@ crate updates this table and the diagram below it.
 | `loctel-ingest` | core | OTLP gRPC and HTTP receivers, protobuf and JSON to model conversion | implemented: gRPC and HTTP receivers, gzip, conversion, `partial_success` (see "Ingest" below) |
 | `loctel-mcp` | core | MCP server (rmcp, Streamable HTTP), tools and their DTOs | implemented: nine read-only tools, the `Origin` check, both protocol generations and, from Milestone 2, the TraceQL and LogQL `query` arguments, the discard rules in `get_status` and the answer size budget (see "MCP" below) |
 | `loctel-engine` | core | Wires store, ingest, MCP and the discard rules; settings, pause, rates; owns threads and runtime | implemented: store, OTLP receivers and MCP server, `settings.toml`, pause, rates, and (Milestone 2) the discard rules at ingest with live reload of `rules.toml` and the handle API, and (Milestone 4) rebinding the three ports live (see "Engine" below) |
-| `loctel-meshgen` | test tooling | Fake microservice mesh scenarios (library and `meshgen` binary) | implemented: six scenarios and a sender over gRPC, HTTP protobuf and HTTP JSON (see "Test tooling" below) |
+| `loctel-meshgen` | test tooling | Fake microservice mesh scenarios (library and `meshgen` binary) | implemented: six scenarios and a sender over gRPC, HTTP protobuf and HTTP JSON, and (Milestone 5) the bulk generators `bulk_logs` and `bulk_traces` (see "Test tooling" below) |
+| `loctel-perf` | test tooling | The performance budgets of design §10.3: a table of limits, the scenarios that measure them over ten million logs and spans, and the report (`publish = false`, binary `loctel-perf`) | implemented (Milestone 5): `ingest`, `trace_open_hot`, `trace_open_cold`, `logs_count`, `logs_at`, `histogram`, `traceql_first_page`, `logql_first_page`, `startup_headless`, `first_frame` and `rss_10m`; `cargo xtask perf` runs it in release and `ci.yml`'s `perf` job runs that (see "Test tooling" below) |
 | `loctel-e2e` | test tooling | End-to-end tests through real OTLP and a real MCP client (`publish = false`) | implemented: a `Harness` over a real engine (with or without a rules file) and the tests of the transports, assembly, service map, agent flow, pause, release fixture, discard rules and queries (see "Test tooling" below) |
 | `loctel-ui` | UI | GPUI views, the pure view models and the headless screenshot harness | implemented: the status view (with the discard rules line, from Milestone 2), the shared menu text, the theme, the pure models of the main window (`model`: formats, service colours, trace table rows, query bar state, map layout, waterfall rows, inspector text and the trace view's text), the main window's shell (`app`: sidebar, toolbar, `UiBackend`, the GPUI Kit theme bridge, `open_main_window`, and the live data entities `HomeModel`, `TraceModel` and, from Milestone 4, `LogsModel` and `RulesModel`), the views of its four screens (`views`: the service map, the trace table, and the trace view with its waterfall, inspector and span logs from Milestone 3; and, from Milestone 4, the Logs screen with its histogram and the Discard rules screen with its editor), the Settings window's and the menu bar popover's views (Milestone 4) and `testing::{render_png, render_window_png, Driver, headless_app, assert_snapshot}` behind the `screenshot` feature (see "UI" below) |
 | `loctel-macos` | macOS | Status item, activation policy, login item (`cfg(target_os = "macos")`) | implemented, never run: the menu bar item (no menu since Milestone 4: a click opens the popover, `popover::toggle`, placed from the mouse by `popover::anchor`), the windows' lifecycle (`window::open_or_focus`, `show_screen`, `open_settings`: the Dock while the main or Settings window is open, Accessory after the last closes), Liquid Glass behind the main window's sidebar and toolbar and the popover's panel (`glass::attach`), the login item and the first-launch step; empty off macOS apart from plain-Rust parts that the Linux tests cover (see "macOS shell" below) |
 | `loctel-app` | binary | The `loctel` binary: headless mode and GUI, bundle metadata | implemented: headless mode, on Linux the main window (it also quits cleanly on SIGINT and SIGTERM) and on macOS the menu bar app that opens the main window from its popover (see "Headless mode", "UI" and "macOS shell" below); `[package.metadata.bundle]` and `bundle/` hold what goes into `loctel.app` (see "Release pipeline" below) |
-| `xtask` | tooling | Screenshots, next-version, release notes, MCP smoke test | implemented: `screenshots [--update]`, `run-shot`, `next-version`, `release-notes` and `mcp-smoke --url URL` (see "UI" and "Release pipeline" below) |
+| `xtask` | tooling | Screenshots, next-version, release notes, MCP smoke test, performance budgets | implemented: `screenshots [--update]`, `run-shot`, `next-version`, `release-notes`, `mcp-smoke --url URL` and (Milestone 5) `perf [--only ID] [--json PATH]` (see "UI", "Test tooling" and "Release pipeline" below) |
 
 Who depends on whom (an arrow reads "depends on"; edges that only tests use
 are left out):
@@ -71,6 +75,8 @@ are left out):
 
  loctel-meshgen --> loctel-model                      (test tooling)
  loctel-e2e     --> loctel-engine, loctel-meshgen     (+ rmcp's client)
+ loctel-perf    --> loctel-engine, loctel-store, loctel-ingest, loctel-query, loctel-meshgen,
+                    loctel-ui (its `screenshot` feature: the headless main window)
  xtask          --> rmcp's client                     (+ loctel-engine in its tests)
 ```
 
@@ -187,7 +193,10 @@ rules) are written to disk.
   by level and service, counts per second, its traces) answers
   `Store::log_count` (a total) and `Store::logs_at` (rows from a position) and the
   histogram of an *indexed* filter (a window, levels, a service) without reading
-  the logs, so the Logs screen can scroll ten million lines. Details, the cost and
+  the logs, so the Logs screen can scroll ten million lines. A chunk on disk is a
+  record of blocks of about a thousand logs, each with its own counts in memory,
+  so a position is read from a block and not from a chunk of 65,536 logs (Task 6,
+  [`decisions/0050-log-chunks-as-blocks.md`](decisions/0050-log-chunks-as-blocks.md)). Details, the cost and
   the reasons: [`areas/store.md`](areas/store.md), "Log chunks", and
   [`decisions/0046-log-chunks.md`](decisions/0046-log-chunks.md).
 - **Time is injected.** `Store::new(config, Arc<dyn Clock>)`. `SystemClock`
@@ -778,6 +787,21 @@ queries, LogQL queries and the errors for queries that do not parse. See
 "End-to-end tests" in [`areas/testing.md`](areas/testing.md) and
 [`decisions/0007-e2e-harness-choices.md`](decisions/0007-e2e-harness-choices.md)
 and [`decisions/0020-e2e-rules-and-query-tests.md`](decisions/0020-e2e-rules-and-query-tests.md).
+
+`loctel-perf` is the performance check. A table in code (`budget.rs`) holds each budget
+(an id, what is measured, the limit) and judges measurements against it; the scenarios
+build their data in the process through the store, with meshgen's bulk generators (a
+store on a manual clock that follows the data, so that traces complete and spill and
+logs seal as in a long run) and measure: the log budgets over ten million logs, the span
+search over ten million spans, the 100,000-span trace hot and cold, `ingest` through a
+real engine over OTLP HTTP, the start of the release `loctel --headless` and the first
+frame of the main window in a process each. `cargo xtask perf` builds it and `loctel` in
+release and runs it (exit 1 on a breach); the `perf` job of `ci.yml` runs that beside
+`gate`. The scenarios, the table, the limits that are raised for the harness and the
+numbers are in [`areas/testing.md`](areas/testing.md) ("Performance budgets") and
+[`decisions/0049-performance-harness-choices.md`](decisions/0049-performance-harness-choices.md);
+the first run's one miss, and the blocks that fixed it, in
+[`decisions/0050-log-chunks-as-blocks.md`](decisions/0050-log-chunks-as-blocks.md).
 
 ## Release pipeline
 

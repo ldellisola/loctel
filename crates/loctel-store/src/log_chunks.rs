@@ -59,6 +59,13 @@ pub(crate) const LOG_CHUNK_AGE: Duration = Duration::from_secs(10);
 /// The decoded chunks kept for the next read, least recently used out.
 pub(crate) const CHUNK_CACHE: usize = 8;
 
+/// The logs of a block of a chunk written to a segment file (decision 0049).
+pub(crate) const LOG_BLOCK_ROWS: usize = 1_024;
+
+/// The decoded blocks kept for the next read, least recently used out: a
+/// screenful of rows is one or two blocks, and a scroll stays in them.
+pub(crate) const BLOCK_CACHE: usize = 32;
+
 /// Nanoseconds in a second: the width of the time cells.
 const SECOND: u64 = 1_000_000_000;
 
@@ -331,6 +338,63 @@ impl ChunkMeta {
     }
 }
 
+/// What the store knows about a block of a sealed chunk that was written as
+/// blocks, without reading it: its range of ids, its logs, and how many there are
+/// of each service at each level. Exact, like [`ChunkMeta`], and for the same
+/// reason: [`LogStore::at`] counts whole blocks from it and reads only the one a
+/// position or a window edge falls in.
+#[derive(Clone, Debug)]
+pub(crate) struct BlockMeta {
+    pub(crate) first: LogId,
+    pub(crate) last: LogId,
+    /// Logs held per service and level, sorted, none of them 0.
+    cells: Vec<(ServiceIdx, u8, u32)>,
+}
+
+impl BlockMeta {
+    /// The metadata of `rows`, which must be sorted and not empty.
+    fn from_rows(rows: &[LogRecordWithId], services: &mut Services) -> BlockMeta {
+        let mut cells: Vec<(ServiceIdx, u8, u32)> = Vec::new();
+        for row in rows {
+            let service = services.intern(row.record.service());
+            let level = level_index(row.record.severity);
+            match cells.binary_search_by_key(&(service, level), |cell| (cell.0, cell.1)) {
+                Ok(at) => cells[at].2 += 1,
+                Err(at) => cells.insert(at, (service, level, 1)),
+            }
+        }
+        BlockMeta {
+            first: rows.first().map_or(
+                LogId {
+                    time_unix_nano: 0,
+                    seq: 0,
+                },
+                |row| row.id,
+            ),
+            last: rows.last().map_or(
+                LogId {
+                    time_unix_nano: 0,
+                    seq: 0,
+                },
+                |row| row.id,
+            ),
+            cells,
+        }
+    }
+
+    /// The logs of the block that `selector` passes.
+    fn count_matching(&self, selector: &Selector<'_>) -> u64 {
+        if selector.is_empty() {
+            return 0;
+        }
+        self.cells
+            .iter()
+            .filter(|(service, level, _)| selector.matches_cell(*service, *level))
+            .map(|(_, _, count)| u64::from(*count))
+            .sum()
+    }
+}
+
 // ---- chunks ----------------------------------------------------------------------------
 
 /// A log held in the open chunk.
@@ -394,6 +458,12 @@ enum Data {
 pub(crate) struct Chunk {
     pub(crate) meta: ChunkMeta,
     data: Data,
+    /// The blocks the record is made of, in order, with what is known about each.
+    /// Empty for a chunk that is not on disk, and for one that lost its oldest
+    /// logs (`skip` above 0): the blocks are the ones that were written, and the
+    /// first of them is no longer whole, so such a chunk is one run of logs, read
+    /// whole.
+    blocks: Vec<BlockMeta>,
     /// The first `skip` logs of the stored record were evicted: the chunk is
     /// its logs from there on. The metadata already says so.
     skip: usize,
@@ -480,6 +550,34 @@ impl ChunkCache {
     }
 }
 
+/// The decoded blocks read last, most recently used first, keyed by the record and
+/// the number of the block in it.
+#[derive(Default)]
+struct BlockCache {
+    entries: VecDeque<((segment::Location, usize), Arc<Rows>)>,
+}
+
+impl BlockCache {
+    fn get(&mut self, key: (segment::Location, usize)) -> Option<Arc<Rows>> {
+        let at = self.entries.iter().position(|(held, _)| *held == key)?;
+        let hit = self.entries.remove(at)?;
+        let rows = Arc::clone(&hit.1);
+        self.entries.push_front(hit);
+        Some(rows)
+    }
+
+    fn put(&mut self, key: (segment::Location, usize), rows: Arc<Rows>) {
+        self.entries.retain(|(held, _)| *held != key);
+        self.entries.push_front((key, rows));
+        self.entries.truncate(BLOCK_CACHE);
+    }
+
+    /// Forgets the blocks of a record that is not wanted any more.
+    fn remove_record(&mut self, location: segment::Location) {
+        self.entries.retain(|((held, _), _)| *held != location);
+    }
+}
+
 /// The dedup keys are hashes already: the set uses them as they are.
 #[derive(Default)]
 pub(crate) struct KeyHasher(u64);
@@ -516,6 +614,12 @@ pub struct LogChunkInfo {
     /// How many chunks have been decoded from a segment so far (a read that
     /// finds the chunk in the cache is not one).
     pub decodes: u64,
+    /// The blocks that the chunks on disk are made of, all together.
+    pub blocks: usize,
+    /// How many single blocks have been decoded from a segment so far (a read of
+    /// a whole chunk is one `decodes`, whatever its blocks, and a block found in
+    /// the cache of blocks is not counted).
+    pub block_decodes: u64,
 }
 
 /// The logs the store holds: the open chunk, the sealed ones, and what they
@@ -531,9 +635,15 @@ pub(crate) struct LogStore {
     next_seq: u64,
     chunk_max: usize,
     chunk_age: u64,
+    /// Logs per block of a chunk written to a segment.
+    block_rows: usize,
     cache: Mutex<ChunkCache>,
+    /// Single blocks read by position, which a whole chunk is not.
+    block_cache: Mutex<BlockCache>,
     /// How many chunks have been decoded from a segment: a test hook.
     decodes: AtomicU64,
+    /// How many single blocks have: a test hook.
+    block_decodes: AtomicU64,
     /// The last write to a segment failed, and why (taken by the store).
     write_error: Option<String>,
     /// A write to a segment worked since the store last asked.
@@ -542,12 +652,12 @@ pub(crate) struct LogStore {
 
 impl Default for LogStore {
     fn default() -> Self {
-        LogStore::new(LOG_CHUNK_MAX, LOG_CHUNK_AGE)
+        LogStore::new(LOG_CHUNK_MAX, LOG_CHUNK_AGE, LOG_BLOCK_ROWS)
     }
 }
 
 impl LogStore {
-    pub(crate) fn new(chunk_max: usize, chunk_age: Duration) -> LogStore {
+    pub(crate) fn new(chunk_max: usize, chunk_age: Duration, block_rows: usize) -> LogStore {
         LogStore {
             open: Open::new(),
             sealed: Vec::new(),
@@ -556,8 +666,11 @@ impl LogStore {
             next_seq: 0,
             chunk_max: chunk_max.max(1),
             chunk_age: saturating_nanos(chunk_age),
+            block_rows: block_rows.max(1),
             cache: Mutex::new(ChunkCache::default()),
+            block_cache: Mutex::new(BlockCache::default()),
             decodes: AtomicU64::new(0),
+            block_decodes: AtomicU64::new(0),
             write_error: None,
             wrote: false,
         }
@@ -596,6 +709,8 @@ impl LogStore {
                 .count(),
             cached: self.cache.lock().entries.len(),
             decodes: self.decodes.load(Ordering::Relaxed),
+            blocks: self.sealed.iter().map(|chunk| chunk.blocks.len()).sum(),
+            block_decodes: self.block_decodes.load(Ordering::Relaxed),
         }
     }
 
@@ -672,33 +787,45 @@ impl LogStore {
                 record: stored.record,
             })
             .collect();
-        let data = self.store_rows(rows, segments);
+        let (data, blocks) = self.store_rows(rows, segments);
         self.sealed.push(Chunk {
             meta,
             data,
+            blocks,
             skip: 0,
         });
     }
 
-    /// Writes `rows` to the segment files if there are any, and says where they
-    /// are now. A write that fails leaves them in memory, and is remembered.
-    fn store_rows(&mut self, rows: Rows, segments: Option<&mut SegmentSet>) -> Data {
+    /// Writes `rows` to the segment files if there are any, as a record of blocks
+    /// of `block_rows` logs, and says where they are now and what the blocks are.
+    /// A write that fails leaves them in memory (with no blocks), and is
+    /// remembered.
+    fn store_rows(
+        &mut self,
+        rows: Rows,
+        segments: Option<&mut SegmentSet>,
+    ) -> (Data, Vec<BlockMeta>) {
         let Some(segments) = segments else {
-            return Data::Memory(Arc::new(rows));
+            return (Data::Memory(Arc::new(rows)), Vec::new());
         };
         // A suspended segment set refuses before the chunk is encoded: that is
         // the work a full disk must not make the store do on every seal.
-        let written = segments
-            .check_writable()
-            .and_then(|()| segments.append(Kind::Logs, &encode_logs(&rows)));
+        let written = segments.check_writable().and_then(|()| {
+            let blocks: Vec<Vec<u8>> = rows.chunks(self.block_rows).map(encode_logs).collect();
+            segments.append_blocks(Kind::Logs, &blocks)
+        });
         match written {
             Ok(location) => {
                 self.wrote = true;
-                Data::Disk(location)
+                let blocks = rows
+                    .chunks(self.block_rows)
+                    .map(|block| BlockMeta::from_rows(block, &mut self.services))
+                    .collect();
+                (Data::Disk(location), blocks)
             }
             Err(error) => {
                 self.write_error = Some(error.to_string());
-                Data::Memory(Arc::new(rows))
+                (Data::Memory(Arc::new(rows)), Vec::new())
             }
         }
     }
@@ -710,6 +837,7 @@ impl LogStore {
             return;
         };
         self.cache.get_mut().remove(location);
+        self.block_cache.get_mut().remove_record(location);
         if let Some(segments) = segments {
             segments.mark_dead(location);
         }
@@ -722,6 +850,7 @@ impl LogStore {
         self.sealed.clear();
         self.held.clear();
         self.cache.get_mut().entries.clear();
+        self.block_cache.get_mut().entries.clear();
         self.write_error = None;
         self.wrote = false;
     }
@@ -873,6 +1002,9 @@ impl LogStore {
         }
         chunk.skip += take;
         chunk.meta.first = rows[chunk.skip].id;
+        // The first block is no longer whole: from now on the chunk is read as
+        // the one run of logs it is.
+        chunk.blocks = Vec::new();
         take
     }
 
@@ -1030,10 +1162,11 @@ impl LogStore {
         }
         let kept: Rows = kept.into_iter().cloned().collect();
         let meta = ChunkMeta::from_rows(&kept, &mut self.services);
-        let data = self.store_rows(kept, segments.as_deref_mut());
+        let (data, blocks) = self.store_rows(kept, segments.as_deref_mut());
         self.sealed[index] = Chunk {
             meta,
             data,
+            blocks,
             skip: 0,
         };
         self.kill(old, segments);
@@ -1059,8 +1192,11 @@ impl LogStore {
         if let Some(hit) = self.cache.lock().get(location) {
             return Some(hit);
         }
-        let bytes = segments?.read(location).ok()?;
-        let rows = Arc::new(decode_logs(&bytes).ok()?);
+        let mut rows = Vec::with_capacity(chunk.meta.count as usize + chunk.skip);
+        for block in segments?.read_blocks(location).ok()? {
+            rows.extend(decode_logs(&block).ok()?);
+        }
+        let rows = Arc::new(rows);
         self.decodes.fetch_add(1, Ordering::Relaxed);
         if keep {
             self.cache.lock().put(location, Arc::clone(&rows));
@@ -1154,6 +1290,116 @@ impl LogStore {
         }
         found.sort_unstable_by_key(|(id, _)| *id);
         found.into_iter().map(|(_, record)| record).collect()
+    }
+
+    // ---- units: what a position is found in ------------------------------------------
+
+    /// Block `index` of a chunk that was written as blocks, decoded: from the
+    /// cache of blocks or read from its segment alone, without the rest of the
+    /// chunk. `None` when the record cannot be read or decoded.
+    fn block_rows(
+        &self,
+        chunk: &Chunk,
+        index: usize,
+        segments: Option<&SegmentSet>,
+    ) -> Option<Arc<Rows>> {
+        let Data::Disk(location) = &chunk.data else {
+            return None;
+        };
+        let key = (*location, index);
+        if let Some(hit) = self.block_cache.lock().get(key) {
+            return Some(hit);
+        }
+        let bytes = segments?.read_block(*location, index).ok()?;
+        let rows = Arc::new(decode_logs(&bytes).ok()?);
+        self.block_decodes.fetch_add(1, Ordering::Relaxed);
+        self.block_cache.lock().put(key, Arc::clone(&rows));
+        Some(rows)
+    }
+
+    /// The runs of logs that the store can count and read on their own, in no
+    /// order: every block of a chunk written as blocks, and every other chunk
+    /// whole (the open one, one in memory, one that lost its oldest logs). What
+    /// finds the log at a position works on these, so that it reads a block of a
+    /// thousand logs and not a chunk of sixty-five thousand.
+    pub(crate) fn units(&self) -> Vec<Unit<'_>> {
+        let mut units = Vec::with_capacity(self.sealed.len() * 2 + 1);
+        for chunk in self.chunk_refs() {
+            match chunk {
+                ChunkRef::Sealed(sealed) if !sealed.blocks.is_empty() => {
+                    units.extend(sealed.blocks.iter().enumerate().map(|(index, block)| Unit {
+                        kind: UnitKind::Block(sealed, index),
+                        first: block.first,
+                        last: block.last,
+                    }));
+                }
+                whole => {
+                    let meta = whole.meta();
+                    units.push(Unit {
+                        kind: UnitKind::Whole(whole),
+                        first: meta.first,
+                        last: meta.last,
+                    });
+                }
+            }
+        }
+        units
+    }
+
+    /// The logs of `unit`, calling `f` on those in `[lo, hi)`, oldest first.
+    /// `false` when the unit could not be read (and `f` did not run).
+    pub(crate) fn for_each_unit_row(
+        &self,
+        unit: &Unit<'_>,
+        lo: Option<LogId>,
+        hi: Option<LogId>,
+        segments: Option<&SegmentSet>,
+        mut f: impl FnMut(LogId, &LogRecord),
+    ) -> bool {
+        match unit.kind {
+            UnitKind::Whole(chunk) => self.for_each_row(chunk, lo, hi, segments, true, f),
+            UnitKind::Block(chunk, index) => {
+                let Some(rows) = self.block_rows(chunk, index, segments) else {
+                    return false;
+                };
+                let start = lo.map_or(0, |lo| rows.partition_point(|row| row.id < lo));
+                let end = hi
+                    .map_or(rows.len(), |hi| rows.partition_point(|row| row.id < hi))
+                    .max(start);
+                for row in &rows[start..end] {
+                    f(row.id, &row.record);
+                }
+                true
+            }
+        }
+    }
+}
+
+/// A run of logs of one chunk that is counted and read on its own (see
+/// [`LogStore::units`]).
+#[derive(Clone, Copy)]
+pub(crate) struct Unit<'a> {
+    kind: UnitKind<'a>,
+    /// The first and the last id it holds.
+    pub(crate) first: LogId,
+    pub(crate) last: LogId,
+}
+
+#[derive(Clone, Copy)]
+enum UnitKind<'a> {
+    Block(&'a Chunk, usize),
+    Whole(ChunkRef<'a>),
+}
+
+impl Unit<'_> {
+    /// The logs in the whole unit that `selector` passes, from what is known
+    /// about it. Exact for a unit the window does not cut; for one it cuts, what
+    /// is in the window is at most this.
+    pub(crate) fn count_matching(&self, selector: &Selector<'_>) -> u64 {
+        match self.kind {
+            UnitKind::Block(chunk, index) => chunk.blocks[index].count_matching(selector),
+            UnitKind::Whole(chunk) => chunk.meta().count_matching(selector),
+        }
     }
 }
 

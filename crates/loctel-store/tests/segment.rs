@@ -606,3 +606,163 @@ fn run_dirs_in_one_process_and_one_second_get_distinct_directories() {
     assert!(path.is_dir());
     assert!(third.path().is_dir());
 }
+
+// ---- records of blocks (Milestone 5, Task 6) ----------------------------------------
+
+/// A chunk of logs as the store writes it: blocks that are each a blob of their
+/// own, so that one of them can be read without the rest.
+fn blocks_of(records: &[LogRecordWithId], rows: usize) -> Vec<Vec<u8>> {
+    records.chunks(rows).map(encode_logs).collect()
+}
+
+fn flood(records: usize, seed: u64) -> Vec<LogRecordWithId> {
+    with_ids(scenario_logs(&Scenario::LogFlood { records }, seed, BASE))
+}
+
+#[test]
+fn a_record_of_blocks_reads_each_block_back_alone() {
+    let dir = TempDir::new().unwrap();
+    let records = flood(1_000, 3);
+    let blocks = blocks_of(&records, 128);
+    assert_eq!(blocks.len(), 8, "seven of 128 logs and one of 104");
+
+    let mut writer = Writer::create(dir.path(), Kind::Logs, 1).unwrap();
+    let before = writer.append(b"a record before it").unwrap();
+    let location = writer.append_blocks(&blocks).unwrap();
+    let after = writer.append(b"a record after it").unwrap();
+    writer.seal().unwrap();
+
+    let reader = Reader::open(dir.path().join("logs-000001.seg")).unwrap();
+    assert_eq!(reader.block_count(location), Ok(8));
+    for (index, block) in blocks.iter().enumerate() {
+        assert_eq!(&reader.read_block(location, index).unwrap(), block);
+    }
+    // Each block is a blob of its own: its records are the ones it was given.
+    let third = decode_logs(&reader.read_block(location, 2).unwrap()).unwrap();
+    assert_eq!(third, records[256..384]);
+    // All of them at once, in order: the chunk.
+    let all: Vec<LogRecordWithId> = reader
+        .read_blocks(location)
+        .unwrap()
+        .iter()
+        .flat_map(|block| decode_logs(block).unwrap())
+        .collect();
+    assert_eq!(all, records);
+    // The records around it are the ones it sits between.
+    assert_eq!(reader.read(before).unwrap(), b"a record before it");
+    assert_eq!(reader.read(after).unwrap(), b"a record after it");
+    // It takes the header and the table of lengths, and the compressed blocks.
+    assert_eq!(location.offset, before.disk_bytes());
+    assert_eq!(after.offset, location.offset + location.disk_bytes());
+}
+
+#[test]
+fn blocks_are_compressed_one_at_a_time() {
+    // Logs that repeat a lot: whole, they shrink to a small fraction, and
+    // blocks of 100 shrink nearly as well, so reading one block is cheap
+    // without the disk cap seeing a different file.
+    let records = flood(4_000, 5);
+    let dir = TempDir::new().unwrap();
+    let mut writer = Writer::create(dir.path(), Kind::Logs, 1).unwrap();
+    let whole = writer.append(&encode_logs(&records)).unwrap();
+    let blocks = writer.append_blocks(&blocks_of(&records, 128)).unwrap();
+
+    assert!(
+        blocks.len < whole.len * 2,
+        "blocks of 128 take {} bytes, the whole {}",
+        blocks.len,
+        whole.len
+    );
+}
+
+#[test]
+fn a_block_that_is_not_there_is_a_decode_error() {
+    let dir = TempDir::new().unwrap();
+    let blocks = blocks_of(&flood(300, 1), 100);
+    let mut writer = Writer::create(dir.path(), Kind::Logs, 1).unwrap();
+    let location = writer.append_blocks(&blocks).unwrap();
+    let plain = writer.append(b"not blocks").unwrap();
+    writer.seal().unwrap();
+
+    let reader = Reader::open(dir.path().join("logs-000001.seg")).unwrap();
+    assert_eq!(reader.read_block(location, 3), Err(SegmentError::Decode));
+    assert_eq!(
+        reader.read_block(location, usize::MAX),
+        Err(SegmentError::Decode)
+    );
+    // A record that is not of blocks has no block 0: its bytes are not a table.
+    assert_eq!(reader.read_block(plain, 0), Err(SegmentError::Decode));
+    assert_eq!(reader.block_count(plain), Err(SegmentError::Decode));
+    // And a record of blocks is not one blob: `read` does not pretend it is.
+    assert_eq!(reader.read(location), Err(SegmentError::Decode));
+}
+
+#[test]
+fn a_damaged_record_of_blocks_is_reported_whole_and_the_others_still_read() {
+    let dir = TempDir::new().unwrap();
+    let blocks = blocks_of(&flood(300, 1), 100);
+    let mut writer = Writer::create(dir.path(), Kind::Logs, 1).unwrap();
+    let first = writer.append_blocks(&blocks).unwrap();
+    let second = writer.append_blocks(&blocks).unwrap();
+    writer.seal().unwrap();
+    let path = dir.path().join("logs-000001.seg");
+
+    // A flipped bit in the middle of the first record's last block.
+    flip(&path, first.offset + first.disk_bytes() - 20);
+    let reader = Reader::open(&path).unwrap();
+    for index in 0..3 {
+        assert_eq!(
+            reader.read_block(first, index),
+            Err(SegmentError::Checksum),
+            "block {index}: the checksum is the record's"
+        );
+    }
+    assert_eq!(reader.read_blocks(first), Err(SegmentError::Checksum));
+    assert_eq!(reader.read_block(second, 1).unwrap(), blocks[1]);
+}
+
+#[test]
+fn a_cut_off_record_of_blocks_is_truncated_and_nothing_panics() {
+    let dir = TempDir::new().unwrap();
+    let blocks = blocks_of(&flood(300, 1), 100);
+    let mut writer = Writer::create(dir.path(), Kind::Logs, 1).unwrap();
+    let first = writer.append_blocks(&blocks).unwrap();
+    let second = writer.append_blocks(&blocks).unwrap();
+    writer.seal().unwrap();
+    let path = dir.path().join("logs-000001.seg");
+
+    for cut_to in [
+        second.offset + second.disk_bytes() - 1,
+        second.offset + HEADER_BYTES + 6,
+        second.offset + 2,
+    ] {
+        OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(cut_to)
+            .unwrap();
+        let reader = Reader::open(&path).unwrap();
+        assert_eq!(reader.read_block(second, 0), Err(SegmentError::Truncated));
+        assert_eq!(reader.block_count(second), Err(SegmentError::Truncated));
+        assert_eq!(reader.read_blocks(second), Err(SegmentError::Truncated));
+        assert_eq!(reader.read_block(first, 2).unwrap(), blocks[2]);
+    }
+}
+
+#[test]
+fn a_record_of_no_blocks_and_of_an_empty_block_are_fine() {
+    let dir = TempDir::new().unwrap();
+    let mut writer = Writer::create(dir.path(), Kind::Logs, 1).unwrap();
+    let none = writer.append_blocks(&[]).unwrap();
+    let empty = writer.append_blocks(&[Vec::new(), b"x".to_vec()]).unwrap();
+    writer.seal().unwrap();
+
+    let reader = Reader::open(dir.path().join("logs-000001.seg")).unwrap();
+    assert_eq!(reader.block_count(none), Ok(0));
+    assert_eq!(reader.read_blocks(none), Ok(Vec::new()));
+    assert_eq!(reader.read_block(none, 0), Err(SegmentError::Decode));
+    assert_eq!(reader.block_count(empty), Ok(2));
+    assert_eq!(reader.read_block(empty, 0), Ok(Vec::new()));
+    assert_eq!(reader.read_block(empty, 1), Ok(b"x".to_vec()));
+}

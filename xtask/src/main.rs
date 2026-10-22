@@ -12,6 +12,10 @@
 //!   (`notes.rs`).
 //! - `mcp-smoke --url URL` checks that the MCP server at URL lists
 //!   `recent_failures` (`smoke.rs`).
+//! - `perf [--only ID] [--json PATH]` builds `loctel-perf` and `loctel` in
+//!   release, measures the performance budgets of design 10.3 and prints the
+//!   table of measured against budget. It exits non-zero when a budget is
+//!   missed; `--json` also writes the report to a file (what `ci.yml` uploads).
 //!
 //! The last three are what `.github/workflows/release.yml` runs. Only
 //! `mcp-smoke` needs more than the standard library (rmcp's client), which is
@@ -41,6 +45,12 @@ commands:
                           the install steps
   mcp-smoke --url URL     exit 0 only if the MCP server at URL lists the tool
                           `recent_failures` (the release job's smoke test)
+  perf [--only ID] [--json PATH]
+                          build `loctel-perf` and `loctel` in release, measure
+                          the performance budgets (all of them, or those of one
+                          id) and print the table; exit non-zero when one is
+                          missed. --json writes the report to PATH too. Takes
+                          minutes: it builds ten million logs and spans.
 ";
 
 fn main() -> ExitCode {
@@ -63,11 +73,19 @@ fn main() -> ExitCode {
 
 #[derive(Debug, PartialEq, Eq)]
 enum XtaskCommand {
-    Screenshots { update: bool },
+    Screenshots {
+        update: bool,
+    },
     RunShot,
     NextVersion,
     ReleaseNotes,
-    McpSmoke { url: String },
+    McpSmoke {
+        url: String,
+    },
+    Perf {
+        only: Option<String>,
+        json: Option<String>,
+    },
 }
 
 fn parse(args: &[String]) -> Result<XtaskCommand, String> {
@@ -94,8 +112,30 @@ fn parse(args: &[String]) -> Result<XtaskCommand, String> {
             Err("mcp-smoke: `--url` needs a value".to_owned())
         }
         ("mcp-smoke", [other, ..]) => Err(format!("mcp-smoke: unknown argument `{other}`")),
+        ("perf", rest) => parse_perf(rest),
         (other, _) => Err(format!("unknown command `{other}`")),
     }
+}
+
+/// `perf`'s arguments: `--only ID` and `--json PATH`, each at most once, in
+/// either order.
+fn parse_perf(args: &[String]) -> Result<XtaskCommand, String> {
+    let (mut only, mut json) = (None, None);
+    let mut rest = args.iter();
+    while let Some(flag) = rest.next() {
+        let slot = match flag.as_str() {
+            "--only" => &mut only,
+            "--json" => &mut json,
+            other => return Err(format!("perf: unknown argument `{other}`")),
+        };
+        let Some(value) = rest.next() else {
+            return Err(format!("perf: `{flag}` needs a value"));
+        };
+        if slot.replace(value.clone()).is_some() {
+            return Err(format!("perf: `{flag}` is given twice"));
+        }
+    }
+    Ok(XtaskCommand::Perf { only, json })
 }
 
 fn run(command: XtaskCommand) -> Result<(), String> {
@@ -105,6 +145,7 @@ fn run(command: XtaskCommand) -> Result<(), String> {
         XtaskCommand::NextVersion => next_version_command(),
         XtaskCommand::ReleaseNotes => release_notes_command(),
         XtaskCommand::McpSmoke { url } => smoke::mcp_smoke(&url),
+        XtaskCommand::Perf { only, json } => perf(only.as_deref(), json.as_deref()),
     }
 }
 
@@ -281,6 +322,59 @@ fn run_shot() -> Result<(), String> {
     Ok(())
 }
 
+/// Builds `loctel-perf` and `loctel` in release (one invocation, so the two
+/// share their dependencies) and runs the budget check, which prints the table.
+///
+/// `loctel-perf` needs the `screenshot` feature of `loctel-ui` (its first-frame
+/// budget draws the main window headlessly), and one `cargo build` gives every
+/// package the union of the features, so this `loctel` has GPUI's test support
+/// compiled in beside the shipped code. It is never called in headless mode,
+/// which is what `startup_headless` starts, and a second build of GPUI for
+/// the other feature set would cost minutes and gigabytes (decision 0049).
+///
+/// The check runs from the workspace root, so a relative `--json` path is
+/// relative to that. Its exit code says the verdict: 1 is a budget missed, 2 a
+/// scenario that could not run.
+fn perf(only: Option<&str>, json: Option<&str>) -> Result<(), String> {
+    let root = workspace_root();
+    let mut build = Command::new(cargo());
+    build.current_dir(&root).args([
+        "build",
+        "--release",
+        "-p",
+        "loctel-perf",
+        "-p",
+        "loctel-app",
+    ]);
+    succeeded(
+        build.status(),
+        "cargo build --release -p loctel-perf -p loctel-app",
+    )?;
+
+    let release = target_dir(&root).join("release");
+    let mut check = Command::new(release.join("loctel-perf"));
+    check
+        .current_dir(&root)
+        .arg("--loctel")
+        .arg(release.join("loctel"));
+    if let Some(id) = only {
+        check.args(["--only", id]);
+    }
+    if let Some(path) = json {
+        check.args(["--json", path]);
+    }
+    match check.status() {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) if status.code() == Some(1) => {
+            Err("a performance budget was missed (the table above says which)".to_owned())
+        }
+        Ok(status) => Err(format!(
+            "the performance check could not run to the end ({status}; see above)"
+        )),
+        Err(error) => Err(format!("cannot run loctel-perf: {error}")),
+    }
+}
+
 /// The Mac checklist that goes into every release's notes, relative to the
 /// workspace root.
 const CHECKLIST: &str = "docs/milestones/mac-checklist.md";
@@ -370,6 +464,13 @@ mod tests {
             Ok(XtaskCommand::Screenshots { update: true })
         );
         assert_eq!(parsed(&["run-shot"]), Ok(XtaskCommand::RunShot));
+        assert_eq!(
+            parsed(&["perf"]),
+            Ok(XtaskCommand::Perf {
+                only: None,
+                json: None
+            })
+        );
         assert_eq!(parsed(&["next-version"]), Ok(XtaskCommand::NextVersion));
         assert_eq!(parsed(&["release-notes"]), Ok(XtaskCommand::ReleaseNotes));
         assert_eq!(
@@ -392,6 +493,54 @@ mod tests {
         assert!(parsed(&["run-shot", "extra"]).is_err());
         assert!(parsed(&["next-version", "extra"]).is_err());
         assert!(parsed(&["release-notes", "extra"]).is_err());
+    }
+
+    #[test]
+    fn perf_takes_an_id_and_a_json_path_in_either_order() {
+        let both = XtaskCommand::Perf {
+            only: Some("logs_at".to_owned()),
+            json: Some("perf.json".to_owned()),
+        };
+
+        assert_eq!(
+            parsed(&["perf", "--only", "logs_at", "--json", "perf.json"]),
+            Ok(both)
+        );
+        assert_eq!(
+            parsed(&["perf", "--json", "perf.json", "--only", "logs_at"]),
+            Ok(XtaskCommand::Perf {
+                only: Some("logs_at".to_owned()),
+                json: Some("perf.json".to_owned())
+            })
+        );
+        assert_eq!(
+            parsed(&["perf", "--json", "perf.json"]),
+            Ok(XtaskCommand::Perf {
+                only: None,
+                json: Some("perf.json".to_owned())
+            })
+        );
+    }
+
+    #[test]
+    fn perf_rejects_what_it_does_not_know() {
+        assert!(parsed(&["perf", "--only"]).unwrap_err().contains("value"));
+        assert!(parsed(&["perf", "--json"]).unwrap_err().contains("--json"));
+        assert!(
+            parsed(&["perf", "logs_at"])
+                .unwrap_err()
+                .contains("logs_at")
+        );
+        assert!(
+            parsed(&["perf", "--bogus", "x"])
+                .unwrap_err()
+                .contains("--bogus")
+        );
+        assert!(
+            parsed(&["perf", "--only", "a", "--only", "b"])
+                .unwrap_err()
+                .contains("twice")
+        );
     }
 
     #[test]

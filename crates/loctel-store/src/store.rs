@@ -157,7 +157,11 @@ struct Inner {
 impl Store {
     pub fn new(config: StoreConfig, clock: Arc<dyn Clock>) -> Store {
         let mut inner = Inner {
-            logs: LogStore::new(config.log_chunk_max, config.log_chunk_age),
+            logs: LogStore::new(
+                config.log_chunk_max,
+                config.log_chunk_age,
+                config.log_block_rows,
+            ),
             spill_retry: saturating_nanos(config.spill_retry),
             ..Inner::default()
         };

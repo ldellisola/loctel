@@ -1782,3 +1782,316 @@ fn stats_count_logs_in_every_chunk() {
         assert_eq!((stats.logs, stats.logs_received), (35, 35), "{name}");
     }
 }
+
+// ---- blocks (Milestone 5, Task 6) ------------------------------------------------------
+
+/// Two stores whose chunks are `chunk` logs and, on disk, are written as blocks
+/// of `block` logs.
+fn block_envs(chunk: usize, block: usize) -> Vec<Env> {
+    envs(|config| StoreConfig {
+        log_chunk_max: chunk,
+        log_block_rows: block,
+        ..config
+    })
+}
+
+/// The spilling one of [`block_envs`].
+fn spilling_blocks(chunk: usize, block: usize) -> Env {
+    block_envs(chunk, block).remove(1)
+}
+
+#[test]
+fn the_block_size_is_a_config_field_with_a_default_of_1024() {
+    assert_eq!(StoreConfig::default().log_block_rows, 1_024);
+    // The test config makes blocks of 3, so that the chunks of 7 it seals are
+    // three blocks and the log tests of the crate meet them.
+    let config = StoreConfig::spilling_for_tests("/nonexistent".into());
+    assert_eq!((config.log_chunk_max, config.log_block_rows), (7, 3));
+}
+
+#[test]
+fn a_chunk_on_disk_is_a_run_of_blocks_and_one_in_memory_is_not() {
+    for env in block_envs(100, 16) {
+        let name = env.name;
+        let store = &env.store;
+        ingest(store, &generate(1_050, 201, MS, 0));
+
+        let info = store.log_chunks();
+        assert_eq!((info.sealed.len(), info.open), (10, 50), "{name}");
+        if env.spilling {
+            // 100 logs: six blocks of 16 and one of 4, ten times.
+            assert_eq!(info.blocks, 70, "{name}");
+        } else {
+            assert_eq!(info.blocks, 0, "{name}: nothing is on disk");
+        }
+        assert_eq!(
+            walk(store, &LogFilter::default(), 300).len(),
+            1_050,
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn logs_at_reads_a_few_blocks_and_no_chunk_even_when_chunks_overlap() {
+    // 40,000 logs, 1 ms apart and up to 20 ms out of order: each chunk of 1,000
+    // overlaps the next by a few tens of logs, and every block is 50 logs, so the
+    // blocks that overlap in time are two or three, and a position is in one
+    // group of them.
+    let env = spilling_blocks(1_000, 50);
+    let store = &env.store;
+    ingest(store, &generate(40_000, 211, MS, 20 * MS));
+    assert!(env.spilling && store.log_chunks().blocks >= 39 * 20);
+
+    let none = LogFilter::default();
+    let filtered = LogFilter {
+        levels: Some(LevelSet::from_groups(true, true, false, false)),
+        service: Some("orders-api".to_string()),
+        ..LogFilter::default()
+    };
+    // Without a filter, 50 rows are one block or two, and a few more where the
+    // chunks overlap. With one, a block is read only if it has a log that passes
+    // (the counts say so), and the 50 rows are as many blocks as it takes to find
+    // them: this filter keeps about one log in seventeen, so 50 rows are some 850
+    // logs, 17 blocks, and none of the blocks that have no match is read.
+    for (f, most) in [(&none, 4), (&filtered, 24)] {
+        let all = walk(store, f, 1_500);
+        assert!(all.len() > 1_000);
+        let mut rng = Rng::new(9);
+        for _ in 0..60 {
+            let offset = rng.below(all.len() as u64 - 50) as usize;
+            let before = store.log_chunks();
+            let rows = store.logs_at(f, offset as u64, 50);
+            let after = store.log_chunks();
+
+            assert_eq!(rows, all[offset..offset + 50], "offset {offset}");
+            assert_eq!(
+                after.decodes, before.decodes,
+                "offset {offset}: no chunk read"
+            );
+            let blocks = after.block_decodes - before.block_decodes;
+            assert!(blocks <= most, "offset {offset}: {blocks} blocks read");
+        }
+    }
+}
+
+#[test]
+fn logs_at_at_the_two_ends_and_past_the_end() {
+    let env = spilling_blocks(500, 40);
+    let store = &env.store;
+    let logs = generate(3_333, 221, MS, 30 * MS);
+    ingest(store, &logs);
+    let all = walk(store, &LogFilter::default(), 400);
+    assert_eq!(all.len(), 3_333);
+
+    let none = LogFilter::default();
+    assert_eq!(store.logs_at(&none, 0, 5), all[..5]);
+    assert_eq!(store.logs_at(&none, 3_328, 5), all[3_328..]);
+    assert_eq!(store.logs_at(&none, 3_330, 50), all[3_330..]);
+    assert_eq!(store.logs_at(&none, 3_333, 5), []);
+    assert_eq!(store.logs_at(&none, u64::MAX, 5), []);
+    assert_eq!(store.logs_at(&none, 7, 0), []);
+    // Rows that run on from one block, one chunk and one group to the next.
+    assert_eq!(store.logs_at(&none, 35, 100), all[35..135]);
+    assert_eq!(store.logs_at(&none, 400, 1_000), all[400..1_400]);
+    // A window and levels at once, and a filter nothing passes.
+    let f = LogFilter {
+        since_unix_nano: Some(BASE + 800 * MS),
+        until_unix_nano: Some(BASE + 2_100 * MS),
+        levels: Some(LevelSet::from_groups(true, true, true, false)),
+        ..LogFilter::default()
+    };
+    let windowed = walk(store, &f, 100);
+    assert!(windowed.len() > 500);
+    assert_eq!(store.logs_at(&f, 0, windowed.len() + 10), windowed);
+    assert_eq!(store.logs_at(&f, 100, 30), windowed[100..130]);
+    let nothing = LogFilter {
+        service: Some("ghost".to_string()),
+        ..LogFilter::default()
+    };
+    assert_eq!(store.logs_at(&nothing, 0, 5), []);
+}
+
+#[test]
+fn a_window_reads_only_the_blocks_its_edges_cut() {
+    let env = spilling_blocks(1_000, 50);
+    let store = &env.store;
+    ingest(store, &generate(20_000, 231, MS, 0));
+    let f = LogFilter {
+        since_unix_nano: Some(BASE + 6_123 * MS),
+        until_unix_nano: Some(BASE + 14_321 * MS),
+        ..LogFilter::default()
+    };
+    let all = walk(store, &f, 1_000);
+    assert_eq!(all.len(), 8_198);
+
+    let before = store.log_chunks();
+    for offset in [0, 1, 4_000, 8_150] {
+        assert_eq!(
+            store.logs_at(&f, offset, 40),
+            all[offset as usize..(offset as usize + 40).min(all.len())]
+        );
+    }
+    let after = store.log_chunks();
+    assert_eq!(after.decodes, before.decodes, "no chunk was read");
+    assert!(
+        after.block_decodes - before.block_decodes <= 4 * 4,
+        "{} blocks",
+        after.block_decodes - before.block_decodes
+    );
+}
+
+#[test]
+fn a_block_read_again_is_not_decoded_again() {
+    let env = spilling_blocks(1_000, 50);
+    let store = &env.store;
+    ingest(store, &generate(10_000, 241, MS, 20 * MS));
+    let none = LogFilter::default();
+
+    let first = store.logs_at(&none, 4_321, 50);
+    let read = store.log_chunks().block_decodes;
+    assert!(read >= 1);
+    let again = store.logs_at(&none, 4_321, 50);
+
+    assert_eq!(first, again);
+    assert_eq!(
+        store.log_chunks().block_decodes,
+        read,
+        "from the cache of blocks"
+    );
+    // Scrolling one row down is the same block.
+    store.logs_at(&none, 4_322, 50);
+    assert!(store.log_chunks().block_decodes <= read + 1);
+}
+
+#[test]
+fn a_chunk_that_lost_its_oldest_logs_is_read_whole_and_still_answers() {
+    // The cap trims the oldest chunk from the front: it is no longer the
+    // blocks that were written, and is read as one run of logs.
+    let dir = TempDir::new().unwrap();
+    let (capped, _clock) = store_with_config(StoreConfig {
+        max_log_records: 430,
+        log_chunk_max: 100,
+        log_block_rows: 16,
+        ..StoreConfig::spilling_for_tests(dir.path().to_path_buf())
+    });
+    let logs = generate(1_000, 251, MS, 10 * MS);
+    ingest(&capped, &logs);
+    assert_eq!(capped.stats().logs, 430);
+
+    let none = LogFilter::default();
+    let all = walk(&capped, &none, 50);
+    assert_eq!(all.len(), 430);
+    for offset in 0..430 {
+        let want = &all[offset..(offset + 7).min(430)];
+        assert_eq!(
+            capped.logs_at(&none, offset as u64, 7),
+            want,
+            "offset {offset}"
+        );
+    }
+    let f = LogFilter {
+        levels: Some(LevelSet::from_groups(false, true, true, true)),
+        ..LogFilter::default()
+    };
+    let filtered = walk(&capped, &f, 50);
+    for offset in [0, 1, 99, filtered.len() - 1] {
+        let want = &filtered[offset..(offset + 7).min(filtered.len())];
+        assert_eq!(
+            capped.logs_at(&f, offset as u64, 7),
+            want,
+            "filtered {offset}"
+        );
+    }
+}
+
+#[test]
+fn a_chunk_rewritten_without_a_trace_has_blocks_that_match_what_it_holds() {
+    use loctel_model::{SpanId, TraceId};
+    let env = spilling_blocks(100, 16);
+    let store = &env.store;
+    let trace = TraceId([7; 16]);
+    let mut logs = generate(1_000, 261, MS, 0);
+    for (i, log) in logs.iter_mut().enumerate() {
+        if i % 5 == 0 {
+            log.trace_id = Some(trace);
+            log.span_id = Some(SpanId([1 + (i % 7) as u8; 8]));
+        }
+    }
+    ingest(store, &logs);
+    let before = store.log_chunks();
+
+    let removed = store.remove_trace(trace);
+    assert_eq!(removed.logs, 200);
+
+    let after = store.log_chunks();
+    assert_eq!(after.sealed.len(), before.sealed.len());
+    assert_eq!(store.stats().logs, 800);
+    let none = LogFilter::default();
+    let all = walk(store, &none, 100);
+    assert_eq!(all.len(), 800);
+    for offset in [0usize, 1, 15, 16, 17, 399, 400, 793] {
+        let want = &all[offset..(offset + 9).min(800)];
+        assert_eq!(
+            store.logs_at(&none, offset as u64, 9),
+            want,
+            "offset {offset}"
+        );
+    }
+    // Every block's counts agree with the logs: counting a filter by position
+    // finds the last log of each service where a scan does.
+    for service in SERVICES {
+        let f = LogFilter {
+            service: Some(service.to_string()),
+            ..LogFilter::default()
+        };
+        let walked = walk(store, &f, 100);
+        let n = walked.len();
+        assert_eq!(store.log_count(&f), Some(n as u64), "{service}");
+        assert_eq!(
+            store.logs_at(&f, n as u64 - 1, 3),
+            walked[n - 1..],
+            "{service}"
+        );
+        assert_eq!(store.logs_at(&f, n as u64, 3), [], "{service}");
+    }
+}
+
+#[test]
+fn logs_at_over_blocks_equals_the_walk_for_random_indexed_filters() {
+    let mut rng = Rng::new(271);
+    for (chunk, block, jitter) in [
+        (100usize, 7usize, 0u64),
+        (250, 40, 15 * MS),
+        (64, 1, 5 * MS),
+    ] {
+        let env = spilling_blocks(chunk, block);
+        let store = &env.store;
+        let logs = generate(5_000, 272 + chunk as u64, MS, jitter);
+        ingest(store, &logs);
+        let (from, to) = (BASE, BASE + 5_000 * MS + jitter);
+        for _ in 0..40 {
+            let f = random_filter(&mut rng, from, to);
+            let all = walk(store, &f, 400);
+            let offsets = [
+                0,
+                1,
+                all.len() as u64 / 2,
+                all.len() as u64,
+                all.len() as u64 + 3,
+            ];
+            for offset in offsets
+                .into_iter()
+                .chain((0..4).map(|_| rng.below(all.len() as u64 + 2)))
+            {
+                let start = (offset as usize).min(all.len());
+                let want = &all[start..(start + 13).min(all.len())];
+                assert_eq!(
+                    store.logs_at(&f, offset, 13),
+                    want,
+                    "chunk {chunk} block {block} jitter {jitter}: {f:?} at {offset}"
+                );
+            }
+        }
+    }
+}

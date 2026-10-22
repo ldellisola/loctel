@@ -4543,6 +4543,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "loctel-perf"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "gpui-pre",
+ "libc",
+ "loctel-engine",
+ "loctel-ingest",
+ "loctel-meshgen",
+ "loctel-model",
+ "loctel-query",
+ "loctel-store",
+ "loctel-ui",
+ "opentelemetry-proto",
+ "prost",
+ "reqwest",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "loctel-query"
 version = "0.1.0"
 dependencies = [

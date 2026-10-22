@@ -1,0 +1,41 @@
+[package]
+name = "loctel-perf"
+description = "The performance budgets of loctel (design 10.3) as scenarios and a table: `cargo xtask perf` builds this in release, runs it and fails when a budget is missed (tests and CI only)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "loctel-perf"
+path = "src/main.rs"
+
+[dependencies]
+loctel-model.workspace = true
+loctel-store.workspace = true
+loctel-query.workspace = true
+loctel-ingest.workspace = true
+loctel-engine.workspace = true
+loctel-meshgen.workspace = true
+# `Waterfall::new` for the trace budgets, and the headless main window for the
+# first frame: the same harness the screenshot tests use, which is behind this
+# feature.
+loctel-ui = { workspace = true, features = ["screenshot"] }
+gpui-pre.workspace = true
+# The `ingest` budget sends OTLP over HTTP like an exporter does.
+opentelemetry-proto.workspace = true
+prost.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+# SIGTERM for the `loctel --headless` that `startup_headless` starts.
+libc.workspace = true
+
+[lints]
+workspace = true

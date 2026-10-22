@@ -1,7 +1,7 @@
 # 0044: Segment file format, the model's binary serde shapes and the run directory
 
 Date: 2026-10-22
-Status: accepted
+Status: accepted. The record of a chunk of logs is a run of blocks since decision 0050 (the rest of this file stands).
 
 Milestone 5, Task 1. The plan names the record format and the interfaces; this
 file records what it left open and the three places where the code had to adapt

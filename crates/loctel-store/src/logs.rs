@@ -13,7 +13,7 @@ use loctel_model::{LogRecord, Severity, SpanId, TraceId};
 use loctel_query::logql::LogQuery;
 
 pub(crate) use crate::log_chunks::LogStore;
-use crate::log_chunks::{ChunkRef, Cursor, Direction, Selector, ServiceIdx, Services};
+use crate::log_chunks::{ChunkRef, Cursor, Direction, Selector, ServiceIdx, Services, Unit};
 use crate::page::{Page, PageRequest};
 use crate::segment_set::SegmentSet;
 
@@ -430,11 +430,12 @@ impl LogStore {
     /// the list newest first (position 0 is the newest log that matches).
     ///
     /// For an indexed filter the position is found without reading logs the way
-    /// a walk would: the counts of the chunks say how many matching logs are
-    /// newer than a given id, and a search on that finds the chunk the position
-    /// is in (the ones that overlap it, when chunks overlap in time), and only
-    /// those are read. Any other filter walks the list from the newest log and
-    /// counts, which costs the logs before `offset`.
+    /// a walk would: what is known about each block of a chunk on disk (and about
+    /// each chunk that is not in blocks) says how many matching logs it has, so
+    /// the blocks before the position are counted and not read, and only the
+    /// block the position is in is (and the ones that overlap it in time: see
+    /// [`at_indexed`](Self::at_indexed)). Any other filter walks the list from the
+    /// newest log and counts, which costs the logs before `offset`.
     pub(crate) fn at(
         &self,
         filter: &LogFilter,
@@ -472,65 +473,118 @@ impl LogStore {
         }
 
         let selector = Selector::new(filter.levels, filter.service.as_deref(), &self.services);
+        self.at_indexed(&selector, lo, hi, offset, limit, segments)
+    }
+
+    /// [`at`](Self::at) for an indexed filter, from the units of the store (the
+    /// blocks of the chunks on disk, and the chunks that are not): the logs of
+    /// the units that overlap in time are one **group**, and every log of a group
+    /// is newer than every log of the groups after it, so the position is found by
+    /// counting groups from the newest, from what is known about each unit, and
+    /// reading only the group it falls in: a block or two, however many logs there
+    /// are. A unit that the window cuts through is read to be counted, which is
+    /// the one thing a window costs.
+    fn at_indexed(
+        &self,
+        selector: &Selector<'_>,
+        lo: Option<LogId>,
+        hi: Option<LogId>,
+        offset: u64,
+        limit: usize,
+        segments: Option<&SegmentSet>,
+    ) -> Vec<(LogId, LogRecord)> {
         if selector.is_empty() {
-            return rows;
+            return Vec::new();
         }
-        // Where to start walking, and how many matching logs to step over from
-        // there: `upper` is an id with at most `offset` matching logs at or above
-        // it, so the walk starts just below it.
-        let (upper, skip) = if offset == 0 {
-            (None, 0)
-        } else {
-            // The ids at which the answer to "how many matching logs are at or
-            // above this id" can change: the first id of each chunk, and the one
-            // after its last. Between two of them, no chunk starts or ends.
-            let mut bounds: Vec<LogId> = Vec::new();
-            for chunk in self.chunk_refs() {
-                let meta = chunk.meta();
-                bounds.push(meta.first);
-                bounds.push(successor(meta.last));
+        let mut units = self.units();
+        units.retain(|unit| {
+            lo.is_none_or(|lo| unit.last >= lo)
+                && hi.is_none_or(|hi| unit.first < hi)
+                && unit.count_matching(selector) > 0
+        });
+        units.sort_unstable_by_key(|unit| std::cmp::Reverse(unit.last));
+
+        // First the ids: which logs, newest first, are the ones asked for.
+        let mut skip = offset;
+        let mut chosen: Vec<LogId> = Vec::new();
+        let mut read = Vec::new();
+        let mut start = 0;
+        while start < units.len() && chosen.len() < limit {
+            let mut end = start + 1;
+            let mut oldest = units[start].first;
+            while end < units.len() && units[end].last >= oldest {
+                oldest = oldest.min(units[end].first);
+                end += 1;
             }
-            bounds.sort_unstable_by(|a, b| b.cmp(a));
-            bounds.dedup();
-            let at_or_above = |bound: LogId| {
-                let from = lo.map_or(bound, |lo| lo.max(bound));
-                self.count_in(&selector, Some(from), hi, segments)
-            };
-            // The first bound with more than `offset` matching logs at or above
-            // it, going from the newest down: the position is below the one
-            // before it. (At the oldest bound, all of them are at or above.)
-            let found = bounds.partition_point(|bound| at_or_above(*bound) <= offset);
-            match found {
-                0 => (None, offset),
-                found if found >= bounds.len() => return rows,
-                found => {
-                    let upper = bounds[found - 1];
-                    (Some(upper), offset - at_or_above(upper))
+            let group = &units[start..end];
+            start = end;
+            if skip > 0 {
+                let count: u64 = group
+                    .iter()
+                    .map(|unit| self.count_unit(unit, selector, lo, hi, segments))
+                    .sum();
+                if skip >= count {
+                    skip -= count;
+                    continue;
                 }
             }
-        };
-        let hi = match (upper, hi) {
-            (Some(upper), Some(hi)) => Some(upper.min(hi)),
-            (upper, hi) => upper.or(hi),
-        };
-        let mut walk = Cursor::new(self, segments, true, Direction::Newest, lo, hi, |chunk| {
-            prune.may_match(chunk)
-        });
-        let mut skip = skip;
-        while let Some((id, record)) = walk.next() {
-            if !selector.matches(record) {
-                continue;
+            let mut ids = Vec::new();
+            for unit in group {
+                self.for_each_unit_row(unit, lo, hi, segments, |id, record| {
+                    if selector.matches(record) {
+                        ids.push(id);
+                    }
+                });
+                read.push(*unit);
             }
-            if skip > 0 {
-                skip -= 1;
-                continue;
-            }
-            rows.push((id, record.clone()));
-            if rows.len() == limit {
-                break;
-            }
+            ids.sort_unstable_by_key(|id| std::cmp::Reverse(*id));
+            let from = usize::try_from(skip).map_or(ids.len(), |skip| skip.min(ids.len()));
+            skip = 0;
+            chosen.extend(ids.into_iter().skip(from).take(limit - chosen.len()));
         }
+        let (Some(newest), Some(oldest)) = (chosen.first().copied(), chosen.last().copied()) else {
+            return Vec::new();
+        };
+
+        // Then the logs: one pass over the units read, in the range of the ids,
+        // which clones only what is returned.
+        chosen.reverse();
+        let (from, to) = (Some(oldest), Some(successor(newest)));
+        let mut rows = Vec::with_capacity(chosen.len());
+        for unit in &read {
+            self.for_each_unit_row(unit, from, to, segments, |id, record| {
+                if chosen.binary_search(&id).is_ok() {
+                    rows.push((id, record.clone()));
+                }
+            });
+        }
+        rows.sort_unstable_by_key(|row| std::cmp::Reverse(row.0));
         rows
+    }
+
+    /// How many logs of `unit` in `[lo, hi)` `selector` passes: from what is
+    /// known about the unit when the window does not cut it, else by reading it.
+    fn count_unit(
+        &self,
+        unit: &Unit<'_>,
+        selector: &Selector<'_>,
+        lo: Option<LogId>,
+        hi: Option<LogId>,
+        segments: Option<&SegmentSet>,
+    ) -> u64 {
+        if lo.is_some_and(|lo| unit.last < lo) || hi.is_some_and(|hi| unit.first >= hi) {
+            return 0;
+        }
+        if lo.is_none_or(|lo| unit.first >= lo) && hi.is_none_or(|hi| unit.last < hi) {
+            return unit.count_matching(selector);
+        }
+        let mut count = 0;
+        self.for_each_unit_row(unit, lo, hi, segments, |_, record| {
+            if selector.matches(record) {
+                count += 1;
+            }
+        });
+        count
     }
 
     /// The logs in `[since, until)` that match `filter` (its own time fields
