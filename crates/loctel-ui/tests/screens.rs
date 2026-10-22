@@ -1,8 +1,11 @@
-//! The main window's shell (M3 plan, Task 4): the sidebar, the toolbar and the
-//! content area, rendered through GPUI Kit's `Root` in the headless harness.
-//! The references are `snapshots/shell_dark.png` and `shell_light.png`; build
+//! The main window's screens: the shell (M3 plan, Task 4: the sidebar, the
+//! toolbar and the content area) and the home screen with the service map above
+//! the trace table (Task 6), rendered through GPUI Kit's `Root` in the headless
+//! harness. The references are `snapshots/shell_*.png` and `home_*.png`; build
 //! them with `cargo xtask screenshots --update` and look at them before
 //! committing (`docs/areas/ui.md`).
+
+mod common;
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -18,10 +21,10 @@ use loctel_ui::app::{
 use loctel_ui::testing::{
     Driver, FixedBackend, RecordingBackdrop, assert_snapshot, render_window_png,
 };
+use loctel_ui::views::{EMPTY_HINT, EMPTY_TITLE};
 use loctel_ui::{StatusModel, Theme};
 
-/// The size the plan fixes for the window, in logical pixels.
-const WINDOW: (u32, u32) = (1440, 900);
+use common::{WINDOW, home_store};
 
 /// A store with nothing in it, on a clock that never moves.
 fn empty_store() -> Store {
@@ -317,4 +320,98 @@ fn glass_region_is_plain_data() {
         corner_radius: px(16.0),
     };
     assert_eq!(region.clone(), region);
+}
+
+// --- the home screen: the service map -----------------------------------------
+
+/// The window over the home data: the failing and the successful checkout and
+/// a health check of each service (`common::home_store`).
+fn home_window(theme: &Theme) -> image::RgbaImage {
+    let backend = Rc::new(FixedBackend::new(home_store()));
+    render_window_png(WINDOW, theme, move |window, cx| {
+        cx.new(|cx| MainWindow::new(backend, None, window, cx))
+    })
+}
+
+#[test]
+fn home_map_dark() {
+    let image = home_window(&Theme::dark());
+    assert_eq!(image.dimensions(), (2880, 1800));
+    assert_snapshot("home_dark", &image);
+}
+
+#[test]
+fn home_map_light() {
+    let image = home_window(&Theme::light());
+    assert_eq!(image.dimensions(), (2880, 1800));
+    assert_snapshot("home_light", &image);
+}
+
+#[test]
+fn home_map_has_every_node_of_the_checkout() {
+    let backend = Rc::new(FixedBackend::new(home_store()));
+    let driver = Driver::new(WINDOW, &Theme::dark(), move |window, cx| {
+        cx.new(|cx| MainWindow::new(backend, None, window, cx))
+    });
+    let home = driver.read_root(|main| main.home().clone());
+    let map = driver.read_root(|main| main.map().clone());
+    let ids: Vec<String> = driver.read(|cx| {
+        home.read(cx)
+            .data()
+            .map
+            .nodes
+            .iter()
+            .map(|node| node.id.clone())
+            .collect()
+    });
+    for id in [
+        "web-bff",
+        "orders-api",
+        "payments-api",
+        "inventory-api",
+        "rabbitmq",
+        "postgresql",
+        "redis",
+        "card-gateway",
+        "notifications-worker",
+    ] {
+        assert!(ids.iter().any(|node| node == id), "no node {id}: {ids:?}");
+        let centre = driver.read(|cx| map.read(cx).node_center(id, cx));
+        let centre = centre.unwrap_or_else(|| panic!("`{id}` is not on the screen"));
+        assert!(
+            centre.x > px(0.0) && centre.x < px(WINDOW.0 as f32),
+            "{id} at {centre:?}"
+        );
+        assert!(
+            centre.y > px(0.0) && centre.y < px(WINDOW.1 as f32),
+            "{id} at {centre:?}"
+        );
+    }
+}
+
+#[test]
+fn empty_map_message() {
+    // Nothing received yet: the map says what to do about it.
+    let backend = backend();
+    let driver = Driver::new(WINDOW, &Theme::dark(), move |window, cx| {
+        cx.new(|cx| MainWindow::new(backend, None, window, cx))
+    });
+    let map = driver.read_root(|main| main.map().clone());
+    assert_eq!(
+        driver.read(|cx| map.read(cx).empty_message(cx)),
+        Some((EMPTY_TITLE, EMPTY_HINT))
+    );
+    assert_eq!(EMPTY_TITLE, "Waiting for telemetry");
+    assert_eq!(
+        EMPTY_HINT,
+        "Point OTEL_EXPORTER_OTLP_ENDPOINT at http://localhost:4317"
+    );
+
+    // With traces in the store there is a map and no message.
+    let backend = Rc::new(FixedBackend::new(home_store()));
+    let driver = Driver::new(WINDOW, &Theme::dark(), move |window, cx| {
+        cx.new(|cx| MainWindow::new(backend, None, window, cx))
+    });
+    let map = driver.read_root(|main| main.map().clone());
+    assert_eq!(driver.read(|cx| map.read(cx).empty_message(cx)), None);
 }

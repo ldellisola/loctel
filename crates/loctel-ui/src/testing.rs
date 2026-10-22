@@ -13,8 +13,8 @@
 //! - [`render_window_png`] and [`Driver`] put a view in GPUI Kit's `Root` with
 //!   Kit initialised, the theme forced and motion reduced (the test platform
 //!   always reports the light appearance, and Kit's scrollbar fade reads real
-//!   time otherwise). [`Driver`] keeps the window, so a test can click, scroll,
-//!   type, move the clock and capture.
+//!   time otherwise). [`Driver`] keeps the window, so a test can click, drag,
+//!   scroll (with modifiers), pinch, type, move the clock and capture.
 //! - [`headless_app`] is the same app with no window, for the models that live
 //!   in entities and are tested by moving the clock (`tests/live.rs`).
 //! - [`FixedBackend`] is the [`UiBackend`](crate::app::UiBackend) of tests, and
@@ -30,9 +30,9 @@ use std::time::Duration;
 
 use gpui::{
     AnyView, App, AppContext as _, Context, Entity, HeadlessAppContext, IntoElement, Keystroke,
-    Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels,
-    PlatformInput, PlatformTextSystem, Point, Render, ScrollDelta, ScrollWheelEvent, Styled,
-    TouchPhase, Window, WindowHandle, div, px,
+    Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement,
+    PinchEvent, Pixels, PlatformInput, PlatformTextSystem, Point, Render, ScrollDelta,
+    ScrollWheelEvent, Styled, TouchPhase, Window, WindowHandle, div, px,
 };
 use gpui_kit::base::Root as KitRoot;
 use image::{Rgba, RgbaImage};
@@ -256,13 +256,65 @@ impl<V: Render + 'static> Driver<V> {
     /// Turns the wheel over `at` by `dy` pixels: positive shows what is below
     /// (later rows come into view), negative what is above. Then draws.
     pub fn scroll(&mut self, at: Point<Pixels>, dy: f32) {
+        self.scroll_with(at, dy, Modifiers::default());
+    }
+
+    /// [`scroll`](Driver::scroll) with `modifiers` held (`Modifiers::control()`
+    /// for a ctrl-scroll, `Modifiers::command()` for a cmd-scroll).
+    pub fn scroll_with(&mut self, at: Point<Pixels>, dy: f32, modifiers: Modifiers) {
         self.dispatch(PlatformInput::ScrollWheel(ScrollWheelEvent {
             position: at,
             // GPUI's wheel delta is the offset change: negative moves the
             // content up, which shows what is below.
             delta: ScrollDelta::Pixels(Point::new(px(0.0), px(-dy))),
-            modifiers: Modifiers::default(),
+            modifiers,
             touch_phase: TouchPhase::Moved,
+        }));
+        self.draw();
+    }
+
+    /// A trackpad pinch centred on `at`: `delta` is the zoom change as GPUI
+    /// reports it (0.1 is a 10% zoom in, -0.1 a zoom out). Then draws.
+    pub fn pinch(&mut self, at: Point<Pixels>, delta: f32) {
+        self.dispatch(PlatformInput::Pinch(PinchEvent {
+            position: at,
+            delta,
+            modifiers: Modifiers::default(),
+            phase: TouchPhase::Moved,
+        }));
+        self.draw();
+    }
+
+    /// Drags with the left button: presses at `from`, moves to `to` in a few
+    /// steps with the button held, and lets go there. Then draws.
+    pub fn drag(&mut self, from: Point<Pixels>, to: Point<Pixels>) {
+        const STEPS: u8 = 4;
+        let modifiers = Modifiers::default();
+        self.dispatch(PlatformInput::MouseMove(MouseMoveEvent {
+            position: from,
+            pressed_button: None,
+            modifiers,
+        }));
+        self.dispatch(PlatformInput::MouseDown(MouseDownEvent {
+            button: MouseButton::Left,
+            position: from,
+            modifiers,
+            click_count: 1,
+            first_mouse: false,
+        }));
+        for step in 1..=STEPS {
+            let along = f32::from(step) / f32::from(STEPS);
+            self.dispatch(PlatformInput::MouseMove(MouseMoveEvent {
+                position: from + (to - from) * along,
+                pressed_button: Some(MouseButton::Left),
+                modifiers,
+            }));
+        }
+        self.dispatch(PlatformInput::MouseUp(MouseUpEvent {
+            button: MouseButton::Left,
+            position: to,
+            modifiers,
+            click_count: 1,
         }));
         self.draw();
     }

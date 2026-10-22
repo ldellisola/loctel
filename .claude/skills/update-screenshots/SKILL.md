@@ -59,7 +59,8 @@ passes; a model with no window, like `HomeModel`, is tested there with
 `testing::headless_app()`). Build a `FixedBackend` over a store loaded from meshgen on a
 `ManualClock`, and render with `render_window_png((1440, 900), &Theme::dark(),
 |window, cx| ...)`, or keep the window with `Driver::new(...)` to click,
-scroll, type, `advance` the clock and `capture()`. Every screen gets a dark and
+drag, scroll (`scroll_with` for ctrl or cmd), pinch, type, `advance` the clock and
+`capture()`. Every screen gets a dark and
 a light reference at 1440 by 900 (`home_dark.png`, `home_light.png`). The
 harness forces the theme and reduces motion; do not try to get them from the
 window (the test platform is always light). Then generate the reference with

@@ -8,16 +8,19 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
-    Bounds, Context, InteractiveElement as _, IntoElement, ParentElement, Pixels, Render, Styled,
-    Subscription, Window, WindowAppearance, canvas, div, px,
+    AnyElement, AppContext as _, Bounds, Context, Div, Entity, InteractiveElement as _,
+    IntoElement, ParentElement, Pixels, Render, Styled, Subscription, Window, WindowAppearance,
+    canvas, div, px, relative,
 };
 use loctel_model::TraceId;
 
 use super::backend::UiBackend;
+use super::data::HomeModel;
 use super::kit_theme;
 use super::sidebar::sidebar_contents;
 use super::toolbar::toolbar_contents;
 use crate::theme::FONT_FAMILY;
+use crate::views::MapView;
 use crate::{StatusModel, Theme};
 
 /// The gap between the window's edge and the panels, and between the panels,
@@ -30,6 +33,10 @@ pub const SIDEBAR_WIDTH: f32 = 220.0;
 pub const PANEL_RADIUS: f32 = 16.0;
 /// The toolbar's height, in pixels.
 pub const TOOLBAR_HEIGHT: f32 = 48.0;
+/// The share of the content area's height the service map takes on the home
+/// screen; the trace table has the rest. At the default window size the map has
+/// 427 px, enough for the checkout's 416.
+const MAP_SHARE: f32 = 0.52;
 /// The window's default size, in logical pixels.
 pub const DEFAULT_SIZE: (f32, f32) = (1440.0, 900.0);
 /// The smallest the window can be made, in logical pixels.
@@ -76,6 +83,11 @@ pub struct MainWindow {
     backend: Rc<dyn UiBackend>,
     screen: Screen,
     status: StatusModel,
+    /// The home screen's live data, read every 500 ms for as long as the window
+    /// lives (the trace screen goes back to it, and the map keeps its place).
+    home: Entity<HomeModel>,
+    /// The service map of the home screen.
+    map: Entity<MapView>,
     regions: Rc<RegionReport>,
     /// Keeps the appearance observer alive.
     _appearance: Subscription,
@@ -84,7 +96,8 @@ pub struct MainWindow {
 impl MainWindow {
     /// The shell showing [`Screen::Home`], with the theme of `window`'s
     /// appearance applied (Kit's too), refreshing its status box from `backend`
-    /// every second. With a `backdrop`, the sidebar's and the toolbar's bounds
+    /// every second. It makes the home screen's [`HomeModel`] and the service
+    /// map over it. With a `backdrop`, the sidebar's and the toolbar's bounds
     /// are reported to it when they change.
     pub fn new(
         backend: Rc<dyn UiBackend>,
@@ -114,10 +127,14 @@ impl MainWindow {
         .detach();
 
         let status = StatusModel::from_status(&backend.status());
+        let home = cx.new(|cx| HomeModel::new(Rc::clone(&backend), cx));
+        let map = cx.new(|cx| MapView::new(home.clone(), cx));
         MainWindow {
             backend,
             screen: Screen::Home,
             status,
+            home,
+            map,
             regions: Rc::new(RegionReport::new(backdrop)),
             _appearance: appearance,
         }
@@ -139,6 +156,17 @@ impl MainWindow {
     /// What the status box shows.
     pub fn status(&self) -> &StatusModel {
         &self.status
+    }
+
+    /// The home screen's live data: the map and the table's rows, and the
+    /// settings that shape them.
+    pub fn home(&self) -> &Entity<HomeModel> {
+        &self.home
+    }
+
+    /// The service map of the home screen.
+    pub fn map(&self) -> &Entity<MapView> {
+        &self.map
     }
 
     /// Switches to the look of `appearance` (dark for `Dark` and
@@ -176,14 +204,18 @@ impl Render for MainWindow {
             .flex_none()
             .child(toolbar_contents(&theme, &self.screen));
 
-        let content = div()
-            .flex_1()
-            .w_full()
-            .min_h_0()
-            .rounded(px(PANEL_RADIUS))
-            .bg(theme.panel)
-            .border_1()
-            .border_color(theme.border);
+        let content = match &self.screen {
+            Screen::Home => home_screen(&theme, &self.map),
+            Screen::Trace(_) => div()
+                .flex_1()
+                .w_full()
+                .min_h_0()
+                .rounded(px(PANEL_RADIUS))
+                .bg(theme.panel)
+                .border_1()
+                .border_color(theme.border)
+                .into_any_element(),
+        };
 
         div()
             .id("main-window")
@@ -213,6 +245,55 @@ impl Render for MainWindow {
             // have their bounds.
             .child(report_canvas(Rc::clone(regions)))
     }
+}
+
+/// A floating content panel: rounded, with the panel fill and a hairline. The
+/// caller sets its size.
+fn panel(theme: &Theme) -> Div {
+    div()
+        .relative()
+        .rounded(px(PANEL_RADIUS))
+        .bg(theme.panel)
+        .border_1()
+        .border_color(theme.border)
+        .overflow_hidden()
+}
+
+/// The home screen: the service map on top and, under it, the panel of the
+/// trace table (a placeholder until the table view arrives, Task 7).
+fn home_screen(theme: &Theme, map: &Entity<MapView>) -> AnyElement {
+    div()
+        .flex_1()
+        .w_full()
+        .min_h_0()
+        .flex()
+        .flex_col()
+        .gap(px(INSET))
+        .child(
+            panel(theme)
+                .w_full()
+                .h(relative(MAP_SHARE))
+                .flex_none()
+                .child(map.clone()),
+        )
+        .child(
+            panel(theme)
+                .w_full()
+                .flex_1()
+                .min_h_0()
+                .child(table_placeholder(theme)),
+        )
+        .into_any_element()
+}
+
+/// What the table's panel holds until its view exists.
+fn table_placeholder(theme: &Theme) -> impl IntoElement {
+    div()
+        .size_full()
+        .p(px(16.0))
+        .text_size(px(13.0))
+        .text_color(theme.text_tertiary)
+        .child("Traces")
 }
 
 /// The two regions the shell reports.

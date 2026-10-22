@@ -20,6 +20,9 @@
 //!   [`HomeModel`](app::HomeModel), the home screen's live data (the map and
 //!   the table's rows, read every 500 ms behind a time range, two toggles and
 //!   the query bar).
+//! - [`views`] holds the views of the main window's screens: the live
+//!   [`MapView`](views::MapView) of the home screen so far (the trace table and
+//!   the trace view follow).
 //! - [`menu_text`] holds the exact strings for the status line, the discard
 //!   rules line and the rates, so the macOS menu and the view cannot drift apart.
 //! - [`Theme`] holds the colours; [`register_fonts`] the bundled typeface.
@@ -33,6 +36,7 @@ pub mod menu_text;
 pub mod model;
 mod status_view;
 mod theme;
+pub mod views;
 
 #[cfg(feature = "screenshot")]
 pub mod testing;

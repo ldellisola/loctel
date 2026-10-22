@@ -8,8 +8,9 @@ Status: Milestones 1 and 2 have one view, the **status view**, and the Linux
 window that shows it. Milestone 2 added the discard rules line to it and to the
 macOS menu; the rules screen is Milestone 4. The main window (Map & traces, Trace view) is Milestone 3
 (in progress: the pure models in `src/model`, the window's shell in
-`src/app` and the home screen's live data are done, the screens are not; see
-"Models", "The main window" and "Live data" below), the remaining screens and the popover Milestone 4. The macOS menu bar
+`src/app`, the home screen's live data and the service map view in `src/views`
+are done; the trace table and the trace view are not; see "Models", "The main
+window", "Live data" and "The service map" below), the remaining screens and the popover Milestone 4. The macOS menu bar
 item is in `loctel-macos`; it only borrows the strings from `menu_text`.
 
 GPUI comes as the weekly `gpui-pre` snapshot, `gpui-pre`, `gpui-pre-platform`
@@ -31,10 +32,11 @@ are what shows you what moved (the `upgrade-gpui` skill has the steps; decision
 | `menu_text::format_rate(f64)` | `412` is `412`, `1234` is `1.2k`, `0.4` is `0`. One decimal under ten thousand, none above, never `.0` (`1k`, `10k`, `1.3M`); NaN, infinity and negatives read `0` |
 | `model` | the pure models of the main window: `format`, `colors`, `trace_table`, `query_bar`, `map_layout`, `waterfall`, `inspector` (see "Models" below) |
 | `app` | the main window's shell (see "The main window"): `MainWindow`, `Screen`, `UiBackend`, `open_main_window`, `Backdrop`/`GlassRegion`, `kit_theme`; and the home screen's live data (see "Live data"): `HomeModel`, `HomeData`, `TimeRange` |
+| `views` | the views of the main window's screens (see "The service map"): `MapView`, with its `Camera` |
 | `Theme` | the colours below. `Theme::dark()`, `Theme::light()` and `Theme::for_appearance(WindowAppearance)`. It is also a GPUI global once `kit_theme::apply` has run |
 | `KitAssets` | GPUI Kit's bundled icons, to register with `Application::with_assets` |
 | `register_fonts(cx)`, `FONT_FAMILY` | the bundled typeface (below) |
-| `testing` (feature `screenshot`) | `render_png` and `assert_snapshot`; for the main window `render_window_png`, `Driver`, `headless_app`, `FixedBackend`, `RecordingBackdrop` (see "Screenshot tests") |
+| `testing` (feature `screenshot`) | `render_png` and `assert_snapshot`; for the main window `render_window_png`, `Driver` (click, drag, scroll, pinch, type), `headless_app`, `FixedBackend`, `RecordingBackdrop` (see "Screenshot tests") |
 
 The strings in `menu_text` are the contract: the macOS menu header and the
 status view's pill both use `status_line`, the macOS menu's rules header and the
@@ -449,6 +451,77 @@ newest traces get the first colours. `home.colors()` returns the shared
 waterfall, the logs) takes it from there, so a service has one colour
 everywhere for the run.
 
+## The service map
+
+`views::MapView` (`src/views/map_view.rs`, Milestone 3 Task 6) is the top half
+of the home screen: the live service map, drawn on one GPUI `canvas` from
+`HomeData.map` (the placed layout of "Map layout" above). Decision 0026 has the
+choices. `MainWindow` owns the `HomeModel` and the `MapView` over it
+(`main.home()`, `main.map()`), so they live as long as the window: going to a
+trace and back keeps the map's place.
+
+**Layout of the home screen.** The content area is a column of two floating
+panels (radius 16, `INSET` apart): the map panel, `MAP_SHARE` = 52% of the
+height (427 px in a 1440 by 900 window, enough for the checkout's 416), and
+under it the panel of the trace table (a placeholder until Task 7). The Trace
+screen keeps its one panel.
+
+**What is drawn** (all colours are `Theme` tokens):
+
+| Part | Look |
+|---|---|
+| node | a rounded quad, radius 14, 176 by 64, filled `panel`, 1 px `border`; the name in semibold 13 and the subtitle (11) cut with `…` to the room left of the dot |
+| dot | a circle in the service's palette colour for a service; a grey (`text_tertiary`) rounded square for a database, a queue or an external host |
+| failing node | a 2 px `error` border and an `error_text` subtitle |
+| not a service | a dashed border |
+| selected service | a 3 px `accent` ring just outside the node |
+| edge | a cubic bézier from the caller's right-edge middle to the callee's left-edge middle, 2 px, a filled arrowhead (10 long, 10 wide); `text_tertiary` at 55% normally, `error` when failing; failing edges are drawn last. An edge to the same node is not drawn |
+| edge label | the layout's `label` (`84 req/s`, only on edges out of the first column) in a small pill (`panel` fill, `border`) above the curve's midpoint, over the nodes |
+| empty map | `Waiting for telemetry` and `Point OTEL_EXPORTER_OTLP_ENDPOINT at http://localhost:4317` (`EMPTY_TITLE`, `EMPTY_HINT`), centred, instead of the canvas and the Fit button |
+
+Nodes are drawn after the edges, so a line that crosses a node goes behind it
+(an edge between columns that are not neighbours does this; it is the layout's
+doing, not a bug of the view).
+
+**The camera** (`Camera { zoom, pan_x, pan_y }`, pure and tested without a
+window): a picture point `(x, y)` shows at `(pan + (x, y) x zoom)` from the
+view's top left corner. A new map is *fitted*: `Camera::fit(view, picture)` is
+zoom 1 from the corner, or the scale that fits when the picture is bigger,
+never below `MIN_ZOOM` (0.5) and never above 1, and never centred, so the map
+does not move as services appear. A fitted map follows the window (`resize`).
+The first pan or zoom leaves the fit (`is_fitted()` is false) and the camera
+stays where the user put it, through resizes; the `Fit` button (top right) or
+`fit()` goes back. Zoom is `MIN_ZOOM` to `MAX_ZOOM` (0.5 to 2.0); text and
+strokes scale with it.
+
+**Input** (the view registers its handlers on the map's area; the Fit button
+occludes its own):
+
+| Input | Effect |
+|---|---|
+| drag (left button) | pans, once the pointer has moved 3 px; the pointer can start on a node |
+| ctrl or cmd plus the wheel | zooms by `e^(0.005 x pixels)` around the pointer (the wheel turned up zooms in); a wheel in lines counts 20 px a line |
+| a pinch | zooms by `1 + delta` around the pointer |
+| the wheel alone | pans (a two-finger drag on a trackpad) |
+| a press that moved under 3 px (a click) on a service | `HomeModel::select_service(Some(id))`: the query bar gets `{ resource.service.name = "..." }` and the table follows; the node gets the ring |
+| a click on the selected service, or on empty space | `select_service(None)`: clears the selection (a query the user typed is left alone) |
+| a click on a database, a queue or an external host | nothing: they have no filter |
+
+**For tests.** `node_center(id, cx)` (where a node is in the window, from the
+latest frame: the layout through the camera), `camera()`, `is_fitted()`,
+`view_bounds()`, `fit_button_center()` and `empty_message(cx)`.
+`tests/interactions.rs` clicks, drags, scrolls and pinches the real window;
+`tests/common/mod.rs` has `home_store()`, the data of the home screenshots (the
+failing and the successful checkout and a health check of each service, on a
+store clock moved 70 s after the traces so every trace is complete and
+`card-gateway` is a node).
+
+**References:** `home_dark.png` and `home_light.png` (the whole home screen),
+`home_payments_selected_dark.png` (after a click on `payments-api`), and the
+changed `shell_dark.png` and `shell_light.png` (the home screen of an empty
+store: the empty map message). The trace table is a placeholder in all of them
+until Task 7 regenerates them.
+
 ## Theme tokens
 
 The dark tokens come from the accepted mockups; a test pins them. The light
@@ -530,7 +603,7 @@ assert_snapshot("status_view_dark", &image);
 
 The main window's views need GPUI Kit, the forced theme and input, which a bare
 `render_png` does not give. `testing` has three more things for them, used by
-`tests/screens.rs` (and `interactions.rs` and `live.rs` later):
+`tests/screens.rs`, `interactions.rs` and `live.rs`:
 
 ```rust
 let image = render_window_png((1440, 900), &Theme::dark(), |window, cx| {
@@ -552,6 +625,9 @@ assert_snapshot("shell_dark", &image);   // 2880 by 1800, about 150 KB
   later content), `type_text("...")`, `key("enter")` (GPUI keystroke syntax:
   `escape`, `cmd-f`), `advance(Duration)` (moves the test clock, runs the
   timers and tasks due, so the 500 ms and 1 s refreshes fire when you say),
+  `drag(from, to)` (the left button, pressed, moved in four steps with it held,
+  released), `scroll_with(point, dy, modifiers)` (`Modifiers::control()` for a
+  ctrl-scroll), `pinch(point, delta)`,
   `resize((w, h))`, `draw()`, `capture()`, `update_root(|view, window, cx| ..)`,
   `read_root(|view| ..)` and `read(|app| ..)` (globals such as Kit's theme).
   Points are logical pixels from the top left of the window. Every input goes
@@ -623,6 +699,11 @@ The repo skill `run-and-screenshot` covers running with meshgen data.
   lights at (20, 20) over the sidebar's top strip, and how GPUI Kit's
   components look and behave on a Mac. Nothing of the main window has run on a
   Mac yet; the M3 check does it.
+- The service map's input on a Mac: that a pinch, a two-finger drag and a
+  cmd-scroll reach the map as `PinchEvent` and wheel events with the amounts
+  the code assumes (a trackpad sends pixel deltas, a mouse wheel lines), and
+  that the zoom feels right. The tests send the events GPUI documents; a real
+  trackpad has not.
 - Everything here was checked on Linux with software rendering. How the status
   view looks and behaves on macOS (fonts, scale, window chrome) is unverified
   until a milestone check on a real Mac; the macOS app opens no window in
