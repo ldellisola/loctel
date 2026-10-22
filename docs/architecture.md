@@ -491,11 +491,14 @@ details, the theme tokens and the workflow are in
   store's `TraceSummary` and the TraceQL parser: `format` (durations, clock
   times, rates, error shares, truncation), `colors` (`ServiceColors`, the
   first-seen order of services), `trace_table` (`TraceRow`, `rows`,
-  `failed_in_text`) and `query_bar` (`QueryState`, `validate`,
-  `service_filter`). It has no GPUI types, so `tests/model_format.rs` and
-  `tests/model_table.rs` pin every string with plain assertions. Later
-  milestone 3 tasks add the map layout, the waterfall and the inspector models
-  beside them. The formats are in [`areas/ui.md`](areas/ui.md) ("Models").
+  `failed_in_text`), `query_bar` (`QueryState`, `validate`,
+  `service_filter`) and `map_layout` (`layout`, `MapLayout`, `LayoutMemory`:
+  the service map's nodes and edges placed in columns and rows, stable as
+  services come and go). It has no GPUI types, so `tests/model_format.rs`,
+  `tests/model_table.rs` and `tests/model_map.rs` pin every string and every
+  place with plain assertions. Later milestone 3 tasks add the waterfall and
+  the inspector models beside them. The formats and the layout rules are in
+  [`areas/ui.md`](areas/ui.md) ("Models").
 - **Screenshot tests** (`crates/loctel-ui/tests/screenshots.rs`) render views
   through GPUI's headless renderer (software wgpu, no GPU or display) with a
   bundled font, and compare pixel for pixel with references in

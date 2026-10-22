@@ -26,7 +26,7 @@ moved.
 | `menu_text::status_line(&StatusModel)` | the one-line status: `Receiving · 412 spans/s · 1.2k logs/s`, `Paused` or `Port problem: otlp-http (address in use)`. A failed listener wins over paused, paused over receiving. The reason is `address in use` when the OS error contains "in use", otherwise the raw error cut to 40 characters. The first failed listener is the one named |
 | `menu_text::rules_line(&StatusModel)` | the discard rules in one line, the first that applies: `Discard rules file has an error`; `1 discard rule on · 1 has an error` (for more than one, `3 discard rules on · 2 have errors`); `No discard rules on`; `1 discard rule on · 31% dropped` or `3 discard rules on · 0% dropped`. The percentage is the share the rules dropped of what arrived since launch, rounded to a whole number; a value that is not a number reads `0%` and one outside 0 to 1 is cut to it. A file error wins over a rule error, a rule error over "no rules on" |
 | `menu_text::format_rate(f64)` | `412` is `412`, `1234` is `1.2k`, `0.4` is `0`. One decimal under ten thousand, none above, never `.0` (`1k`, `10k`, `1.3M`); NaN, infinity and negatives read `0` |
-| `model` | the pure models of the main window: `format`, `colors`, `trace_table`, `query_bar` (see "Models" below) |
+| `model` | the pure models of the main window: `format`, `colors`, `trace_table`, `query_bar`, `map_layout` (see "Models" below) |
 | `Theme` | the colours below. `Theme::dark()` and `Theme::light()` |
 | `register_fonts(cx)`, `FONT_FAMILY` | the bundled typeface (below) |
 | `testing` (feature `screenshot`) | `render_png` and `assert_snapshot` |
@@ -44,7 +44,7 @@ and the TraceQL parser, with no GPUI in them: a colour is an index into
 `Theme::service_palette`, and a view only lays out the strings and numbers it
 is given. The rules of the design (the formats, the failure display of §9.4,
 the colours of §9.3) are therefore tested with plain `assert_eq!`s, in
-`tests/model_format.rs` and `tests/model_table.rs`.
+`tests/model_format.rs`, `tests/model_table.rs` and `tests/model_map.rs`.
 
 ### Formats (`model::format`)
 
@@ -133,6 +133,89 @@ plan, review focus 4).
 into the bar when a service is clicked. `"` and `\` in the name are escaped
 with a backslash, the only escapes a name needs, so any name gives a valid
 query for exactly that service.
+
+### Map layout (`model::map_layout`)
+
+`layout(&ServiceMap, window_secs, &mut ServiceColors, &mut LayoutMemory)` places
+the service map (`Store::service_map`) for the view to paint. It returns a
+`MapLayout`: `nodes` (`PlacedNode`: `id`, `kind`, `color`, `x`, `y`, `w`, `h`,
+`subtitle`, `failing`), `edges` (`PlacedEdge`: `from`, `to`, `calls`, `errors`,
+`failing`, `label`) and the `width` and `height` of the picture (0 and 0 for a
+map with no node). Nodes come in the order of the picture, by column and then by
+row; edges in the order of the map, by `(from, to)`.
+
+**Where a node goes**, in this order:
+
+1. **Column.** The longest path from the sources, the nodes nobody calls. A
+   loop is broken by leaving out the edge that closes it: a depth-first search
+   (its own stack, so a chain of any length is fine) starts at the sources in
+   id order, then at every node it has not reached, also in id order, and an
+   edge into a node that is still being searched is a back edge. For `a` and `b`
+   calling each other the edge `b` to `a` is left out, so `a` is in column 0 and
+   `b` in column 1. Starting at the sources means the entry point of a mesh
+   stays in the first column even when a loop below it has an id that sorts
+   before it. A call of a node to itself says nothing about columns. The edges
+   left out are still drawn: only the columns ignore them.
+2. **Row.** Within a column, by the middle (barycentre) of the rows of the
+   nodes that call it, ties by id and then by kind. A node nobody calls has no
+   middle and goes first. For the checkout this gives `redis` below
+   `inventory-api`, `postgresql` between `orders-api` and `payments-api`,
+   `card-gateway` below `payments-api` and `notifications-worker` below
+   `rabbitmq`, so most lines run straight across.
+3. **Place.** `x = 40 + column x (176 + 96)` and `y = 32 + row x (64 + 32)`,
+   each node 176 by 64. The picture is 40 px (left and right) and 32 px (top
+   and bottom) bigger than the nodes: `width = 80 + columns x 176 + (columns -
+   1) x 96`, and the same for `height`.
+
+| Checkout | Column 0 | Column 1 | Column 2 | Column 3 |
+|---|---|---|---|---|
+| row 0 | `web-bff` | `orders-api` | `inventory-api` | `redis` |
+| row 1 | | | `payments-api` | `postgresql` |
+| row 2 | | | `rabbitmq` | `card-gateway` |
+| row 3 | | | | `notifications-worker` |
+
+**Staying put.** `LayoutMemory` holds the column and row of every node placed.
+One lives as long as the map is on screen, and a new one
+(`LayoutMemory::default()`) lays everything out again from nothing, for
+example when the set of nodes is another one because the time range changed.
+
+- A node in the memory keeps its column and row, even when a new call would
+  put it further right: a map that moves when a call appears is worse than a
+  line that runs sideways. The same map laid out from nothing can therefore
+  differ from the same map grown call by call.
+- A new node goes to the first free row of the column it computed. Rows are
+  never made room for, so a new service never moves another one, and a hole
+  left by a node that went away stays until a new node fills it.
+- A node missing from the map keeps its place in the memory for **3
+  refreshes in a row**: nobody takes its row, it is not drawn, and it returns
+  to the same place. The fourth refresh without it forgets it, and if it ever
+  comes back it is a new node. One refresh with the node in it starts the
+  count again.
+
+**What a node says.** Rates are `count / window_secs`, through the one rate rule
+of `format` (10 or more whole, below that one decimal); a `window_secs` that is
+not a positive number of seconds gives zero rates.
+
+| Kind | Subtitle | Counts |
+|---|---|---|
+| service | `84 req/s · 2.1% err` | its server and consumer spans, and how many errored |
+| database | `database · 140 q/s` | the calls it received |
+| queue | `queue · 9.0 msg/s` | the messages published to it |
+| external | `external · 3.0 req/s` | the calls it received |
+
+(Below 10 the rate has its decimal, so the plan's `queue · 9 msg/s` reads
+`queue · 9.0 msg/s`; decision 0022.) `failing` is `errors > 0`, for a node and
+for an edge. The `label` of an edge is its rate (`84 req/s`) when the edge
+leaves a node of the first column, and none otherwise. A service's `color` is
+its number in the session's `ServiceColors`, the one shared with the trace
+table (new services are numbered in the order of the picture); a database,
+queue or external host has none.
+
+**Ids.** An edge's ends are ids, and ids are unique within a kind only (a
+database can be named like a service). The store's edges carry names and no
+kind, so an end means the first node with that id, in the order service,
+database, queue, external. An edge to an id that is no node is left out of the
+layout, so every placed edge joins two placed nodes.
 
 ## Theme tokens
 

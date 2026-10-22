@@ -10,10 +10,13 @@
 //! - [`trace_table`]: the rows of the trace table, and the `Failed in` text.
 //! - [`query_bar`]: the state of the TraceQL bar, and the query a click on a
 //!   service writes into it.
+//! - [`map_layout`]: where each node of the service map goes, and what it
+//!   says, kept stable as services come and go.
 //!
 //! `docs/areas/ui.md` ("Models") has the formats table.
 
 pub mod colors;
 pub mod format;
+pub mod map_layout;
 pub mod query_bar;
 pub mod trace_table;
