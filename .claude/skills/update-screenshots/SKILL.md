@@ -66,6 +66,14 @@ harness forces the theme and reduces motion; do not try to get them from the
 window (the test platform is always light). Then generate the reference with
 step 2 and view it (step 3).
 
+A trace screen is opened with `common::open_trace(&mut driver, trace_id)` (it
+navigates and draws until the trace is read: the window makes the screen on its
+first frame and the store read comes back by the next), and found with the
+helpers of `tests/common/mod.rs` (`row_named`, `part_center`, `selected_details`).
+The references of the trace screen are `trace_dark.png`, `trace_light.png` and
+the `trace_*`, `huge_trace_middle_dark.png` and `long_values_*` ones; the 100,000
+span one takes a few seconds to build in a debug build.
+
 Keep the count reasonable: each render starts a fresh headless context (about
 two seconds for the first frame in a process, then about 100 ms).
 

@@ -8,9 +8,10 @@ Status: Milestones 1 and 2 have one view, the **status view**, and the Linux
 window that shows it. Milestone 2 added the discard rules line to it and to the
 macOS menu; the rules screen is Milestone 4. The main window (Map & traces, Trace view) is Milestone 3
 (in progress: the pure models in `src/model`, the window's shell in
-`src/app`, the home screen's live data, the service map view and the trace
-table in `src/views` are done; the trace view is not; see "Models", "The main
-window", "Live data", "The service map" and "The trace table" below), the remaining screens and the popover Milestone 4. The macOS menu bar
+`src/app`, the home screen's live data, the service map view, the trace
+table and the trace view in `src/views` are done; the window's lifecycle on
+Linux and macOS and the glass are not; see "Models", "The main window", "Live
+data", "The service map", "The trace table" and "The trace view" below), the remaining screens and the popover Milestone 4. The macOS menu bar
 item is in `loctel-macos`; it only borrows the strings from `menu_text`.
 
 GPUI comes as the weekly `gpui-pre` snapshot, `gpui-pre`, `gpui-pre-platform`
@@ -30,9 +31,9 @@ are what shows you what moved (the `upgrade-gpui` skill has the steps; decision
 | `menu_text::status_line(&StatusModel)` | the one-line status: `Receiving · 412 spans/s · 1.2k logs/s`, `Paused` or `Port problem: otlp-http (address in use)`. A failed listener wins over paused, paused over receiving. The reason is `address in use` when the OS error contains "in use", otherwise the raw error cut to 40 characters. The first failed listener is the one named |
 | `menu_text::rules_line(&StatusModel)` | the discard rules in one line, the first that applies: `Discard rules file has an error`; `1 discard rule on · 1 has an error` (for more than one, `3 discard rules on · 2 have errors`); `No discard rules on`; `1 discard rule on · 31% dropped` or `3 discard rules on · 0% dropped`. The percentage is the share the rules dropped of what arrived since launch, rounded to a whole number; a value that is not a number reads `0%` and one outside 0 to 1 is cut to it. A file error wins over a rule error, a rule error over "no rules on" |
 | `menu_text::format_rate(f64)` | `412` is `412`, `1234` is `1.2k`, `0.4` is `0`. One decimal under ten thousand, none above, never `.0` (`1k`, `10k`, `1.3M`); NaN, infinity and negatives read `0` |
-| `model` | the pure models of the main window: `format`, `colors`, `trace_table`, `query_bar`, `map_layout`, `waterfall`, `inspector` (see "Models" below) |
-| `app` | the main window's shell (see "The main window"): `MainWindow`, `Screen`, `UiBackend`, `open_main_window`, `Backdrop`/`GlassRegion`, `kit_theme`; and the home screen's live data (see "Live data"): `HomeModel`, `HomeData`, `TimeRange` |
-| `views` | the views of the main window's screens (see "The service map" and "The trace table"): `MapView`, with its `Camera`, and `TraceTableView` |
+| `model` | the pure models of the main window: `format`, `colors`, `trace_table`, `query_bar`, `map_layout`, `waterfall`, `inspector`, `trace_view` (see "Models" below) |
+| `app` | the main window's shell (see "The main window"): `MainWindow`, `Screen`, `UiBackend`, `open_main_window`, `Backdrop`/`GlassRegion`, `kit_theme`; the home screen's live data (see "Live data"): `HomeModel`, `HomeData`, `TimeRange`; and the open trace's (see "The trace view"): `TraceModel` |
+| `views` | the views of the main window's screens (see "The service map", "The trace table" and "The trace view"): `MapView`, with its `Camera`, `TraceTableView`, and `TraceView` with its `WaterfallView`, `InspectorView` and `SpanLogsView` |
 | `Theme` | the colours below. `Theme::dark()`, `Theme::light()` and `Theme::for_appearance(WindowAppearance)`. It is also a GPUI global once `kit_theme::apply` has run |
 | `KitAssets` | GPUI Kit's bundled icons, to register with `Application::with_assets` |
 | `register_fonts(cx)`, `FONT_FAMILY` | the bundled typeface (below) |
@@ -152,7 +153,10 @@ that it parses, so the hint never shows syntax the bar rejects.
 `service_filter(service)` is `{ resource.service.name = "<name>" }`, written
 into the bar when a service is clicked. `"` and `\` in the name are escaped
 with a backslash, the only escapes a name needs, so any name gives a valid
-query for exactly that service.
+query for exactly that service. `span_name_filter(name)` is `{ name = "<name>" }`,
+written when the trace view's `Traces through this span name` is pressed,
+escaped the same way (a test parses it for names with quotes, backslashes,
+newlines and 300 characters).
 
 ### Map layout (`model::map_layout`)
 
@@ -306,6 +310,39 @@ span's first `exception` event: type, message, stack trace), and `attributes` an
 long ones (design 9.2 and the Task 8 plan: over 200 characters, `… (show all)`).
 Decision 0023 has the reasons for the details above.
 
+Three more functions serve the inspector's cut values and buttons.
+`value_preview(value)` is the first `VALUE_PREVIEW_CHARS` (200) characters of a
+value longer than that, `None` for one that fits (it counts characters, never
+bytes). `exception_text(&ExceptionInfo)` is what the exception card's `Copy`
+copies: `Type: message`, a line break and the stack trace as sent (just the part
+there is when one is missing). `span_json(&TraceSnapshot, id)` is what `Copy span
+as JSON` copies: the model's `Span` serialised, pretty-printed.
+
+### Trace view text (`model::trace_view`)
+
+What the trace screen says outside the waterfall and the inspector, all plain
+strings pinned in `tests/model_trace_view.rs`:
+
+- `header(&TraceSnapshot, utc_offset)` is a `TraceHeader`: `root` (the root
+  span's name, or `(root not arrived)`) with `root_arrived`; `failure`;
+  `summary`, `1.84 s · 15 spans · 5 services · 14:32:07.412` (the trace's
+  length as the table's row has it, the span and service counts with a
+  thousands separator and singular for one, and the start in the clock of the
+  table); `trace_id` (whole, lower-case hex) and `complete`. `failure` is
+  `Failure::FailedIn(text)` (the root is erroring; `text` is the table's `Failed
+  in` text), `ErrorsInside` or `None`; `Failure::badge()` writes `Failed in
+  payments-api · POST card-gateway +1`, `Errors inside`, or nothing.
+  `completeness()` is `Receiving spans…` or `Complete`.
+- `find_status(text_is_empty, matches, current)` is the count next to the find
+  box: nothing for an empty box, `No matches`, `1 match` or `5 matches` while
+  the selected span is not one of them, `2 of 5` while it is the second.
+- `log_lines(&[LogRecord], utc_offset)` are the rows of a span's logs: `time`
+  (the log's time, or its observed time when it has none), `level` (`level_badge`:
+  `TRC`, `DBG`, `INF`, `WRN`, `ERR`, `FTL`, `LOG` for none), `severity` (what
+  colours the badge) and `message` (the body on one line: a line break becomes a
+  space). `logs_title(name)` is `Logs from POST /charges` and `logs_count(n)`
+  `4 logs`.
+
 ## The main window
 
 `loctel_ui::app` is the shell of the main window (Milestone 3, Task 4): the
@@ -335,7 +372,9 @@ screens of Tasks 6 to 8 go into its content area. Decision 0024 has the choices.
 
 **Screens.** `Screen` is `Home` or `Trace(TraceId)`; `MainWindow::screen()` and
 `navigate(screen, cx)` read and change it, and clicking the navigation entry
-shows `Home`.
+shows `Home`. The home screen's views live as long as the window; the trace
+screen is made when it is first drawn and dropped when the window leaves it
+(see "The trace view").
 
 **The backend.** Views never name the engine: they hold an `Rc<dyn UiBackend>`
 with `store() -> Store`, `status() -> EngineStatus`, `clear_all()` and
@@ -616,6 +655,133 @@ line under the focused input and the seven rows kept), `home_no_match_dark.png`
 no system fonts, so the references show it in Inter. How it looks on a Mac is
 unverified.
 
+## The trace view
+
+`views::TraceView` (`src/views/trace_view.rs`, Milestone 3 Task 8) is the content
+of `Screen::Trace(id)`: one trace as a waterfall, with an inspector for the
+selected span and that span's logs. Decision 0028 has the choices. The window
+makes it the first time it draws the screen (`main.trace_view()`; `navigate`
+takes no `Window`, and the view's inputs need one) with the home screen's
+service colours, so a service keeps its colour from the map and the table, and
+drops it when the window goes to another screen, which also stops its refresh.
+`TraceView::new(backend, trace_id, window, cx)` is the same view with colours of
+its own; `with_colors` is what the window calls.
+
+**The data** is `app::TraceModel` (`src/app/trace_data.rs`), an entity the
+four views observe, like `HomeModel` for the home screen: the trace's
+snapshot, the `Waterfall` built from it, the selection, the find text and
+matches, the selected span's details and logs. What the views do goes back into
+it (`select`, `toggle`, `collapse_all`, `expand_all`, `set_errors_path_only`,
+`set_find`, `find_next`), and everything else follows from the selection.
+`tests/live.rs` pins the rules below with a trace screen as a window's root
+view and a store whose clock the test moves.
+
+- **While the trace is arriving** (the store has not called it complete) it is
+  read every 500 ms, and every 2 s once it is. The wait for the next read starts
+  when the last one came back, with the interval the trace's new state calls for.
+  A new snapshot goes through `Waterfall::rebuild`, which keeps the folded spans,
+  the selection and the errors filter by span ID: rows arrive and the
+  `missing parent` row goes away when the root comes last, and nothing the user
+  did is lost (Milestone 3 plan, review focus 1; `open_trace_fills_in_as_spans_arrive`).
+- **Reads never block a frame.** The trace and a span's logs are read on GPUI's
+  background executor and applied on the foreground, where the pure models run
+  (the header, the waterfall, the details). A complete trace that has the spans
+  the store holds is only counted (`Store::with_trace_spans`, under the read
+  lock, no copy), so a 100,000-span trace is not copied every two seconds.
+  Building the waterfall of such a trace is on the foreground (about 0.3 s in a
+  debug build, a fraction of that in release); decision 0028 has why.
+- **Selection** starts at `initial_selection` (the failed-in span, else the root)
+  as soon as there is one, and the list scrolls to it
+  (`TraceModelEvent::Reveal`). After that it is the user's: a click on a row, or
+  Enter in the find box. The selected span's logs are read from the store
+  (`logs_for_span`) when the selection moves and with every refresh.
+- A trace the store does not have says `This trace is not in the store`
+  (`LoadState::Missing`) and keeps polling, so one that arrives shows up.
+
+**The screen**, top to bottom (the panel is the content width, 1188 px at the
+default window):
+
+| Part | What |
+|---|---|
+| header, first line | the `Traces` back button (Esc does the same), the root span's name (semibold, cut), the badge and, on the right, the indicator |
+| header, second line | `1.84 s · 15 spans · 5 services · 14:32:07.412`, the trace ID in the monospace face cut in the middle (`c7aad7a8…77315102`) and a `Copy ID` button |
+| badge | red `Failed in service · span name peer +N` with a `!` for a failed trace, amber `Errors inside` for one with errors under a fine root; none otherwise |
+| indicator | `Receiving spans…` in the accent colour while the trace may still get spans, `Complete` in green |
+| body | a GPUI Kit horizontal split: the waterfall over the logs on the left, the inspector on the right, 340 px at first and draggable from 280 to 520 (`INSPECTOR_WIDTH`, `INSPECTOR_MIN_WIDTH`, `INSPECTOR_MAX_WIDTH`); the waterfall's side is never under 380 |
+
+**The waterfall** (`WaterfallView`, `waterfall_view.rs`). A toolbar with the
+`Find` input (220 px), its count (`find_status`), the `Errors path only` toggle
+and, on the right, `Collapse all` (`Expand all` while anything is folded). Under
+it the ruler (the five labels of `Waterfall::ruler`, over the timeline's
+columns) and a `uniform_list` of 28 px rows with a Kit scrollbar. A row:
+
+| Part | What |
+|---|---|
+| label (42% of the width) | indent `6 + depth × 16`, a chevron (down open, right folded; a click folds or opens without selecting), a 3 px bar in the service's colour, a red `!` circle on an erroring span, the name (ellipsis), and in tertiary text the service, and for a call `→` the other side of it (`payments-api → card-gateway`) |
+| timeline | faint lines at a quarter, a half and three quarters; the span's bar at its offset and length in the service colour at 0.75 opacity (full for the selected and for an erroring span, which also has a red outline); a diamond (with a ring in the panel colour) at each `exception` event |
+| duration | 72 px, right-aligned |
+
+The selected row has the accent at 18%; a row that matches the find text has
+the amber `warn` colour at 12%. Clicking a row selects its span (the
+`missing parent` row folds instead: it is not a span). Nothing in a row can
+widen the layout: the label column is a share of the width and cuts its text.
+
+**Find.** Typing marks and counts the matches (`2 matches`, `No matches`) without
+moving the selection. Enter selects the next match below the selected row (the
+first one when the selection is not above one), wrapping round, and scrolls to
+it; the count then reads `2 of 5`: which match it is is the position of the
+selected row among the matches, so it stays right when the rows change.
+Matches are over the rows shown (`Waterfall::find`), and the placeholder is
+never one.
+
+**The inspector** (`InspectorView`, `inspector_view.rs`) is a Kit scroll area:
+the span's name (wrapped), its service with the colour dot, `Server · 1.59 s ·
+starts at +200 ms`, the status (a red `!` and red text for `Error`), the
+**exception card** (the type and the stack trace in the monospace face, the
+message, `Copy`), `Attributes` and `Resource` as key and value grids sorted by
+key (a value over 200 characters is cut and `… (show all)` shows it whole,
+`(show less)` cuts it again), and two buttons: `Traces through this span name`
+(the home screen with `{ name = "…" }` in the query bar, see `span_name_filter`)
+and `Copy span as JSON`. Another span starts with every value cut. Nothing
+selected: `Select a span to see its details`.
+
+**The span's logs** (`SpanLogsView`, `span_logs_view.rs`) are the 200 px under the
+waterfall: `Logs from POST /charges` and `4 logs`, then a row per log (the time
+in the monospace face, the level in a badge, the message on one line cut with an
+ellipsis and whole in a tooltip) in a `uniform_list`. `No logs from this span`
+when it has none, `Select a span to see its logs` with no selection.
+
+**Keys.** The screen takes the keyboard when it opens. **Esc** goes back (the home
+screen as it was left: its query, its toggles, its rows), except that with the
+find box focused and not empty it empties the box first. **⌘F** (or Ctrl-F)
+focuses the find box. A click on a row, a chevron or a button gives the keys
+back to the screen.
+
+**For tests.** `TraceView::model()`, `waterfall_view()`, `inspector_view()`,
+`logs_view()` and `split()` reach the parts; `bounds_of(TracePart, cx)` and
+`center_of` give where a part (`Back`, `CopyId`, `Find`, `ErrorsPath`,
+`ToggleAll`, `List`, `Inspector`, `TracesThrough`, `CopyJson`, `CopyException`,
+`ShowAll`) is in the window in the latest frame (`None` while it is not
+there); `WaterfallView::row_center(row)` and `chevron_center` find a row with
+the scroll taken into account, `scroll_to_row` and `top_row` scroll it, and
+`tests/common/mod.rs` has the helpers the tests share (`open_trace`: navigate
+and draw until the trace is read, `row_named`, `selected_details`,
+`part_center`).
+
+**References** (all 1440 by 900, at 2x): `trace_dark.png` and `trace_light.png`
+(the failing checkout opened: the failed-in span, `POST` to card-gateway at 236 ms,
+selected and in the inspector), `trace_charges_selected_dark.png` (a click on
+`POST /charges`: the exception card with the stack trace, four logs),
+`trace_errors_path_only_dark.png` (the toggle on: the seven erroring spans),
+`huge_trace_middle_dark.png` (`HugeTrace` of 100,000 spans scrolled to row
+50,000), `long_values_dark.png` (a 300-character name, a 20 KB attribute, a
+600-character token, a long exception) and `long_values_shown_whole_dark.png`
+(the same with the long value shown whole). The colours of the services are the
+session's, in the order the home screen first met them (the health checks of
+`home_store` come first, so `web-bff` is not blue). The monospace face is Inter
+on Linux, as in the table. How the screen looks and scrolls on a Mac is
+unverified.
+
 ## Theme tokens
 
 The dark tokens come from the accepted mockups; a test pins them. The light
@@ -793,6 +959,10 @@ The repo skill `run-and-screenshot` covers running with meshgen data.
   lights at (20, 20) over the sidebar's top strip, and how GPUI Kit's
   components look and behave on a Mac. Nothing of the main window has run on a
   Mac yet; the M3 check does it.
+- The trace view on a Mac: how a 100,000-span waterfall scrolls with a trackpad
+  and a fast flick (the test scrolls by an offset and by wheel events, the
+  M3 check does it by hand), the ⌘F shortcut (the tests send `cmd-f`), and the
+  look of GPUI Kit's scroll area, split handle and tooltips there.
 - The service map's input on a Mac: that a pinch, a two-finger drag and a
   cmd-scroll reach the map as `PinchEvent` and wheel events with the amounts
   the code assumes (a trackpad sends pixel deltas, a mouse wheel lines), and

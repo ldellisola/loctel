@@ -1,6 +1,9 @@
-//! The home screen's live data (M3 plan, Task 5): `HomeModel` keeps the map and
-//! the trace table's rows fresh from the store every 500 ms, behind the time
-//! range, the toggles and the query bar.
+//! The live data of the main window: the home screen's (M3 plan, Task 5:
+//! `HomeModel` keeps the map and the trace table's rows fresh from the store
+//! every 500 ms, behind the time range, the toggles and the query bar) and the
+//! trace screen's (Task 8: `TraceModel` keeps an open trace fresh, every 500 ms
+//! until it is complete and every 2 s after, and its waterfall fills in as
+//! spans arrive).
 //!
 //! The tests run the model in a headless app with no window. Its clock stands
 //! still until a test moves it, so the 500 ms refresh fires when the test says;
@@ -20,10 +23,15 @@ use loctel_ingest::{logs_from_request, spans_from_request};
 use loctel_meshgen::{Generated, Scenario, generate};
 use loctel_model::{AttrValue, Resource, Span, SpanId, SpanKind, StatusCode, TraceId};
 use loctel_store::{ManualClock, NodeKind, Store, StoreConfig};
-use loctel_ui::StatusModel;
-use loctel_ui::app::{HOME_MAX_ROWS, HomeData, HomeModel, TimeRange};
+use loctel_ui::app::{
+    DONE_REFRESH, HOME_MAX_ROWS, HomeData, HomeModel, LoadState, OPEN_REFRESH, TimeRange,
+    TraceModel,
+};
 use loctel_ui::model::query_bar::{QueryState, service_filter};
-use loctel_ui::testing::{FixedBackend, headless_app, listening_status};
+use loctel_ui::model::waterfall::MISSING_PARENT;
+use loctel_ui::testing::{Driver, FixedBackend, headless_app, listening_status};
+use loctel_ui::views::TraceView;
+use loctel_ui::{StatusModel, Theme};
 
 /// 2027-01-15T08:00:00Z. Where the failing checkout starts.
 const BASE: u64 = 1_800_000_000_000_000_000;
@@ -948,4 +956,367 @@ fn loaded_says_the_first_read_is_in() {
     cx.run_until_parked();
     assert!(cx.read_entity(&home, |home, _| home.loaded()), "read");
     assert!(cx.read_entity(&home, |home, _| home.data().rows.is_empty()));
+}
+
+// --- the open trace (Task 8) ------------------------------------------------------------
+
+/// The trace screen on its own, as a window's root view. The views read the
+/// theme from a global that the main window sets up; here the test does.
+fn trace_screen(
+    backend: Rc<FixedBackend>,
+    id: loctel_model::TraceId,
+    window: &mut gpui::Window,
+    cx: &mut gpui::App,
+) -> Entity<TraceView> {
+    loctel_ui::app::kit_theme::apply(&Theme::dark(), cx);
+    cx.new(|cx| TraceView::new(backend, id, window, cx))
+}
+
+/// A trace screen over a store the test fills batch by batch, in a window
+/// whose clock the test moves.
+struct OpenTrace {
+    driver: Driver<TraceView>,
+    store: Store,
+    clock: Arc<ManualClock>,
+    generated: Generated,
+    /// The batches ingested so far.
+    sent: usize,
+}
+
+impl OpenTrace {
+    /// A store holding the first `batches` of `scenario` (its clock reads
+    /// `BASE`), and the trace screen of the scenario's trace over it.
+    fn new(scenario: &Scenario, batches: usize) -> OpenTrace {
+        let clock = Arc::new(ManualClock::new(BASE));
+        let store = Store::new(StoreConfig::default(), clock.clone());
+        let generated = generate(scenario, SEED, BASE);
+        let id = generated.trace_ids[0];
+        let mut open = OpenTrace {
+            // Made over an empty store, then filled: see below.
+            driver: Driver::new((1440, 900), &Theme::dark(), {
+                let backend = Rc::new(FixedBackend::new(store.clone()));
+                move |window, cx| trace_screen(backend, id, window, cx)
+            }),
+            store,
+            clock,
+            generated,
+            sent: 0,
+        };
+        // The screen was opened over an empty store (its first read found the
+        // trace missing); the batches arrive and the next refresh has them.
+        open.send(batches);
+        open.advance(OPEN_REFRESH);
+        open
+    }
+
+    /// Ingests the next `n` batches.
+    fn send(&mut self, n: usize) {
+        for batch in &self.generated.batches[self.sent..self.sent + n] {
+            let request = batch.traces.clone().expect("a batch of spans");
+            self.store.ingest_spans(spans_from_request(request).items);
+        }
+        self.sent += n;
+    }
+
+    fn model(&self) -> Entity<TraceModel> {
+        self.driver.read_root(|view| view.model().clone())
+    }
+
+    /// Moves the window's clock (the timers of the model) by `by`.
+    fn advance(&mut self, by: Duration) {
+        self.driver.advance(by);
+    }
+
+    /// The names of the rows, top to bottom, the placeholder included.
+    fn rows(&self) -> Vec<(u16, String)> {
+        let model = self.model();
+        self.driver.read(|cx| {
+            model
+                .read(cx)
+                .waterfall()
+                .map(|waterfall| {
+                    waterfall
+                        .rows()
+                        .iter()
+                        .map(|row| (row.depth, row.name.clone()))
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
+    }
+
+    /// How many rows are spans (not the `missing parent` placeholder).
+    fn real_rows(&self) -> usize {
+        self.rows()
+            .iter()
+            .filter(|(_, name)| name != MISSING_PARENT)
+            .count()
+    }
+
+    fn has_placeholder(&self) -> bool {
+        self.rows().iter().any(|(_, name)| name == MISSING_PARENT)
+    }
+
+    fn read<R>(&self, f: impl FnOnce(&TraceModel) -> R) -> R {
+        let model = self.model();
+        self.driver.read(|cx| f(model.read(cx)))
+    }
+
+    /// The offset text of the selected span, which names it.
+    fn selected_span(&self) -> Option<(String, String)> {
+        self.read(|model| {
+            model
+                .details()
+                .map(|details| (details.name.clone(), details.offset.clone()))
+        })
+    }
+}
+
+#[test]
+fn open_trace_fills_in_as_spans_arrive() {
+    // LateOutOfOrder: the ten spans at depth 3 and deeper first, the three
+    // middle ones after 50 ms, the root last.
+    let mut open = OpenTrace::new(&Scenario::LateOutOfOrder, 1);
+    assert_eq!(open.generated.batches.len(), 3);
+    open.driver.draw();
+    open.driver.draw();
+
+    // The first batch: ten spans, hanging under the placeholder.
+    assert_eq!(open.read(|model| model.state()), LoadState::Loaded);
+    assert_eq!(open.real_rows(), 10);
+    assert!(
+        open.has_placeholder(),
+        "the parent of these is not here yet"
+    );
+    assert_eq!(open.rows()[0].1, MISSING_PARENT);
+    assert!(!open.read(|model| model.complete()));
+
+    // The user selects a span they are looking at.
+    let id = open.read(|model| {
+        let waterfall = model.waterfall().expect("loaded");
+        waterfall
+            .rows()
+            .iter()
+            .find(|row| row.name == "GET /stock/{sku}")
+            .expect("an inventory span")
+            .span_id
+    });
+    open.driver.update_root(|view, _, cx| {
+        view.model().update(cx, |model, cx| model.select(id, cx));
+    });
+    open.driver.draw();
+    let chosen = open.selected_span().expect("selected");
+    assert_eq!(chosen.0, "GET /stock/{sku}");
+
+    // 50 ms later the three middle spans arrive. The next refresh (500 ms)
+    // has 13 rows, the placeholder is still there and the selection has not
+    // moved.
+    open.clock.advance(Duration::from_millis(50));
+    open.send(1);
+    open.advance(OPEN_REFRESH);
+    assert_eq!(open.real_rows(), 13, "10 then 13");
+    assert!(open.has_placeholder(), "the root has not come");
+    assert_eq!(open.read(|model| model.selected()), Some(id), "kept");
+    assert_eq!(
+        open.selected_span().map(|(name, _)| name).as_deref(),
+        Some("GET /stock/{sku}")
+    );
+
+    // The root, last: 14 rows, no placeholder, and the tree is rooted at it.
+    open.clock.advance(Duration::from_millis(50));
+    open.send(1);
+    open.advance(OPEN_REFRESH);
+    assert_eq!(open.real_rows(), 14, "13 then 14");
+    assert!(!open.has_placeholder(), "the root arrived");
+    assert_eq!(open.rows()[0], (0, "POST /api/checkout".to_owned()));
+    assert_eq!(
+        open.rows().iter().filter(|(depth, _)| *depth == 0).count(),
+        1,
+        "one root"
+    );
+    assert_eq!(
+        open.read(|model| model.selected()),
+        Some(id),
+        "kept throughout"
+    );
+    let header = open.read(|model| model.header().cloned()).expect("loaded");
+    assert_eq!(header.root, "POST /api/checkout");
+    assert!(header.root_arrived);
+    // The span's offset is now counted from the root, which started first.
+    assert_eq!(
+        open.selected_span().expect("selected").0,
+        "GET /stock/{sku}"
+    );
+    assert_ne!(
+        open.selected_span().expect("selected").1,
+        chosen.1,
+        "the trace's start moved earlier with the root, and the offset with it"
+    );
+}
+
+#[test]
+fn the_selection_made_before_the_root_survives_a_folded_ancestor() {
+    // What the user folded before the rest arrived stays folded after.
+    let mut open = OpenTrace::new(&Scenario::LateOutOfOrder, 1);
+    open.driver.draw();
+    open.driver.draw();
+    let placeholder = open.read(|model| {
+        model
+            .waterfall()
+            .expect("loaded")
+            .rows()
+            .iter()
+            .find(|row| row.is_placeholder())
+            .expect("a placeholder")
+            .span_id
+    });
+    open.driver.update_root(|view, _, cx| {
+        view.model()
+            .update(cx, |model, cx| model.toggle(placeholder, cx));
+    });
+    open.driver.draw();
+    assert_eq!(
+        open.rows().len(),
+        1,
+        "everything folded into the placeholder"
+    );
+
+    open.clock.advance(Duration::from_millis(50));
+    open.send(2);
+    open.advance(OPEN_REFRESH);
+    // The root arrived: the placeholder is gone, and its folding with it.
+    assert!(!open.has_placeholder());
+    assert_eq!(open.real_rows(), 14);
+}
+
+#[test]
+fn the_header_says_receiving_until_the_trace_is_complete() {
+    let mut open = OpenTrace::new(&Scenario::LateOutOfOrder, 1);
+    open.driver.draw();
+    open.driver.draw();
+    assert!(!open.read(|model| model.header().unwrap().complete));
+    assert_eq!(
+        open.read(|model| model.header().unwrap().completeness()),
+        "Receiving spans\u{2026}"
+    );
+
+    // Quiet for the store's period: the next refresh calls it complete.
+    open.clock.advance(Duration::from_secs(60));
+    open.advance(OPEN_REFRESH);
+    assert!(open.read(|model| model.complete()));
+    assert_eq!(
+        open.read(|model| model.header().unwrap().completeness()),
+        "Complete"
+    );
+}
+
+#[test]
+fn an_open_trace_is_read_every_500_ms_and_a_complete_one_every_2_s() {
+    assert_eq!(OPEN_REFRESH, Duration::from_millis(500));
+    assert_eq!(DONE_REFRESH, Duration::from_secs(2));
+
+    let mut open = OpenTrace::new(&Scenario::LateOutOfOrder, 1);
+    open.driver.draw();
+    open.driver.draw();
+    assert_eq!(open.read(|model| model.refresh_interval()), OPEN_REFRESH);
+
+    // While arriving, a new span is picked up within 500 ms.
+    open.send(1);
+    open.advance(Duration::from_millis(400));
+    assert_eq!(open.real_rows(), 10, "not yet");
+    open.advance(Duration::from_millis(150));
+    assert_eq!(open.real_rows(), 13, "after 550 ms");
+
+    // Complete: from then on a read takes 2 s.
+    open.clock.advance(Duration::from_secs(60));
+    open.advance(OPEN_REFRESH);
+    assert!(open.read(|model| model.complete()));
+    assert_eq!(open.read(|model| model.refresh_interval()), DONE_REFRESH);
+
+    open.send(1);
+    open.advance(Duration::from_millis(1_000));
+    assert_eq!(
+        open.real_rows(),
+        13,
+        "a complete trace is not read every 500 ms"
+    );
+    open.advance(Duration::from_millis(1_500));
+    assert_eq!(open.real_rows(), 14, "but within 2 s");
+}
+
+#[test]
+fn a_trace_the_store_does_not_have_is_missing_and_one_that_arrives_loads() {
+    let clock = Arc::new(ManualClock::new(BASE));
+    let store = Store::new(StoreConfig::default(), clock.clone());
+    let generated = generate(&Scenario::CheckoutSuccess, SEED, BASE);
+    let id = generated.trace_ids[0];
+    let backend = Rc::new(FixedBackend::new(store.clone()));
+    let mut driver = Driver::new((1440, 900), &Theme::dark(), move |window, cx| {
+        trace_screen(backend, id, window, cx)
+    });
+    driver.draw();
+    driver.draw();
+    let model = driver.read_root(|view| view.model().clone());
+    assert_eq!(
+        driver.read(|cx| model.read(cx).state()),
+        LoadState::Missing,
+        "nothing received yet"
+    );
+
+    // The trace turns up: the next refresh has it.
+    for batch in &generated.batches {
+        store.ingest_spans(spans_from_request(batch.traces.clone().unwrap()).items);
+    }
+    driver.advance(OPEN_REFRESH);
+    assert_eq!(driver.read(|cx| model.read(cx).state()), LoadState::Loaded);
+    assert_eq!(
+        driver.read(|cx| model.read(cx).waterfall().unwrap().rows().len()),
+        14
+    );
+}
+
+#[test]
+fn logs_that_arrive_for_the_selected_span_show_up() {
+    let clock = Arc::new(ManualClock::new(BASE));
+    let store = Store::new(StoreConfig::default(), clock.clone());
+    let generated = generate(&Scenario::CheckoutFailure, SEED, BASE);
+    let id = generated.trace_ids[0];
+    // The spans first, the logs a moment later.
+    for batch in &generated.batches {
+        store.ingest_spans(spans_from_request(batch.traces.clone().unwrap()).items);
+    }
+    let backend = Rc::new(FixedBackend::new(store.clone()));
+    let mut driver = Driver::new((1440, 900), &Theme::dark(), move |window, cx| {
+        trace_screen(backend, id, window, cx)
+    });
+    driver.draw();
+    driver.draw();
+    let model = driver.read_root(|view| view.model().clone());
+    // Select `POST /charges`, which logs four lines.
+    let charges = driver.read(|cx| {
+        model
+            .read(cx)
+            .waterfall()
+            .unwrap()
+            .rows()
+            .iter()
+            .find(|row| row.name == "POST /charges")
+            .unwrap()
+            .span_id
+    });
+    driver.update_root(|view, _, cx| {
+        view.model()
+            .update(cx, |model, cx| model.select(charges, cx));
+    });
+    driver.draw();
+    assert!(driver.read(|cx| model.read(cx).logs().is_empty()));
+    assert!(driver.read(|cx| model.read(cx).logs_loaded()));
+
+    for batch in &generated.batches {
+        if let Some(request) = &batch.logs {
+            store.ingest_logs(logs_from_request(request.clone()).items);
+        }
+    }
+    driver.advance(OPEN_REFRESH);
+    assert_eq!(driver.read(|cx| model.read(cx).logs().len()), 4);
 }

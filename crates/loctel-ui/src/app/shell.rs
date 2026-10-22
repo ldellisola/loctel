@@ -20,7 +20,7 @@ use super::kit_theme;
 use super::sidebar::sidebar_contents;
 use super::toolbar::toolbar_contents;
 use crate::theme::FONT_FAMILY;
-use crate::views::{MapView, TraceTableEvent, TraceTableView};
+use crate::views::{MapView, TraceTableEvent, TraceTableView, TraceView, TraceViewEvent};
 use crate::{StatusModel, Theme};
 
 /// The gap between the window's edge and the panels, and between the panels,
@@ -82,6 +82,14 @@ pub trait Backdrop: 'static {
     fn set_regions(&self, regions: &[GlassRegion]);
 }
 
+/// The trace screen that is open: which trace, its view and what keeps the
+/// view's events heard.
+struct OpenTrace {
+    id: TraceId,
+    view: Entity<TraceView>,
+    _events: Subscription,
+}
+
 /// The root view of the main window.
 ///
 /// Create it inside the window, as [`open_main_window`](super::open_main_window)
@@ -98,6 +106,10 @@ pub struct MainWindow {
     map: Entity<MapView>,
     /// The trace table of the home screen.
     table: Entity<TraceTableView>,
+    /// The trace screen, while [`Screen::Trace`] is showing: made when the
+    /// screen is first drawn and dropped when the window goes to another screen
+    /// (its refresh stops with it).
+    trace: Option<OpenTrace>,
     regions: Rc<RegionReport>,
     /// Keeps the appearance observer alive.
     _appearance: Subscription,
@@ -154,6 +166,7 @@ impl MainWindow {
             home,
             map,
             table,
+            trace: None,
             regions: Rc::new(RegionReport::new(backdrop)),
             _appearance: appearance,
             _open: open,
@@ -165,12 +178,53 @@ impl MainWindow {
         &self.screen
     }
 
-    /// Shows `screen`.
+    /// Shows `screen`. Leaving a trace closes its screen: the next visit starts
+    /// from the trace's initial selection again.
     pub fn navigate(&mut self, screen: Screen, cx: &mut Context<Self>) {
         if self.screen != screen {
             self.screen = screen;
+            if self
+                .trace
+                .as_ref()
+                .is_some_and(|open| self.screen != Screen::Trace(open.id))
+            {
+                self.trace = None;
+            }
             cx.notify();
         }
+    }
+
+    /// The trace screen, while [`Screen::Trace`] is showing and has been drawn
+    /// once (the screen is made when it is first drawn).
+    pub fn trace_view(&self) -> Option<&Entity<TraceView>> {
+        self.trace.as_ref().map(|open| &open.view)
+    }
+
+    /// Makes the trace screen of trace `id` if it is not open yet. It shares the
+    /// home screen's service colours, so a service keeps its colour; its `Back`
+    /// returns to the home screen, and `Traces through this span name` puts its
+    /// query in the home screen's bar and goes there.
+    fn open_trace(&mut self, id: TraceId, window: &mut Window, cx: &mut Context<Self>) {
+        if self.trace.as_ref().is_some_and(|open| open.id == id) {
+            return;
+        }
+        let backend = Rc::clone(&self.backend);
+        let colors = self.home.read(cx).colors();
+        let view = cx.new(|cx| TraceView::with_colors(backend, id, colors, window, cx));
+        let events = cx.subscribe(&view, |main, _view, event: &TraceViewEvent, cx| {
+            match event {
+                TraceViewEvent::Back => {}
+                TraceViewEvent::Query(text) => {
+                    main.home.update(cx, |home, cx| home.set_query(text, cx));
+                }
+            }
+            main.navigate(Screen::Home, cx);
+        });
+        self.trace = Some(OpenTrace {
+            id,
+            view,
+            _events: events,
+        });
     }
 
     /// What the status box shows.
@@ -213,8 +267,11 @@ impl MainWindow {
 }
 
 impl Render for MainWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = *cx.global::<Theme>();
+        if let Screen::Trace(id) = self.screen {
+            self.open_trace(id, window, cx);
+        }
         let regions = &self.regions;
 
         let sidebar = glass_frame(&theme, Region::Sidebar, regions)
@@ -231,15 +288,13 @@ impl Render for MainWindow {
 
         let content = match &self.screen {
             Screen::Home => home_screen(&theme, &self.map, &self.table),
-            Screen::Trace(_) => div()
-                .flex_1()
-                .w_full()
-                .min_h_0()
-                .rounded(px(PANEL_RADIUS))
-                .bg(theme.panel)
-                .border_1()
-                .border_color(theme.border)
-                .into_any_element(),
+            Screen::Trace(_) => {
+                let panel = panel(&theme).flex_1().w_full().min_h_0();
+                match &self.trace {
+                    Some(open) => panel.child(open.view.clone()).into_any_element(),
+                    None => panel.into_any_element(),
+                }
+            }
         };
 
         div()

@@ -32,6 +32,8 @@ loctel-store.workspace = true
 loctel-query.workspace = true
 loctel-model.workspace = true
 chrono = { workspace = true, features = ["clock"] }
+# `Copy span as JSON` (the inspector) serialises the span the way MCP does.
+serde_json.workspace = true
 anyhow.workspace = true
 image.workspace = true
 # The software-capable text system the screenshot harness uses (Linux).

@@ -1,9 +1,11 @@
 //! The main window's screens: the shell (M3 plan, Task 4: the sidebar, the
-//! toolbar and the content area) and the home screen with the service map above
-//! the trace table (Tasks 6 and 7), rendered through GPUI Kit's `Root` in the
-//! headless harness. The references are `snapshots/shell_*.png` and `home_*.png`;
-//! build them with `cargo xtask screenshots --update` and look at them before
-//! committing (`docs/areas/ui.md`).
+//! toolbar and the content area), the home screen with the service map above
+//! the trace table (Tasks 6 and 7) and the trace screen (Task 8: the header, the
+//! waterfall, the inspector and the span's logs), rendered through GPUI Kit's
+//! `Root` in the headless harness. The references are `snapshots/shell_*.png`,
+//! `home_*.png` and `trace_*.png` (and `huge_trace_middle_dark.png`,
+//! `long_values_dark.png`); build them with `cargo xtask screenshots --update`
+//! and look at them before committing (`docs/areas/ui.md`).
 
 mod common;
 
@@ -12,7 +14,9 @@ use std::sync::Arc;
 
 use gpui::{AppContext as _, Bounds, Hsla, WindowAppearance, point, px, size};
 use gpui_kit::component::ActiveTheme as _;
-use loctel_model::TraceId;
+use loctel_meshgen::checkout::{EXCEPTION_MESSAGE, EXCEPTION_STACKTRACE, EXCEPTION_TYPE};
+use loctel_meshgen::{Scenario, generate};
+use loctel_model::{AttrValue, Resource, Span, SpanEvent, SpanId, SpanKind, StatusCode, TraceId};
 use loctel_store::{ManualClock, Store, StoreConfig};
 use loctel_ui::app::{
     GlassRegion, INSET, MainWindow, NAV_ITEM_HEIGHT, PANEL_RADIUS, SIDEBAR_WIDTH, Screen,
@@ -22,11 +26,15 @@ use loctel_ui::testing::{
     Driver, FixedBackend, RecordingBackdrop, assert_snapshot, render_window_png,
 };
 use loctel_ui::views::{
-    COLUMNS, EMPTY_HINT, EMPTY_TITLE, HEADER_HEIGHT, ROW_HEIGHT, TablePart, column_widths,
+    COLUMNS, EMPTY_HINT, EMPTY_TITLE, HEADER_HEIGHT, INSPECTOR_WIDTH, LOGS_HEIGHT, ROW_HEIGHT,
+    TablePart, TracePart, WATERFALL_ROW_HEIGHT, column_widths,
 };
 use loctel_ui::{StatusModel, Theme};
 
-use common::{WINDOW, home_store};
+use common::{
+    BASE, SEED, WINDOW, failing_trace_id, feed, home_store, open_trace, part_bounds, part_center,
+    row_center, row_named, row_names, selected_details, trace_model, trace_view, waterfall_view,
+};
 
 /// A store with nothing in it, on a clock that never moves.
 fn empty_store() -> Store {
@@ -491,4 +499,383 @@ fn the_table_panel_holds_the_query_bar_toggles_and_table() {
         "the table reaches the bottom of its panel: {list:?}"
     );
     assert!(list.origin.y + list.size.height <= window_bottom);
+}
+
+// --- the trace screen ------------------------------------------------------------------
+
+/// The window over the home data, with the failing checkout opened.
+fn trace_driver(theme: &Theme) -> Driver<MainWindow> {
+    let backend = Rc::new(FixedBackend::new(home_store()));
+    let mut driver = Driver::new(WINDOW, theme, move |window, cx| {
+        cx.new(|cx| MainWindow::new(backend, None, window, cx))
+    });
+    open_trace(&mut driver, failing_trace_id());
+    driver
+}
+
+#[test]
+fn trace_dark() {
+    let mut driver = trace_driver(&Theme::dark());
+    assert_eq!(
+        driver.update_root(|main, _, _| main.screen().clone()),
+        Screen::Trace(failing_trace_id())
+    );
+
+    // The failed-in span is selected and the inspector shows it: payments-api's
+    // first call to the card gateway.
+    let details = selected_details(&driver).expect("a span is selected");
+    assert_eq!(details.name, "POST");
+    assert_eq!(details.service, "payments-api");
+    assert_eq!(details.offset, "starts at +236 ms");
+    assert!(details.status.starts_with("Error"), "{}", details.status);
+
+    let image = driver.capture();
+    assert_eq!(image.dimensions(), (2880, 1800));
+    assert_snapshot("trace_dark", &image);
+}
+
+#[test]
+fn trace_light() {
+    let mut driver = trace_driver(&Theme::light());
+    let details = selected_details(&driver).expect("a span is selected");
+    assert_eq!(details.name, "POST");
+    assert_eq!(details.service, "payments-api");
+
+    let image = driver.capture();
+    assert_eq!(image.dimensions(), (2880, 1800));
+    assert_snapshot("trace_light", &image);
+}
+
+#[test]
+fn the_trace_screen_has_the_planned_layout() {
+    let driver = trace_driver(&Theme::dark());
+    let window = WINDOW.0 as f32;
+
+    // The inspector is 340 wide on the right of the content, the waterfall's
+    // list fills the rest, side by side.
+    let inspector = part_bounds(&driver, TracePart::Inspector).expect("the inspector is drawn");
+    let list = part_bounds(&driver, TracePart::List).expect("the waterfall is drawn");
+    assert_eq!(INSPECTOR_WIDTH, 340.0);
+    assert!(
+        (f32::from(inspector.size.width) - INSPECTOR_WIDTH).abs() <= 1.5,
+        "the inspector is {:?} wide",
+        inspector.size.width
+    );
+    assert!(list.origin.x + list.size.width <= inspector.origin.x + px(1.0));
+    // The content panel ends INSET and a hairline from the window's edge.
+    let right = inspector.origin.x + inspector.size.width;
+    assert!(
+        right <= px(window - INSET) && right >= px(window - INSET - 2.0),
+        "the inspector reaches the panel's edge: {right:?}"
+    );
+
+    // The logs sit under the waterfall's list, about 200 px tall, and the
+    // header over both.
+    let back = part_bounds(&driver, TracePart::Back).expect("the back button is drawn");
+    assert!(back.origin.y < list.origin.y);
+    assert_eq!(LOGS_HEIGHT, 200.0);
+    assert_eq!(WATERFALL_ROW_HEIGHT, 28.0, "the plan's row height");
+    let bottom = list.origin.y + list.size.height + px(1.0 + LOGS_HEIGHT);
+    assert!(
+        (bottom - px(WINDOW.1 as f32 - INSET)).abs() <= px(2.0),
+        "list, hairline and logs fill the panel to its bottom: {bottom:?}"
+    );
+}
+
+#[test]
+fn the_waterfall_lists_the_checkout_in_tree_order() {
+    let driver = trace_driver(&Theme::dark());
+    let names = row_names(&driver);
+    assert_eq!(names.len(), 15);
+    assert_eq!(names[0], "POST /api/checkout");
+    assert_eq!(names[1], "validate_token");
+    assert_eq!(names[14], "order.failed process");
+}
+
+#[test]
+fn trace_charges_selected_dark() {
+    let mut driver = trace_driver(&Theme::dark());
+    let charges = row_named(&driver, "POST /charges");
+
+    driver.click(row_center(&driver, charges));
+    driver.draw();
+
+    // The inspector shows the span and its exception card, with the stack
+    // trace; its logs are the four of the span.
+    let details = selected_details(&driver).expect("a span is selected");
+    assert_eq!(details.name, "POST /charges");
+    assert_eq!(details.service, "payments-api");
+    assert_eq!(details.offset, "starts at +200 ms");
+    let exception = details.exception.expect("the span has an exception");
+    assert_eq!(exception.type_name, EXCEPTION_TYPE);
+    assert_eq!(exception.message, EXCEPTION_MESSAGE);
+    assert_eq!(exception.stacktrace.as_deref(), Some(EXCEPTION_STACKTRACE));
+    let model = trace_model(&driver);
+    assert_eq!(driver.read(|cx| model.read(cx).logs().len()), 4);
+    assert!(
+        part_bounds(&driver, TracePart::CopyException).is_some(),
+        "the card has its Copy button"
+    );
+
+    assert_snapshot("trace_charges_selected_dark", &driver.capture());
+}
+
+#[test]
+fn trace_errors_path_only_dark() {
+    let mut driver = trace_driver(&Theme::dark());
+    assert_eq!(row_names(&driver).len(), 15);
+
+    driver.click(part_center(&driver, TracePart::ErrorsPath));
+
+    // The seven erroring spans and nothing else (every span above one is
+    // itself erroring in this trace): the way from the root to the gateway.
+    assert_eq!(
+        row_names(&driver),
+        [
+            "POST /api/checkout",
+            "POST",
+            "POST /orders",
+            "POST",
+            "POST /charges",
+            "POST",
+            "POST",
+        ]
+    );
+    // The selected span (the failed-in one) is on the path and stays.
+    let details = selected_details(&driver).expect("still selected");
+    assert_eq!(details.offset, "starts at +236 ms");
+    assert_snapshot("trace_errors_path_only_dark", &driver.capture());
+}
+
+#[test]
+fn an_erroring_row_has_its_marker_and_the_exception_its_diamond() {
+    // The rows of the failing checkout that error say so with a symbol, not
+    // only a colour; the screenshot shows it, the model says which.
+    let driver = trace_driver(&Theme::dark());
+    let model = trace_model(&driver);
+    driver.read(|cx| {
+        let rows = model.read(cx).waterfall().unwrap().rows();
+        let erroring = rows.iter().filter(|row| row.is_error).count();
+        assert_eq!(erroring, 7);
+        let diamonds: usize = rows.iter().map(|row| row.exception_fracs.len()).sum();
+        assert_eq!(diamonds, 1, "the one exception event, on /charges");
+    });
+}
+
+#[test]
+fn a_missing_trace_says_so_and_can_still_go_back() {
+    let backend = Rc::new(FixedBackend::new(home_store()));
+    let mut driver = Driver::new(WINDOW, &Theme::dark(), move |window, cx| {
+        cx.new(|cx| MainWindow::new(backend, None, window, cx))
+    });
+    open_trace(&mut driver, TraceId([0xab; 16]));
+
+    let model = trace_model(&driver);
+    assert_eq!(
+        driver.read(|cx| model.read(cx).state()),
+        loctel_ui::app::LoadState::Missing
+    );
+    let back = part_center(&driver, TracePart::Back);
+    driver.click(back);
+    assert_eq!(
+        driver.update_root(|main, _, _| main.screen().clone()),
+        Screen::Home
+    );
+}
+
+// --- big and awkward traces ---------------------------------------------------------------
+
+/// A store holding `HugeTrace { spans }` on a clock that has gone a minute on.
+fn huge_store(spans: usize) -> (Store, TraceId) {
+    let clock = Arc::new(ManualClock::new(BASE));
+    let store = Store::new(StoreConfig::default(), clock.clone());
+    let generated = generate(&Scenario::HugeTrace { spans }, SEED, BASE);
+    feed(&store, &generated);
+    clock.advance(std::time::Duration::from_secs(60));
+    (store, generated.trace_ids[0])
+}
+
+#[test]
+fn huge_trace_scrolls_to_middle() {
+    let (store, id) = huge_store(100_000);
+    let backend = Rc::new(FixedBackend::new(store));
+    let mut driver = Driver::new(WINDOW, &Theme::dark(), move |window, cx| {
+        cx.new(|cx| MainWindow::new(backend, None, window, cx))
+    });
+    open_trace(&mut driver, id);
+
+    let model = trace_model(&driver);
+    let rows = driver.read(|cx| model.read(cx).waterfall().unwrap().rows().len());
+    assert_eq!(rows, 100_000, "every span has a row");
+    let waterfall = waterfall_view(&driver);
+    assert_eq!(driver.read(|cx| waterfall.read(cx).top_row()), 0);
+
+    // To row 50,000: the list puts it in the middle of its viewport.
+    driver.update_root(|main, _, cx| {
+        let view = main.trace_view().expect("open").clone();
+        let waterfall = view.read(cx).waterfall_view().clone();
+        waterfall.update(cx, |waterfall, _| waterfall.scroll_to_row(50_000));
+    });
+    driver.draw();
+    driver.draw();
+
+    let top = driver.read(|cx| waterfall.read(cx).top_row());
+    let in_view = (top..top + 40).contains(&50_000);
+    assert!(
+        in_view,
+        "row 50,000 is in the viewport, which starts at {top}"
+    );
+    assert!(
+        top > 49_900,
+        "and the list really is at the middle, not at the top: {top}"
+    );
+    let middle = driver.read(|cx| waterfall.read(cx).row_center(50_000));
+    assert!(middle.is_some(), "the row is on the screen");
+
+    assert_snapshot("huge_trace_middle_dark", &driver.capture());
+}
+
+/// A trace with one very awkward span (a 300-character name that has no
+/// break in it, a 20 KB attribute with spaces, a 600-character value without
+/// any) over a short normal child.
+fn awkward_store() -> (Store, TraceId) {
+    let trace = TraceId([0x7e; 16]);
+    let resource = Arc::new(Resource {
+        attributes: vec![(
+            "service.name".to_owned(),
+            AttrValue::Str("web-bff".to_owned()),
+        )],
+    });
+    let long_name: String = std::iter::repeat_n("GET/very-long-route-segment", 12)
+        .collect::<Vec<_>>()
+        .join("/")
+        .chars()
+        .take(300)
+        .collect();
+    assert_eq!(long_name.chars().count(), 300);
+    let payload = "the quick brown fox jumps over the lazy dog ".repeat(460);
+    assert!(payload.len() >= 20_000);
+    let root = Span {
+        trace_id: trace,
+        span_id: SpanId([1; 8]),
+        parent_span_id: None,
+        name: long_name,
+        kind: SpanKind::Server,
+        start_unix_nano: BASE,
+        end_unix_nano: BASE + 800_000_000,
+        status: StatusCode::Error,
+        status_message: "a status message that goes on and on ".repeat(8),
+        attributes: vec![
+            ("payload".to_owned(), AttrValue::Str(payload)),
+            (
+                "session.token".to_owned(),
+                AttrValue::Str("tok_".to_owned() + &"x9".repeat(300)),
+            ),
+            ("http.route".to_owned(), AttrValue::Str("/api/x".to_owned())),
+        ],
+        events: vec![SpanEvent {
+            time_unix_nano: BASE + 700_000_000,
+            name: "exception".to_owned(),
+            attributes: vec![
+                (
+                    "exception.type".to_owned(),
+                    AttrValue::Str(
+                        "Some.Very.Long.Namespace.WithAnExceptionNameThatKeepsGoing".to_owned(),
+                    ),
+                ),
+                (
+                    "exception.message".to_owned(),
+                    AttrValue::Str("m".repeat(400)),
+                ),
+                (
+                    "exception.stacktrace".to_owned(),
+                    AttrValue::Str(format!("   at {}\n   at short", "Frame.".repeat(60))),
+                ),
+            ],
+        }],
+        resource: Arc::clone(&resource),
+        scope_name: "test".to_owned(),
+    };
+    let child = Span {
+        span_id: SpanId([2; 8]),
+        parent_span_id: Some(SpanId([1; 8])),
+        name: "child".to_owned(),
+        kind: SpanKind::Internal,
+        start_unix_nano: BASE + 100_000_000,
+        end_unix_nano: BASE + 300_000_000,
+        status: StatusCode::Unset,
+        status_message: String::new(),
+        attributes: Vec::new(),
+        events: Vec::new(),
+        ..root.clone()
+    };
+    let clock = Arc::new(ManualClock::new(BASE));
+    let store = Store::new(StoreConfig::default(), clock.clone());
+    store.ingest_spans(vec![root, child]);
+    clock.advance(std::time::Duration::from_secs(60));
+    (store, trace)
+}
+
+#[test]
+fn long_values_do_not_break_layout() {
+    let (store, id) = awkward_store();
+    let backend = Rc::new(FixedBackend::new(store));
+    let mut driver = Driver::new(WINDOW, &Theme::dark(), move |window, cx| {
+        cx.new(|cx| MainWindow::new(backend, None, window, cx))
+    });
+    open_trace(&mut driver, id);
+
+    // The long span is the root, and the failed-in span: selected.
+    let details = selected_details(&driver).expect("selected");
+    assert_eq!(details.name.chars().count(), 300);
+
+    // The layout is the normal one: the inspector 340 wide at the panel's right
+    // edge, the list beside it, nothing pushed out of the window.
+    let check = |driver: &Driver<MainWindow>, when: &str| {
+        let inspector = part_bounds(driver, TracePart::Inspector).expect("the inspector");
+        let list = part_bounds(driver, TracePart::List).expect("the list");
+        assert!(
+            (f32::from(inspector.size.width) - INSPECTOR_WIDTH).abs() <= 1.5,
+            "{when}: the inspector is {:?} wide",
+            inspector.size.width
+        );
+        let right = inspector.origin.x + inspector.size.width;
+        assert!(
+            right <= px(WINDOW.0 as f32 - INSET),
+            "{when}: the inspector ends at {right:?}"
+        );
+        assert!(
+            list.origin.x + list.size.width <= inspector.origin.x + px(1.0),
+            "{when}: the list is beside the inspector"
+        );
+        let back = part_bounds(driver, TracePart::Back).expect("the header");
+        assert!(
+            back.origin.x < px(WINDOW.0 as f32 / 2.0),
+            "{when}: the header"
+        );
+    };
+    check(&driver, "cut");
+    assert_snapshot("long_values_dark", &driver.capture());
+
+    // Showing a long value whole makes the pane longer, never wider. The links
+    // are far down a pane that scrolls: bring the last one into view first.
+    let pane = part_center(&driver, TracePart::Inspector);
+    driver.scroll(pane, 1_500.0);
+    let show_all = part_center(&driver, TracePart::ShowAll);
+    assert!(
+        show_all.y < px(WINDOW.1 as f32),
+        "the link scrolled into view: {show_all:?}"
+    );
+    driver.click(show_all);
+    let inspector_view = trace_view(&driver);
+    let expanded = driver.read(|cx| {
+        inspector_view
+            .read(cx)
+            .inspector_view()
+            .read(cx)
+            .expanded_values()
+    });
+    assert_eq!(expanded, 1, "the click showed one value whole");
+    check(&driver, "shown whole");
+    assert_snapshot("long_values_shown_whole_dark", &driver.capture());
 }

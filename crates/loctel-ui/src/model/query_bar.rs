@@ -53,14 +53,28 @@ pub fn validate(text: &str) -> QueryState {
 /// string, so whatever the name holds the text is a valid query for exactly
 /// that service.
 pub fn service_filter(service: &str) -> String {
-    let mut escaped = String::with_capacity(service.len());
-    for c in service.chars() {
+    format!("{{ resource.service.name = \"{}\" }}", escaped(service))
+}
+
+/// The query "traces through this span name" of the trace view writes into
+/// the bar: `{ name = "POST /charges" }`, escaped like [`service_filter`]'s.
+/// It matches the traces that have a span with exactly that name.
+pub fn span_name_filter(name: &str) -> String {
+    format!("{{ name = \"{}\" }}", escaped(name))
+}
+
+/// `text` as it goes between the quotes of a TraceQL string: a backslash
+/// before every `"` and `\`. Nothing else needs one (a raw newline is fine in
+/// the lexer's strings).
+fn escaped(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for c in text.chars() {
         if matches!(c, '"' | '\\') {
             escaped.push('\\');
         }
         escaped.push(c);
     }
-    format!("{{ resource.service.name = \"{escaped}\" }}")
+    escaped
 }
 
 /// The line under the input while the text is not a query: `at column 12:

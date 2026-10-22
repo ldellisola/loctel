@@ -15,6 +15,8 @@
 //! - [`waterfall`]: the rows of the trace view's waterfall (tree order, bars,
 //!   folding, find, the errors path), kept as the trace fills in.
 //! - [`inspector`]: the text of the selected span's inspector panel.
+//! - [`trace_view`]: the trace view's header, the find box's count and the
+//!   lines of the selected span's logs.
 //!
 //! `docs/areas/ui.md` ("Models") has the formats table.
 
@@ -24,4 +26,5 @@ pub mod inspector;
 pub mod map_layout;
 pub mod query_bar;
 pub mod trace_table;
+pub mod trace_view;
 pub mod waterfall;

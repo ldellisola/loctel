@@ -4574,6 +4574,7 @@ dependencies = [
  "loctel-query",
  "loctel-store",
  "loctel-ui",
+ "serde_json",
  "tempfile",
 ]
 

@@ -1,5 +1,6 @@
-//! The home screen's interactions: the service map's (M3 plan, Task 6) and the
-//! trace table's (Task 7).
+//! The main window's interactions: the service map's (M3 plan, Task 6), the
+//! trace table's (Task 7) and the trace screen's (Task 8: selecting, folding,
+//! find, the errors path, Esc and the Back button, the inspector's buttons).
 //!
 //! The map: clicking a service writes its filter into the query bar, a drag
 //! pans, ctrl or cmd plus the wheel and a pinch zoom (0.5 to 2.0), and `Fit`
@@ -29,11 +30,15 @@ use loctel_ui::app::{HomeModel, MainWindow, Screen};
 use loctel_ui::model::query_bar::{QueryState, service_filter};
 use loctel_ui::testing::{Driver, FixedBackend, assert_snapshot};
 use loctel_ui::views::{
-    CLEAR_FILTERS, Camera, EMPTY_NO_DATA, EMPTY_NO_MATCH, MAX_ZOOM, MIN_ZOOM, MapView, TablePart,
-    TraceTableView,
+    CLEAR_FILTERS, Camera, EMPTY_NO_DATA, EMPTY_NO_MATCH, INSPECTOR_MAX_WIDTH, INSPECTOR_MIN_WIDTH,
+    MAX_ZOOM, MIN_ZOOM, MapView, TablePart, TracePart, TraceTableView,
 };
 
-use common::{WINDOW, home_store};
+use common::row_center as trace_row_center;
+use common::{
+    WINDOW, failing_trace_id, home_store, open_trace, part_bounds, part_center, row_named,
+    row_names, selected_details, trace_model, waterfall_view,
+};
 
 const PAYMENTS: &str = "payments-api";
 
@@ -952,4 +957,445 @@ fn the_clear_button_of_the_input_empties_the_query() {
         TRACES,
         "and the table is whole again"
     );
+}
+
+// --- the trace screen (Task 8) ------------------------------------------------------------
+
+/// The window over the home data with the failing checkout opened (its
+/// failed-in span selected).
+fn trace_driver() -> Driver<MainWindow> {
+    let mut driver = home_driver(&Theme::dark());
+    open_trace(&mut driver, failing_trace_id());
+    driver
+}
+
+fn selected_name(driver: &Driver<MainWindow>) -> String {
+    selected_details(driver).expect("a span is selected").name
+}
+
+/// The offset of the selected span, which tells the two `POST`s to the card
+/// gateway (236 and 840 ms) and the other `POST`s apart.
+fn selected_offset(driver: &Driver<MainWindow>) -> String {
+    selected_details(driver).expect("a span is selected").offset
+}
+
+fn find_label(driver: &Driver<MainWindow>) -> String {
+    let model = trace_model(driver);
+    driver.read(|cx| model.read(cx).find_label())
+}
+
+fn is_home(driver: &mut Driver<MainWindow>) -> bool {
+    screen(driver) == Screen::Home
+}
+
+/// The text in the waterfall's find box, as the user sees it.
+fn find_text(driver: &Driver<MainWindow>) -> String {
+    let waterfall = waterfall_view(driver);
+    driver.read(|cx| waterfall.read(cx).find_text(cx))
+}
+
+fn find_focused(driver: &mut Driver<MainWindow>) -> bool {
+    let waterfall = waterfall_view(driver);
+    driver.update_root(|_, window, cx| waterfall.read(cx).find_focused(window, cx))
+}
+
+fn clipboard_text(driver: &Driver<MainWindow>) -> Option<String> {
+    driver.read(|cx| cx.read_from_clipboard().and_then(|item| item.text()))
+}
+
+#[test]
+fn opening_a_trace_selects_the_failed_in_span_and_reads_its_logs() {
+    let driver = trace_driver();
+    assert_eq!(selected_name(&driver), "POST");
+    assert_eq!(selected_offset(&driver), "starts at +236 ms");
+    // The failed-in span has no logs of its own; the logs panel says so.
+    let model = trace_model(&driver);
+    assert!(driver.read(|cx| model.read(cx).logs_loaded()));
+    assert!(driver.read(|cx| model.read(cx).logs().is_empty()));
+}
+
+#[test]
+fn clicking_a_row_selects_its_span_and_the_logs_follow() {
+    let mut driver = trace_driver();
+    let model = trace_model(&driver);
+
+    // `POST /orders` has three logs of its own (the first, 190 and 1800 ms).
+    driver.click(trace_row_center(
+        &driver,
+        row_named(&driver, "POST /orders"),
+    ));
+    driver.draw();
+    assert_eq!(selected_name(&driver), "POST /orders");
+    assert_eq!(driver.read(|cx| model.read(cx).logs().len()), 3);
+
+    // A span with no logs: the panel is empty, and says so.
+    driver.click(trace_row_center(
+        &driver,
+        row_named(&driver, "validate_token"),
+    ));
+    driver.draw();
+    assert_eq!(selected_name(&driver), "validate_token");
+    assert!(driver.read(|cx| model.read(cx).logs().is_empty()));
+    assert!(driver.read(|cx| model.read(cx).logs_loaded()));
+}
+
+#[test]
+fn a_click_on_a_row_keeps_the_rows_where_they_are() {
+    let mut driver = trace_driver();
+    let before = row_names(&driver);
+    driver.click(trace_row_center(&driver, 3));
+    assert_eq!(row_names(&driver), before);
+}
+
+#[test]
+fn the_chevron_folds_and_opens_without_selecting() {
+    let mut driver = trace_driver();
+    let selected = selected_offset(&driver);
+    let orders = row_named(&driver, "POST /orders");
+    assert_eq!(row_names(&driver).len(), 15);
+
+    let chevron = {
+        let waterfall = waterfall_view(&driver);
+        driver
+            .read(|cx| waterfall.read(cx).chevron_center(orders, cx))
+            .expect("the row is in view")
+    };
+    driver.click(chevron);
+    // `POST /orders` has eleven spans under it (every span but the root, the
+    // token check, the web-bff `POST` and itself).
+    assert_eq!(row_names(&driver).len(), 15 - 11);
+    assert_eq!(
+        selected_offset(&driver),
+        selected,
+        "the selection did not move"
+    );
+
+    driver.click(chevron);
+    assert_eq!(row_names(&driver).len(), 15);
+    assert_eq!(selected_offset(&driver), selected);
+}
+
+#[test]
+fn collapse_all_and_expand_all() {
+    let mut driver = trace_driver();
+    assert_eq!(row_names(&driver).len(), 15);
+
+    driver.click(part_center(&driver, TracePart::ToggleAll));
+    assert_eq!(row_names(&driver), ["POST /api/checkout"], "only the root");
+    // The selection (hidden now) stays selected.
+    assert_eq!(selected_offset(&driver), "starts at +236 ms");
+
+    // The button now offers the way back.
+    let model = trace_model(&driver);
+    assert!(driver.read(|cx| model.read(cx).any_folded()));
+    driver.click(part_center(&driver, TracePart::ToggleAll));
+    assert_eq!(row_names(&driver).len(), 15);
+    assert!(!driver.read(|cx| model.read(cx).any_folded()));
+}
+
+#[test]
+fn the_errors_path_toggle_comes_off_again() {
+    let mut driver = trace_driver();
+    driver.click(part_center(&driver, TracePart::ErrorsPath));
+    assert_eq!(row_names(&driver).len(), 7);
+    driver.click(part_center(&driver, TracePart::ErrorsPath));
+    assert_eq!(row_names(&driver).len(), 15);
+}
+
+#[test]
+fn find_counts_and_jumps() {
+    let mut driver = trace_driver();
+    assert_eq!(find_label(&driver), "", "an empty box says nothing");
+
+    // `card-gateway` is the address of the two `POST`s of payments-api (236
+    // and 840 ms); the selected span is the first of them.
+    driver.click(part_center(&driver, TracePart::Find));
+    driver.type_text("card-gateway");
+    assert_eq!(find_text(&driver), "card-gateway");
+    assert_eq!(
+        find_label(&driver),
+        "1 of 2",
+        "the selected span is a match"
+    );
+
+    driver.key("enter");
+    assert_eq!(find_label(&driver), "2 of 2");
+    assert_eq!(selected_offset(&driver), "starts at +840 ms", "it jumped");
+
+    driver.key("enter");
+    assert_eq!(find_label(&driver), "1 of 2", "and wraps round");
+    assert_eq!(selected_offset(&driver), "starts at +236 ms");
+
+    // Another text, with matches the selection is not one of: counted, and
+    // the first Enter goes to the first of them.
+    for _ in 0..12 {
+        driver.key("backspace");
+    }
+    driver.type_text("postgresql");
+    assert_eq!(find_label(&driver), "2 matches");
+    driver.key("enter");
+    assert_eq!(find_label(&driver), "1 of 2");
+    assert_eq!(selected_name(&driver), "SELECT carts");
+    driver.key("enter");
+    assert_eq!(selected_name(&driver), "SELECT payment_methods");
+
+    // No match: said so, and Enter does nothing.
+    for _ in 0..10 {
+        driver.key("backspace");
+    }
+    driver.type_text("zzz");
+    assert_eq!(find_label(&driver), "No matches");
+    driver.key("enter");
+    assert_eq!(selected_name(&driver), "SELECT payment_methods");
+}
+
+#[test]
+fn find_looks_at_the_names_and_the_services_too() {
+    let mut driver = trace_driver();
+    driver.click(part_center(&driver, TracePart::Find));
+    // `inventory` is the service of two spans (`GET /stock/{sku}` and `MGET`) and
+    // the address of the call to them, which the attribute values find: three.
+    // No span has it in its name.
+    driver.type_text("INVENTORY");
+    assert_eq!(find_label(&driver), "3 matches", "ignoring case");
+}
+
+#[test]
+fn a_jump_scrolls_the_row_into_view() {
+    // Matches far down a long list: Enter brings the row into the viewport.
+    let mut driver = trace_driver();
+    let waterfall = waterfall_view(&driver);
+    driver.click(part_center(&driver, TracePart::Find));
+    driver.type_text("order.failed process");
+    driver.key("enter");
+    assert_eq!(selected_name(&driver), "order.failed process");
+    let row = row_named(&driver, "order.failed process");
+    assert!(
+        driver
+            .read(|cx| waterfall.read(cx).row_center(row))
+            .is_some(),
+        "the row of the match is in view"
+    );
+}
+
+#[test]
+fn cmd_f_gives_the_find_box_the_keyboard() {
+    let mut driver = trace_driver();
+    assert!(!find_focused(&mut driver));
+    driver.key("cmd-f");
+    assert!(find_focused(&mut driver));
+    // And what is typed goes into it.
+    driver.type_text("redis");
+    assert_eq!(find_text(&driver), "redis");
+    assert_eq!(find_label(&driver), "1 match");
+}
+
+#[test]
+fn escape_goes_back_but_clears_the_find_box_first() {
+    let mut driver = trace_driver();
+    driver.click(part_center(&driver, TracePart::Find));
+    driver.type_text("redis");
+    assert_eq!(find_text(&driver), "redis");
+
+    // The first Esc empties the box and stays on the trace.
+    driver.key("escape");
+    assert_eq!(find_text(&driver), "");
+    assert_eq!(find_label(&driver), "");
+    assert!(!is_home(&mut driver));
+    assert_eq!(selected_offset(&driver), "starts at +236 ms");
+
+    // The second one, with the box empty, goes back.
+    driver.key("escape");
+    assert!(is_home(&mut driver));
+}
+
+#[test]
+fn escape_goes_back_without_a_click() {
+    // The screen has the keyboard when it opens.
+    let mut driver = trace_driver();
+    driver.key("escape");
+    assert!(is_home(&mut driver));
+}
+
+#[test]
+fn escape_goes_back_after_a_click_on_a_row() {
+    let mut driver = trace_driver();
+    driver.click(part_center(&driver, TracePart::Find));
+    driver.click(trace_row_center(&driver, 2));
+    driver.key("escape");
+    assert!(is_home(&mut driver), "a click on a row gives the keys back");
+}
+
+#[test]
+fn back_returns_home_keeping_query() {
+    let mut driver = home_driver(&Theme::dark());
+    // Narrow the table to the failing checkout with a typed query.
+    type_query(&mut driver, "{ status = error }");
+    assert_eq!(row_ids(&driver).len(), 1);
+    let failed = row_ids(&driver)[0];
+
+    driver.click(row_center(&driver, 0));
+    assert_eq!(screen(&mut driver), Screen::Trace(failed));
+    driver.draw();
+    driver.draw();
+
+    // The `Traces` button is the way back.
+    driver.click(part_center(&driver, TracePart::Back));
+    assert_eq!(screen(&mut driver), Screen::Home);
+    driver.draw();
+
+    // The home screen is as it was left: the query in the bar, the table
+    // filtered by it.
+    assert_eq!(input_text(&driver), "{ status = error }");
+    assert_eq!(query_text(&driver), "{ status = error }");
+    assert_eq!(row_ids(&driver), vec![failed]);
+    assert_eq!(count_line(&driver), "1 trace \u{b7} newest first");
+    // And the trace screen is closed.
+    assert!(driver.read_root(|main| main.trace_view().is_none()));
+}
+
+#[test]
+fn the_waterfall_selection_starts_again_when_a_trace_is_reopened() {
+    let mut driver = trace_driver();
+    driver.click(trace_row_center(
+        &driver,
+        row_named(&driver, "validate_token"),
+    ));
+    assert_eq!(selected_name(&driver), "validate_token");
+
+    driver.key("escape");
+    assert!(is_home(&mut driver));
+    open_trace(&mut driver, failing_trace_id());
+    assert_eq!(selected_offset(&driver), "starts at +236 ms", "failed in");
+}
+
+#[test]
+fn traces_through_span_name_sets_query() {
+    let mut driver = trace_driver();
+    driver.click(trace_row_center(
+        &driver,
+        row_named(&driver, "POST /charges"),
+    ));
+    assert_eq!(selected_name(&driver), "POST /charges");
+
+    driver.click(part_center(&driver, TracePart::TracesThrough));
+    driver.draw();
+
+    // Home, with the query in the bar and the table following it: the two
+    // checkouts have a `POST /charges`, the health checks do not.
+    assert_eq!(screen(&mut driver), Screen::Home);
+    assert_eq!(query_text(&driver), "{ name = \"POST /charges\" }");
+    assert_eq!(input_text(&driver), "{ name = \"POST /charges\" }");
+    assert_eq!(error_line(&driver), None, "the query parses");
+    assert_eq!(row_ids(&driver).len(), 2);
+}
+
+#[test]
+fn copy_id_copies_the_whole_trace_id() {
+    let mut driver = trace_driver();
+    driver.click(part_center(&driver, TracePart::CopyId));
+    assert_eq!(
+        clipboard_text(&driver).as_deref(),
+        Some(failing_trace_id().to_string().as_str())
+    );
+    assert_eq!(failing_trace_id().to_string().len(), 32);
+}
+
+#[test]
+fn the_inspectors_copy_buttons_copy_the_exception_and_the_span() {
+    let mut driver = trace_driver();
+    driver.click(trace_row_center(
+        &driver,
+        row_named(&driver, "POST /charges"),
+    ));
+
+    driver.click(part_center(&driver, TracePart::CopyException));
+    let copied = clipboard_text(&driver).expect("the exception was copied");
+    assert!(
+        copied.starts_with(
+            "Payments.Api.Gateway.CardGatewayTimeoutException: card-gateway did not respond after 2 attempts\n"
+        ),
+        "{copied}"
+    );
+    assert!(copied.contains("CardGatewayClient.ChargeAsync"), "{copied}");
+
+    driver.click(part_center(&driver, TracePart::CopyJson));
+    let json = clipboard_text(&driver).expect("the span was copied");
+    let value: serde_json::Value = serde_json::from_str(&json).expect("JSON");
+    assert_eq!(value["name"], "POST /charges");
+    assert_eq!(value["events"][0]["name"], "exception");
+}
+
+#[test]
+fn the_inspector_resizes_between_280_and_520() {
+    let mut driver = trace_driver();
+    let width = |driver: &Driver<MainWindow>| {
+        f32::from(
+            part_bounds(driver, TracePart::Inspector)
+                .expect("the inspector")
+                .size
+                .width,
+        )
+    };
+    assert!((width(&driver) - 340.0).abs() <= 1.5);
+
+    // The handle is on the inspector's left edge.
+    let handle = |driver: &Driver<MainWindow>| {
+        let bounds = part_bounds(driver, TracePart::Inspector).expect("the inspector");
+        point(bounds.origin.x, px(500.0))
+    };
+    let from = handle(&driver);
+    driver.drag(from, from + point(px(-80.0), px(0.0)));
+    let wider = width(&driver);
+    assert!((wider - 420.0).abs() <= 2.0, "dragged 80 px left: {wider}");
+
+    let from = handle(&driver);
+    driver.drag(from, from + point(px(-400.0), px(0.0)));
+    assert!(
+        (width(&driver) - INSPECTOR_MAX_WIDTH).abs() <= 1.5,
+        "no wider than 520: {}",
+        width(&driver)
+    );
+
+    let from = handle(&driver);
+    driver.drag(from, from + point(px(600.0), px(0.0)));
+    assert!(
+        (width(&driver) - INSPECTOR_MIN_WIDTH).abs() <= 1.5,
+        "no narrower than 280: {}",
+        width(&driver)
+    );
+}
+
+#[test]
+fn the_trace_screen_fits_the_smallest_window() {
+    let mut driver = trace_driver();
+    driver.resize((1000, 640));
+    driver.draw();
+    let inspector = part_bounds(&driver, TracePart::Inspector).expect("the inspector");
+    let list = part_bounds(&driver, TracePart::List).expect("the list");
+    assert!(inspector.origin.x + inspector.size.width <= px(1000.0 - INSET_PX));
+    assert!(
+        list.size.width >= px(380.0),
+        "the waterfall keeps room: {:?}",
+        list.size.width
+    );
+    assert!(
+        list.size.height > px(60.0),
+        "and some rows: {:?}",
+        list.size.height
+    );
+    assert_eq!(selected_offset(&driver), "starts at +236 ms");
+}
+
+/// The window's inset (the panels sit this far from the edge).
+const INSET_PX: f32 = 10.0;
+
+#[test]
+fn the_trace_view_follows_the_appearance() {
+    let mut driver = trace_driver();
+    driver.update_root(|main, _, cx| main.set_appearance(gpui::WindowAppearance::Light, cx));
+    driver.draw();
+    // Still the same screen, in the other look.
+    assert_eq!(selected_offset(&driver), "starts at +236 ms");
+    assert!(part_bounds(&driver, TracePart::Inspector).is_some());
 }

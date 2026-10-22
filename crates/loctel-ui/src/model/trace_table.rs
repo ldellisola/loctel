@@ -75,7 +75,7 @@ pub fn count_line(shown: usize, truncated: bool) -> String {
 }
 
 /// `1234` as `1,234`.
-fn thousands(n: usize) -> String {
+pub(crate) fn thousands(n: usize) -> String {
     let digits = n.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (i, digit) in digits.chars().enumerate() {

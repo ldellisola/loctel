@@ -3,6 +3,9 @@
 //! lay out. The view cuts long values (a 20 KB attribute is whole here), draws
 //! the stack trace in monospace and the copy buttons; nothing in it formats a
 //! value by itself.
+//!
+//! The strings the inspector's buttons put on the clipboard are here too: the
+//! exception ([`exception_text`]) and the whole span ([`span_json`]).
 
 use loctel_model::{AttrValue, ExceptionInfo, SpanId, SpanKind, StatusCode};
 use loctel_store::TraceSnapshot;
@@ -34,6 +37,47 @@ pub struct SpanDetails {
     pub attributes: Vec<(String, String)>,
     /// The resource's attributes, the same way.
     pub resource: Vec<(String, String)>,
+}
+
+/// How many characters of an attribute value the inspector shows before it
+/// cuts the rest off behind `… (show all)`.
+pub const VALUE_PREVIEW_CHARS: usize = 200;
+
+/// The first [`VALUE_PREVIEW_CHARS`] characters of `value` when it is longer
+/// than that (the part the inspector shows, followed by a link that shows the
+/// rest), `None` when the whole value fits. It counts characters, never bytes,
+/// so it cannot cut inside one.
+pub fn value_preview(value: &str) -> Option<&str> {
+    let (end, _) = value.char_indices().nth(VALUE_PREVIEW_CHARS)?;
+    Some(&value[..end])
+}
+
+/// What the exception card's `Copy` puts on the clipboard: the type and the
+/// message on the first line (`Type: message`, or whichever of the two there
+/// is), then the stack trace as it was sent.
+pub fn exception_text(exception: &ExceptionInfo) -> String {
+    let mut text = match (exception.type_name.is_empty(), exception.message.is_empty()) {
+        (false, false) => format!("{}: {}", exception.type_name, exception.message),
+        (false, true) => exception.type_name.clone(),
+        (true, _) => exception.message.clone(),
+    };
+    if let Some(stacktrace) = exception
+        .stacktrace
+        .as_deref()
+        .filter(|trace| !trace.is_empty())
+    {
+        text.push('\n');
+        text.push_str(stacktrace);
+    }
+    text
+}
+
+/// The span `id` as JSON, pretty-printed, for `Copy span as JSON`: every field
+/// of the model's `Span` (IDs in hex, times in nanoseconds, attributes as an
+/// object, the events, the resource). `None` when the trace has no such span.
+pub fn span_json(snapshot: &TraceSnapshot, id: SpanId) -> Option<String> {
+    let span = snapshot.spans.iter().find(|span| span.span_id == id)?;
+    serde_json::to_string_pretty(span).ok()
 }
 
 /// The details of the span `id`, or `None` when the trace has no such span

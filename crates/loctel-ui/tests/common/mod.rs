@@ -4,9 +4,15 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use gpui::{Bounds, Entity, Pixels, Point};
 use loctel_ingest::{logs_from_request, spans_from_request};
 use loctel_meshgen::{Generated, Scenario, generate};
+use loctel_model::TraceId;
 use loctel_store::{ManualClock, Store, StoreConfig};
+use loctel_ui::app::{MainWindow, Screen, TraceModel};
+use loctel_ui::model::inspector::SpanDetails;
+use loctel_ui::testing::Driver;
+use loctel_ui::views::{TracePart, TraceView, WaterfallView};
 
 /// 2027-01-15T08:00:00Z. Where the failing checkout starts.
 pub const BASE: u64 = 1_800_000_000_000_000_000;
@@ -50,4 +56,98 @@ pub fn home_store() -> Store {
     }
     clock.advance(Duration::from_secs(70));
     store
+}
+
+/// The ID of the failing checkout of [`home_store`] (the meshgen scenario is
+/// deterministic, so the ID is too).
+#[allow(dead_code)] // not every test file opens a trace
+pub fn failing_trace_id() -> TraceId {
+    generate(&Scenario::CheckoutFailure, SEED, BASE).trace_ids[0]
+}
+
+/// Shows the trace screen of `id` in the window and draws until it has read
+/// the trace: the screen is made by the first frame after the navigation, its
+/// read comes back by the next, and the frame after that draws the rows.
+#[allow(dead_code)] // not every test file opens a trace
+pub fn open_trace(driver: &mut Driver<MainWindow>, id: TraceId) {
+    driver.update_root(|main, _, cx| main.navigate(Screen::Trace(id), cx));
+    for _ in 0..3 {
+        driver.draw();
+    }
+}
+
+/// The trace screen of the window (it must be open and drawn once).
+#[allow(dead_code)]
+pub fn trace_view(driver: &Driver<MainWindow>) -> Entity<TraceView> {
+    driver.read_root(|main| main.trace_view().cloned().expect("a trace screen is open"))
+}
+
+/// The live data of the open trace.
+#[allow(dead_code)]
+pub fn trace_model(driver: &Driver<MainWindow>) -> Entity<TraceModel> {
+    let view = trace_view(driver);
+    driver.read(|cx| view.read(cx).model().clone())
+}
+
+/// The waterfall of the open trace.
+#[allow(dead_code)]
+pub fn waterfall_view(driver: &Driver<MainWindow>) -> Entity<WaterfallView> {
+    let view = trace_view(driver);
+    driver.read(|cx| view.read(cx).waterfall_view().clone())
+}
+
+/// The names of the rows of the waterfall, top to bottom.
+#[allow(dead_code)]
+pub fn row_names(driver: &Driver<MainWindow>) -> Vec<String> {
+    let model = trace_model(driver);
+    driver.read(|cx| {
+        model
+            .read(cx)
+            .waterfall()
+            .expect("the trace is loaded")
+            .rows()
+            .iter()
+            .map(|row| row.name.clone())
+            .collect()
+    })
+}
+
+/// The position among the rows of the first row named `name`.
+#[allow(dead_code)]
+pub fn row_named(driver: &Driver<MainWindow>, name: &str) -> usize {
+    row_names(driver)
+        .iter()
+        .position(|row| row == name)
+        .unwrap_or_else(|| panic!("no row named `{name}`"))
+}
+
+/// What the inspector shows: the details of the selected span.
+#[allow(dead_code)]
+pub fn selected_details(driver: &Driver<MainWindow>) -> Option<SpanDetails> {
+    let model = trace_model(driver);
+    driver.read(|cx| model.read(cx).details().cloned())
+}
+
+/// Where `part` of the trace screen is in the window now.
+#[allow(dead_code)]
+pub fn part_bounds(driver: &Driver<MainWindow>, part: TracePart) -> Option<Bounds<Pixels>> {
+    let view = trace_view(driver);
+    driver.read(|cx| view.read(cx).bounds_of(part, cx))
+}
+
+/// The middle of `part` of the trace screen.
+#[allow(dead_code)]
+pub fn part_center(driver: &Driver<MainWindow>, part: TracePart) -> Point<Pixels> {
+    part_bounds(driver, part)
+        .unwrap_or_else(|| panic!("the trace screen has no {part:?} on the screen"))
+        .center()
+}
+
+/// The middle of the row at `row`, as drawn now.
+#[allow(dead_code)]
+pub fn row_center(driver: &Driver<MainWindow>, row: usize) -> Point<Pixels> {
+    let waterfall = waterfall_view(driver);
+    driver
+        .read(|cx| waterfall.read(cx).row_center(row))
+        .unwrap_or_else(|| panic!("row {row} is not in view"))
 }

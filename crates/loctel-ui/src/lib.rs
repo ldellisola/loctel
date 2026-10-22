@@ -10,20 +10,23 @@
 //! - [`model`] holds the pure models of the main window (Milestone 3): the
 //!   formats of durations, clock times, rates and error shares, the colour a
 //!   service keeps, the trace table's rows, the query bar's state, the
-//!   place of every node of the service map, the rows of a trace's waterfall
-//!   and the text of the span inspector. No GPUI in them, so plain tests pin
-//!   every string and every place.
+//!   place of every node of the service map, the rows of a trace's waterfall,
+//!   the text of the span inspector and of the trace header, the find count
+//!   and a span's logs. No GPUI in them, so plain tests pin every string and
+//!   every place.
 //! - [`app`] is the main window's shell (Milestone 3): the floating sidebar, the
 //!   toolbar and the content area, the [`UiBackend`](app::UiBackend) that gives
 //!   views the store and the engine's status, the bridge from [`Theme`] to GPUI
 //!   Kit's theme, [`open_main_window`](app::open_main_window), and
 //!   [`HomeModel`](app::HomeModel), the home screen's live data (the map and
 //!   the table's rows, read every 500 ms behind a time range, two toggles and
-//!   the query bar).
+//!   the query bar), and [`TraceModel`](app::TraceModel), an open trace's (read
+//!   every 500 ms while it arrives, then every 2 s).
 //! - [`views`] holds the views of the main window's screens: the live
 //!   [`MapView`](views::MapView) and the [`TraceTableView`](views::TraceTableView)
-//!   (the TraceQL bar, the two toggles and the table) of the home screen so far
-//!   (the trace view follows).
+//!   (the TraceQL bar, the two toggles and the table) of the home screen, and
+//!   the [`TraceView`](views::TraceView) (the waterfall, the inspector and the
+//!   selected span's logs).
 //! - [`menu_text`] holds the exact strings for the status line, the discard
 //!   rules line and the rates, so the macOS menu and the view cannot drift apart.
 //! - [`Theme`] holds the colours; [`register_fonts`] the bundled typeface.
