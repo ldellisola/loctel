@@ -11,7 +11,9 @@ use loctel_engine::{
 use loctel_ui::StatusModel;
 use loctel_ui::menu_text::rules_line;
 use loctel_ui::model::popover::{Pill, Popover, Tone, from_status};
-use loctel_ui::model::settings::{DUPLICATE_PORTS, Field, Form, PORT_RANGE};
+use loctel_ui::model::settings::{
+    DUPLICATE_PORTS, EndpointState, Field, Form, LISTENING, PORT_RANGE, endpoint_state, failures,
+};
 
 // --- the Settings form ------------------------------------------------------------
 
@@ -219,6 +221,101 @@ fn the_login_switch_is_not_part_of_the_ports() {
     let mut f = form("4317", "4318", "4319");
     f.start_at_login = Some(true);
     assert_eq!(f.validate(), Ok(ports(4317, 4318, 4319)));
+}
+
+// --- the Settings window's endpoint lines (M4 plan, Task 6) -----------------------
+
+#[test]
+fn the_fields_have_the_plans_labels_and_name_their_listeners() {
+    assert_eq!(Field::ALL, [Field::Grpc, Field::Http, Field::Mcp]);
+    assert_eq!(
+        Field::ALL.map(Field::label),
+        ["OTLP gRPC port", "OTLP HTTP port", "MCP port"]
+    );
+    // The names the engine gives its listeners, in the engine's order.
+    assert_eq!(
+        Field::ALL.map(Field::listener),
+        ["otlp-grpc", "otlp-http", "mcp"]
+    );
+}
+
+#[test]
+fn an_endpoint_says_listening_or_why_it_failed() {
+    assert_eq!(LISTENING, "listening");
+    let listeners = vec![
+        listening("otlp-grpc", 4317),
+        failed("otlp-http", 4400),
+        listening("mcp", 4319),
+    ];
+    assert_eq!(
+        endpoint_state(&listeners, Field::Grpc),
+        Some(EndpointState {
+            ok: true,
+            text: "listening".to_owned(),
+        })
+    );
+    // The OS's own wording around "in use" differs between platforms; the
+    // window says it the way the menu does.
+    assert_eq!(
+        endpoint_state(&listeners, Field::Http),
+        Some(EndpointState {
+            ok: false,
+            text: "failed: address in use".to_owned(),
+        })
+    );
+    assert_eq!(
+        endpoint_state(&listeners, Field::Mcp).map(|state| state.ok),
+        Some(true)
+    );
+}
+
+#[test]
+fn an_unrecognised_failure_is_shown_as_the_engine_gave_it_cut_to_forty_characters() {
+    let listeners = vec![ListenerStatus {
+        name: "mcp",
+        requested: address(80),
+        state: ListenerState::Failed(
+            "Permission denied (os error 13) while binding to 127.0.0.1:80".to_owned(),
+        ),
+    }];
+    assert_eq!(
+        endpoint_state(&listeners, Field::Mcp),
+        Some(EndpointState {
+            ok: false,
+            text: "failed: Permission denied (os error 13) while bi".to_owned(),
+        })
+    );
+    let short = vec![ListenerStatus {
+        name: "mcp",
+        requested: address(80),
+        state: ListenerState::Failed("Permission denied (os error 13)".to_owned()),
+    }];
+    assert_eq!(
+        endpoint_state(&short, Field::Mcp).map(|state| state.text),
+        Some("failed: Permission denied (os error 13)".to_owned())
+    );
+}
+
+#[test]
+fn a_listener_the_engine_does_not_report_has_no_state() {
+    assert_eq!(endpoint_state(&[], Field::Http), None);
+    assert_eq!(endpoint_state(&[listening("mcp", 4319)], Field::Grpc), None);
+}
+
+#[test]
+fn the_failures_of_a_set_of_listeners_name_each_one_and_its_reason() {
+    assert_eq!(failures(&healthy()), Vec::<String>::new());
+    assert_eq!(
+        failures(&[
+            failed("otlp-grpc", 4317),
+            listening("otlp-http", 4318),
+            failed("mcp", 4319),
+        ]),
+        vec![
+            "otlp-grpc: address in use".to_owned(),
+            "mcp: address in use".to_owned(),
+        ]
+    );
 }
 
 // --- the popover ------------------------------------------------------------------

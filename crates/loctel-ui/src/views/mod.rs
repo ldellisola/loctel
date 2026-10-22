@@ -21,9 +21,13 @@
 //!   [`RuleEditorView`] of the rule that is open (its fields, live validation and
 //!   the preview of the last five minutes).
 //!
+//! - [`SettingsView`]: the Settings window's form (Milestone 4): the three port
+//!   inputs with the state of their endpoints, the login switch where there is a
+//!   login item, `Apply` and `Close`.
+//!
 //! `docs/areas/ui.md` ("The service map", "The trace table", "The trace view",
-//! "The Logs screen", "The Discard rules screen") has the look and the
-//! interactions.
+//! "The Logs screen", "The Discard rules screen", "The Settings window") has the
+//! look and the interactions.
 
 mod histogram_view;
 mod inspector_view;
@@ -31,6 +35,7 @@ mod logs_view;
 mod map_view;
 mod rule_editor_view;
 mod rules_view;
+mod settings_view;
 mod span_logs_view;
 mod trace_table_view;
 mod trace_view;
@@ -51,6 +56,10 @@ pub use rule_editor_view::{
     QUERY_LABEL, RuleEditorView, SAVE, SCOPE_SPAN, SCOPE_TITLE, SCOPE_TRACE,
 };
 pub use rules_view::{NEW_RULE, RulesPart, RulesView, TITLE as RULES_TITLE};
+pub use settings_view::{
+    APPLY, CLOSE, ENDPOINTS, LOGIN_LABEL, REFRESH as SETTINGS_REFRESH, STARTUP, SettingsPart,
+    SettingsView, TITLE as SETTINGS_TITLE,
+};
 pub use span_logs_view::{
     NO_LOGS, NOTHING_SELECTED as LOGS_EMPTY, OPEN_IN_LOGS, PANEL_HEIGHT as LOGS_HEIGHT,
     SpanLogsEvent, SpanLogsView,

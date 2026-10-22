@@ -23,6 +23,9 @@
 //!   Live tail pill, range and Clear all, over the [`LogsModel`].
 //! - [`MainWindow`] is the root view; [`Screen`] says what it shows.
 //! - [`open_main_window`] opens it.
+//! - [`open_settings_window`] opens the Settings window (Milestone 4), 520 by 360
+//!   and not resizable, or focuses the one that is open; what it shows is
+//!   [`SettingsView`](crate::views::SettingsView).
 //! - [`Backdrop`] and [`GlassRegion`]: how the shell tells a platform where its
 //!   glass parts are.
 //! - [`kit_theme`]: our [`Theme`](crate::Theme) onto Kit's.
@@ -36,6 +39,7 @@ pub mod kit_theme;
 mod logs_data;
 mod nav;
 mod rules_data;
+mod settings_window;
 mod shell;
 mod sidebar;
 mod toolbar;
@@ -58,6 +62,7 @@ pub use logs_data::{
 };
 pub use nav::NavItem;
 pub use rules_data::{PREVIEW_DEBOUNCE, PreviewState, RULES_REFRESH, RuleEditor, RulesModel};
+pub use settings_window::{SETTINGS_SIZE, open_settings_window};
 pub use shell::{
     Backdrop, DEFAULT_SIZE, GlassRegion, INSET, MIN_SIZE, MainWindow, PANEL_RADIUS, SIDEBAR_WIDTH,
     Screen, TOOLBAR_HEIGHT, content_width,

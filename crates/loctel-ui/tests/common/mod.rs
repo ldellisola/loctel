@@ -20,6 +20,7 @@ pub const SECOND: u64 = 1_000_000_000;
 pub const SEED: u64 = 7;
 
 /// The size the plan fixes for the window, in logical pixels.
+#[allow(dead_code)] // the Settings window has a size of its own
 pub const WINDOW: (u32, u32) = (1440, 900);
 
 /// Puts a generated scenario into `store`, whole.

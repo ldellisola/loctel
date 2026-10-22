@@ -197,14 +197,25 @@ impl<V: Render + 'static> Driver<V> {
         &self.view
     }
 
-    /// Runs what is pending and draws one frame.
+    /// Runs what is pending and draws one frame. A window that has closed (a
+    /// click on a `Close` button) has nothing to draw: [`is_open`](Self::is_open)
+    /// says so, and the pending work still runs.
     pub fn draw(&mut self) {
         self.cx.run_until_parked();
+        if !self.is_open() {
+            return;
+        }
         self.cx
             .update_window(self.window.into(), |_, window, cx| {
                 window.draw(cx).clear(cx)
             })
             .expect("the window draws");
+    }
+
+    /// Whether the window is still open: `false` once something in it closed
+    /// it (the Settings window's `Close`).
+    pub fn is_open(&self) -> bool {
+        self.read(|cx| cx.windows().contains(&self.window.into()))
     }
 
     /// Draws and returns the window's pixels.
@@ -426,7 +437,9 @@ impl<V: Render + 'static> Driver<V> {
 ///   replacements. There is no file, so nothing changes behind a test's back
 ///   unless it calls these.
 /// - [`UiBackend::apply_settings`] keeps the settings and makes up three
-///   listening listeners at the ports they name (nothing is bound).
+///   listening listeners at the ports they name (nothing is bound); with
+///   [`FixedBackend::fail_bind`] one of them is `Failed`, and with
+///   [`FixedBackend::fail_save`] the call is an error and nothing changes.
 /// - [`UiBackend::set_paused`] is remembered.
 ///
 /// [`UiBackend::status`] is [`FixedBackend::status`] with the rules, the pause and
@@ -442,6 +455,13 @@ pub struct FixedBackend {
     /// What [`UiBackend::login_item`] returns. `None`, like Linux, until a test
     /// that wants the switch sets one.
     pub login: Option<Rc<dyn LoginItem>>,
+    /// A listener (`otlp-http`) and the reason (`Address already in use (os
+    /// error 98)`) [`UiBackend::apply_settings`] reports it `Failed` with, as the
+    /// engine does for a port that is in use. `None`: every listener listens.
+    pub fail_bind: Option<(&'static str, String)>,
+    /// When set, [`UiBackend::apply_settings`] fails with this message and
+    /// changes nothing, as it does for a settings file that cannot be written.
+    pub fail_save: Option<String>,
     rules: RuleSet,
     generation: Cell<u64>,
     settings: RefCell<Settings>,
@@ -458,6 +478,8 @@ impl FixedBackend {
             status: listening_status(),
             utc_offset: 0,
             login: None,
+            fail_bind: None,
+            fail_save: None,
             rules: RuleSet::new(Vec::new(), Arc::new(SystemClock)),
             generation: Cell::new(0),
             settings: RefCell::new(Settings::default()),
@@ -549,12 +571,21 @@ impl UiBackend for FixedBackend {
     }
 
     fn apply_settings(&self, s: Settings) -> anyhow::Result<Vec<ListenerStatus>> {
+        if let Some(message) = &self.fail_save {
+            anyhow::bail!("{message}");
+        }
         let listening = |name: &'static str, port: u16| {
             let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+            let state = match &self.fail_bind {
+                Some((failing, reason)) if *failing == name => {
+                    ListenerState::Failed(reason.clone())
+                }
+                _ => ListenerState::Listening(address),
+            };
             ListenerStatus {
                 name,
                 requested: address,
-                state: ListenerState::Listening(address),
+                state,
             }
         };
         let listeners = vec![

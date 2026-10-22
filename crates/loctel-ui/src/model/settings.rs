@@ -5,14 +5,23 @@
 //!
 //! The disk cap is not on the form: it is not enforced until the spill-to-disk
 //! store exists (M5), so Settings does not offer it.
+//!
+//! The window also says how each endpoint is doing ([`endpoint_state`]) and,
+//! after an Apply, which ones could not bind ([`failures`]); the words are here,
+//! with the form's, so a plain test pins them.
 
-use loctel_engine::{Ports, Settings};
+use loctel_engine::{ListenerState, ListenerStatus, Ports, Settings};
+
+use crate::menu_text::reason;
 
 /// Under a field whose text is not a port.
 pub const PORT_RANGE: &str = "Enter a port from 1 to 65535";
 
 /// Under every field that has the same port as another.
 pub const DUPLICATE_PORTS: &str = "Each endpoint needs its own port";
+
+/// What an endpoint's line says while its listener is up.
+pub const LISTENING: &str = "listening";
 
 /// A field of the form.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -23,6 +32,73 @@ pub enum Field {
     Http,
     /// The MCP port.
     Mcp,
+}
+
+impl Field {
+    /// Every field, in the order of the form and of the engine's listeners.
+    pub const ALL: [Field; 3] = [Field::Grpc, Field::Http, Field::Mcp];
+
+    /// The caption of the field's input.
+    pub fn label(self) -> &'static str {
+        match self {
+            Field::Grpc => "OTLP gRPC port",
+            Field::Http => "OTLP HTTP port",
+            Field::Mcp => "MCP port",
+        }
+    }
+
+    /// The name the engine gives the listener this field moves.
+    pub fn listener(self) -> &'static str {
+        match self {
+            Field::Grpc => "otlp-grpc",
+            Field::Http => "otlp-http",
+            Field::Mcp => "mcp",
+        }
+    }
+}
+
+/// How the listener of a field is doing: the text beside its input, and
+/// whether it is good news (the view paints it `ok` or in the error colour).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EndpointState {
+    pub ok: bool,
+    /// `listening`, or `failed: <reason>`.
+    pub text: String,
+}
+
+/// The state of `field`'s listener among `listeners`, or `None` when the engine
+/// does not report one. `failed: address in use` when the operating system says
+/// "in use" (whatever its wording), otherwise `failed: ` and the error as the
+/// engine gave it, cut to 40 characters.
+pub fn endpoint_state(listeners: &[ListenerStatus], field: Field) -> Option<EndpointState> {
+    let listener = listeners
+        .iter()
+        .find(|listener| listener.name == field.listener())?;
+    Some(match &listener.state {
+        ListenerState::Listening(_) => EndpointState {
+            ok: true,
+            text: LISTENING.to_owned(),
+        },
+        ListenerState::Failed(error) => EndpointState {
+            ok: false,
+            text: format!("failed: {}", reason(Some(error))),
+        },
+    })
+}
+
+/// One line per listener that failed, in the engine's order: `otlp-http:
+/// address in use`. It is what the window says after an Apply that could not
+/// bind a port; empty when every listener is up.
+pub fn failures(listeners: &[ListenerStatus]) -> Vec<String> {
+    listeners
+        .iter()
+        .filter_map(|listener| match &listener.state {
+            ListenerState::Listening(_) => None,
+            ListenerState::Failed(error) => {
+                Some(format!("{}: {}", listener.name, reason(Some(error))))
+            }
+        })
+        .collect()
 }
 
 /// What the form's fields hold right now, as typed.

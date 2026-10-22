@@ -18,8 +18,9 @@ below and [`macos.md`](macos.md)); the look of the glass parts is done and
 tested here, and Apple's glass behind them is `loctel-macos`'s and unverified.
 Milestones 1 and 2 had one view, the **status view**, which stays as a
 standalone view with its own screenshot tests (Milestone 2 added the discard
-rules line to it and to the macOS menu). The remaining parts of Milestone 4 are
-the Settings window and the popover. The macOS menu bar item is in
+rules line to it and to the macOS menu). Milestone 4 Task 6 adds the Settings
+window, a window of its own (see "The Settings window"); the popover is the
+remaining part. The macOS menu bar item is in
 `loctel-macos`; it only borrows the strings from `menu_text`.
 
 GPUI comes as the weekly `gpui-pre` snapshot, `gpui-pre`, `gpui-pre-platform`
@@ -40,12 +41,12 @@ are what shows you what moved (the `upgrade-gpui` skill has the steps; decision
 | `menu_text::rules_line(&StatusModel)` | the discard rules in one line, the first that applies: `Discard rules file has an error`; `1 discard rule on · 1 has an error` (for more than one, `3 discard rules on · 2 have errors`); `No discard rules on`; `1 discard rule on · 31% dropped` or `3 discard rules on · 0% dropped`. The percentage is the share the rules dropped of what arrived since launch, rounded to a whole number; a value that is not a number reads `0%` and one outside 0 to 1 is cut to it. A file error wins over a rule error, a rule error over "no rules on" |
 | `menu_text::format_rate(f64)` | `412` is `412`, `1234` is `1.2k`, `0.4` is `0`. One decimal under ten thousand, none above, never `.0` (`1k`, `10k`, `1.3M`); NaN, infinity and negatives read `0` |
 | `model` | the pure models of the main window: `format`, `colors`, `trace_table`, `query_bar`, `map_layout`, `waterfall`, `inspector`, `trace_view`, and (Milestone 4) `logs`, `histogram`, `rules`, `settings`, `popover` (see "Models" below) |
-| `app` | the main window's shell (see "The main window"): `MainWindow`, `Screen`, `UiBackend`, `open_main_window`, `Backdrop`/`GlassRegion`, `kit_theme`; the home screen's live data (see "Live data"): `HomeModel`, `HomeData`, `TimeRange`; the open trace's (see "The trace view"): `TraceModel`; the Logs screen's (see "The Logs screen"): `LogsModel`, `LogsControls`; and the Discard rules screen's (see "The Discard rules screen"): `RulesModel`, `RuleEditor`, `PreviewState` |
-| `views` | the views of the main window's screens (see "The service map", "The trace table", "The trace view", "The Logs screen" and "The Discard rules screen"): `MapView`, with its `Camera`, `TraceTableView`, `TraceView` with its `WaterfallView`, `InspectorView` and `SpanLogsView`, `LogsView` with its `HistogramView`, and `RulesView` with its `RuleEditorView` |
+| `app` | the main window's shell (see "The main window"): `MainWindow`, `Screen`, `UiBackend`, `open_main_window`, `Backdrop`/`GlassRegion`, `kit_theme`; the home screen's live data (see "Live data"): `HomeModel`, `HomeData`, `TimeRange`; the open trace's (see "The trace view"): `TraceModel`; the Logs screen's (see "The Logs screen"): `LogsModel`, `LogsControls`; and the Discard rules screen's (see "The Discard rules screen"): `RulesModel`, `RuleEditor`, `PreviewState`; and `open_settings_window` (see "The Settings window") |
+| `views` | the views of the main window's screens (see "The service map", "The trace table", "The trace view", "The Logs screen" and "The Discard rules screen"): `MapView`, with its `Camera`, `TraceTableView`, `TraceView` with its `WaterfallView`, `InspectorView` and `SpanLogsView`, `LogsView` with its `HistogramView`, `RulesView` with its `RuleEditorView`, and (see "The Settings window") `SettingsView` |
 | `Theme` | the colours below. `Theme::dark()`, `Theme::light()` and `Theme::for_appearance(WindowAppearance)`. It is also a GPUI global once `kit_theme::apply` has run |
 | `KitAssets` | GPUI Kit's bundled icons, to register with `Application::with_assets` |
 | `register_fonts(cx)`, `FONT_FAMILY` | the bundled typeface (below) |
-| `testing` (feature `screenshot`) | `render_png` and `assert_snapshot`; for the main window `render_window_png`, `Driver` (click, drag, scroll, pinch, type), `headless_app`, `FixedBackend` (with `rule_set()`, the rules in memory, for a test that wants them to have dropped something), `RecordingBackdrop` (see "Screenshot tests") |
+| `testing` (feature `screenshot`) | `render_png` and `assert_snapshot`; for the main window `render_window_png`, `Driver` (click, drag, scroll, pinch, type), `headless_app`, `FixedBackend` (with `rule_set()`, the rules in memory, for a test that wants them to have dropped something, and `fail_bind` and `fail_save`, which make `apply_settings` report a listener `Failed` or fail to write), `RecordingBackdrop` (see "Screenshot tests") |
 
 The strings in `menu_text` are the contract: the macOS menu header and the
 status view's pill both use `status_line`, the macOS menu's rules header and the
@@ -96,6 +97,12 @@ status box) and the toolbar are on every screen.
               |    click a card -> the editor opens on it; the switch toggles it and nothing else
               |    `Save` / `Cancel` / `Delete` (asks first); a file edited meanwhile -> the banner
               |    arriving with a draft (`Discard lines like this…`) -> the editor opens on it, unsaved
+
+ The Settings window  (Milestone 4 Task 6: not a screen but a window of its own, 520 by 360;
+                       nothing opens it yet: ⌘, in the main window is Task 7's, the popover's
+                       `Settings…` is Task 9's)
+   SettingsView   three port inputs with the state of their endpoints, the login switch (macOS),
+                  `Apply` and `Close`;  app::open_settings_window opens it or focuses the open one
 ```
 
 | From | The user does | To |
@@ -138,6 +145,7 @@ the choices; decision 0031 has the two gaps of Milestone 3 that remain.
 | `LogsControls` | `app/toolbar.rs` | `LogsModel`: tail, range | | "The Logs screen" |
 | `RulesView` | `views/rules_view.rs` | `RulesModel`: cards, banners, the share dropped | `model::rules` (`rows`, `dropped_line`, `file_error_line`) | "The Discard rules screen" |
 | `RuleEditorView` | `views/rule_editor_view.rs` | `RulesModel`: the editor session (draft, preview, banner) | `model::rules` (`Draft`, `draft_error_line`, `preview_text`) | "The Discard rules screen" |
+| `SettingsView` | `views/settings_view.rs` | `UiBackend`: `settings()`, `status()` listeners once a second, `login_item()` | `model::settings` (`Form`, `endpoint_state`, `failures`) | "The Settings window" |
 | `StatusView` | `status_view.rs` | `StatusModel` | `menu_text` | "What is in the crate" |
 
 `HomeModel` (`app/data.rs`), `TraceModel` (`app/trace_data.rs`) and `LogsModel`
@@ -602,6 +610,16 @@ Pinned in `tests/model_misc.rs`.
   `http://127.0.0.1:4319/mcp`, which the Copy button copies); a failed listener
   shows the address it was asked for with `ok` false. `rules_line` is
   `menu_text::rules_line`. `paused` and `start_at_login` pass through.
+- The Settings window's endpoint lines (Task 6; in `tests/model_misc.rs` too).
+  `Field::ALL` is the three fields in order, `Field::label()` the caption of
+  the input (`OTLP gRPC port`, `OTLP HTTP port`, `MCP port`) and
+  `Field::listener()` the engine's name for what it moves (`otlp-grpc`,
+  `otlp-http`, `mcp`). `endpoint_state(&listeners, field)` is `listening` (ok) or
+  `failed: <reason>` (not ok) for that field's listener, or `None` when the engine
+  does not report it; the reason is `menu_text`'s: `address in use` when the OS
+  error says "in use", otherwise the error cut to 40 characters. `failures(&listeners)`
+  is one `otlp-http: address in use` line per failed listener, in the engine's
+  order, empty when all are up.
 
 Decision 0036 has the choices these models make where the plan is silent.
 
@@ -1452,6 +1470,86 @@ its two buttons over the fields, `Save` dimmed, and the list showing the fourth
 rule the file got). The monospace face is Inter on Linux, as in the table. How
 the screen looks and behaves on a Mac is unverified.
 
+## The Settings window
+
+`views::SettingsView` (`src/views/settings_view.rs`, Milestone 4 Task 6) is the
+form of the Settings window, and `app::open_settings_window(backend, cx)`
+(`src/app/settings_window.rs`) opens it: 520 by 360 logical pixels, centred, not
+resizable, titled `Settings`, the view in GPUI Kit's `Root` like the main window.
+If a Settings window is already open it focuses that one and returns its handle
+(the handle is kept in a GPUI global and checked against `cx.windows()`, so a
+window that was closed is forgotten and the next call opens a new one). The view
+takes the theme from the window's appearance and follows it, as `MainWindow`
+does. The disk cap is not on the form until M5 (nothing enforces it). The form's
+rules are `model::settings::Form` (see "Models"); decision 0039 has the choices
+the plan left open.
+
+**Layout** (the fields scroll, the buttons are pinned under them; all of it fits
+the 360 px even with all three messages showing, which `settings_invalid_dark`
+checks):
+
+| Part | What |
+|---|---|
+| title | `Settings` (18 px, semibold) |
+| `Endpoints` | a panel with a row per field: the caption (`OTLP gRPC port`, `OTLP HTTP port`, `MCP port`), a 96 px input, and how that endpoint is doing: a green dot and `listening` in `ok`, or a red dot and `failed: <reason>` in `error_text`. A text that is not a port, or a port two fields share, gets its message (`Enter a port from 1 to 65535`, `Each endpoint needs its own port`) in `error_text` under its input |
+| `Startup` | only where `UiBackend::login_item()` is `Some` (macOS): a panel with the `Start loctel at login` switch, set from `LoginItem::is_enabled()` when the window opens |
+| buttons | `Apply` (primary; on while the form differs from what was saved and every field is valid) and `Close` (closes the window); beside them, in `error_text`, what the last Apply could not do |
+
+**Apply** (`SettingsView::apply`, the button; nothing happens while it is off):
+
+1. It takes the settings the backend has (`UiBackend::settings()`), puts the three
+   ports in them and calls `UiBackend::apply_settings`. That saves `settings.toml`
+   and rebinds the listeners whose port changed (`EngineHandle::rebind`). Every
+   other setting stays as it was; the login switch is not written to the file (the
+   system is the source of truth, see `login_item.rs`).
+2. **A port that cannot be bound is not an error of Apply.** It is saved; the
+   listener comes back `Failed`; the row says `failed: address in use`; the line
+   beside the buttons says `otlp-http: address in use` (`failures`); the other
+   listeners are untouched (plan Review Focus 4;
+   `apply_rebinds_and_shows_failure`). The form counts as saved, so `Apply`
+   goes off again.
+3. **A settings file that cannot be written is an error**: `Could not save the
+   settings: <reason>` beside the buttons, nothing moved, the form and the switch
+   as they were, `Apply` still on to try again. The login item is not touched
+   then.
+4. **The login switch** takes effect here, not when it is clicked: if it differs
+   from what was loaded, `LoginItem::set_enabled(on)` is called after the ports
+   are saved. If the system refuses, `Could not change Start at login: <reason>`
+   is shown (the ports stay applied) and the switch shows what
+   `LoginItem::is_enabled()` says now, whatever was asked.
+5. The inputs are rewritten to the ports as saved (`" 4500 "` reads `4500`).
+
+What the last Apply could not do goes away when the form is edited again.
+
+**Refresh.** Once a second (`SETTINGS_REFRESH`) the view reads
+`UiBackend::status().listeners` for the row states, and, while the switch is as
+loaded (the user has not clicked it), asks the system's login item again, so a
+change made in System Settings shows. It never rewrites what is typed in an input,
+and a switch the user has clicked stays theirs until Apply. The row states are the
+engine's, so while a port is edited and not applied a row still says what is true
+of the port it listens on.
+
+**For tests.** `SettingsView` reads: `form()`, `can_apply()`, `endpoint(field)`,
+`message(field)`, `notice()`, `sections()`, `input_text(field, cx)` and
+`bounds_of(SettingsPart, cx)` / `center_of` (`Input(field)`, `Status(field)`,
+`Message(field)`, `LoginSwitch`, `Apply`, `Close`). `tests/settings_popover.rs`
+(the popover's tests join it in Task 8) drives it in a `Driver<SettingsView>` at
+520 by 360 over a `FixedBackend`: `fail_bind` makes the HTTP listener `Failed`
+the way a port in use does, `fail_save` makes `apply_settings` an error, and the
+login item is a `FakeLogin` the test can move behind the window's back. `Driver`
+gained `is_open()` for `Close` (a click that closes the window leaves nothing to
+draw).
+
+**References** (520 by 360, at 2x: 1040 by 720): `settings_dark.png` and
+`settings_light.png` (all three listening, the login switch on, `Apply` dimmed),
+`settings_edited_dark.png` (HTTP typed as 4400 and the switch clicked, not applied:
+`Apply` lit and the HTTP row still `listening`), `settings_failed_dark.png` (HTTP applied to a port that is in use: the red
+row and `otlp-http: address in use` beside the buttons) and
+`settings_invalid_dark.png` (the worst case: two fields with the same port and a
+third out of range, each with its message, and everything still in view). How the
+window looks and behaves on a Mac (its chrome, that it is not resizable, how it
+takes the focus from a menu bar app) is unverified.
+
 ## Theme tokens
 
 The dark tokens come from the accepted mockups; a test pins them. The light
@@ -1572,7 +1670,9 @@ assert_snapshot("shell_dark", &image);   // 2880 by 1800, about 220 KB
   released), `scroll_with(point, dy, modifiers)` (`Modifiers::control()` for a
   ctrl-scroll), `pinch(point, delta)`,
   `resize((w, h))`, `draw()`, `capture()`, `update_root(|view, window, cx| ..)`,
-  `read_root(|view| ..)` and `read(|app| ..)` (globals such as Kit's theme).
+  `read_root(|view| ..)` and `read(|app| ..)` (globals such as Kit's theme), and
+  `is_open()` (false once something in the window closed it: a click on the
+  Settings window's `Close`; `draw` then has nothing to draw and does not panic).
   Points are logical pixels from the top left of the window. Every input goes
   through `Window::dispatch_event`, the path a real event takes, so hit testing,
   hover and focus behave as they do for a user. Each call runs what is pending
@@ -1584,7 +1684,8 @@ assert_snapshot("shell_dark", &image);   // 2880 by 1800, about 220 KB
   the `HeadlessAppContext` itself.
 - **`FixedBackend`** (a `UiBackend` over a store you load, with
   `listening_status()` and UTC, and the rules, settings, pause and login item
-  in memory), and **`RecordingBackdrop`** (every
+  in memory; `fail_bind` and `fail_save` make `apply_settings` report a listener
+  `Failed` or fail to write), and **`RecordingBackdrop`** (every
   `set_regions` call, `calls()`).
 - The clock is the test dispatcher's, not the store's: a `ManualClock` store
   moves only when the test advances that clock too.
@@ -1620,10 +1721,11 @@ repo skill `update-screenshots` has the steps, and how to read a CI failure.
 
 Every reference of `crates/loctel-ui/tests/snapshots/`, with the test that
 owns it, the data it is drawn from and what it shows. All of them were opened
-and checked when they were made (Milestone 3, and the Logs and Discard rules ones in Milestone 4 Tasks 4 and 5): legible text, the forced theme, and
+and checked when they were made (Milestone 3, and the Logs, Discard rules and Settings ones in Milestone 4 Tasks 4, 5 and 6): legible text, the forced theme, and
 nothing clipped other than the table and the lists that scroll. The main
 window's are 1440 by 900 logical pixels (2880 by 1800, 220 to 740 KB each, all
-under the 1.5 MB the plan allows, so the capture stays at 2x). "Home store" is
+under the 1.5 MB the plan allows, so the capture stays at 2x); the Settings
+window's are 520 by 360 (1040 by 720, 60 to 90 KB). "Home store" is
 `common::home_store()`: the failing checkout, the successful one 5 s later and
 one health check of each service, on a store clock 70 s later, so every trace is
 complete; "empty store" has nothing in it.
@@ -1658,6 +1760,10 @@ complete; "empty store" has nothing in it.
 | `rules_file_error_dark` | `rules_screen.rs` | three rules, a file error | the red banner `The rules file has an error: ... loctel keeps using the rules it had.` over the three cards |
 | `rules_editor_invalid_dark` | `rules_screen.rs` | `New rule`, a name and `{ name = ` typed | the focused query with `at column 10: expected a value` in red under it, `Fix the query to see what it would drop.` in the preview, `Save` and `Cancel` only |
 | `rules_editor_changed_dark` | `rules_screen.rs` | the first rule open with a new name typed, the file then changed (its query, a fourth rule) and a second passed | the amber banner `The rules file changed while you were editing.` with `Keep my draft` and `Discard my draft`, the dimmed `Save`, the draft kept, four cards |
+| `settings_dark`, `settings_light` | `settings_popover.rs` | a `FixedBackend` with a login item that is on, the default ports (4317, 4318, 4319) | the Settings window (520 by 360): `Settings`, the three ports with a green dot and `listening`, `Startup` with the `Start loctel at login` switch on, `Apply` dimmed and `Close` |
+| `settings_edited_dark` | `settings_popover.rs` | the same with the login item off, HTTP typed as `4400` and the switch clicked | the edit not applied: `Apply` lit, the switch on, the HTTP row still `listening` (the old port) |
+| `settings_failed_dark` | `settings_popover.rs` | the login item off, HTTP typed as `4400` and `Apply` clicked, with `fail_bind` on `otlp-http` | the red dot and `failed: address in use` on the HTTP row (the input still shows `4400`), `otlp-http: address in use` beside the buttons, `Apply` dimmed again |
+| `settings_invalid_dark` | `settings_popover.rs` | the login item on, HTTP typed as `4317` and MCP as `70000` | `Each endpoint needs its own port` under the first two inputs and `Enter a port from 1 to 65535` under the third, the rows still `listening`, `Apply` dimmed, the `Startup` panel still in view above the buttons |
 
 `shell_light`, `shell_glass_light`, `home_light`, `trace_light` and the `toolbar_*_light` ones are the same
 picture as their dark twins with the light `Theme`: the same data and the same
@@ -1800,6 +1906,12 @@ The repo skill `run-and-screenshot` covers running with meshgen data.
   parts in whatever face Kit's `mono_font_family` finds there (see "The font").
   Whether that looks right next to a Mac's own windows is for the M3 check to
   say.
+- The Settings window on a Mac (Milestone 4 Task 6): that the window opens at 520
+  by 360 and cannot be resized, that asking for it twice brings the open one to
+  the front, how Kit's inputs and switch look and behave in it, and that the
+  `Start loctel at login` switch (`SMAppService`) follows System Settings and
+  reports a refusal. The tests run Linux's headless platform with a fake login
+  item.
 - Everything here was checked on Linux with software rendering. How the status
   view looks and behaves on macOS (fonts, scale, window chrome) is unverified
   until a milestone check on a real Mac.
