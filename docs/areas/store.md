@@ -17,7 +17,9 @@ Status: trace assembly, completeness, dedup, eviction, failure
 classification, trace summaries, trace search, logs, the service map and the
 services list are implemented. So are (Milestone 2) the TraceQL and LogQL query
 filters, matched spans, removal and the scans (see "Query filters", "Removal"
-and "Scans" below).
+and "Scans" below), and (Milestone 4) the log IDs, the level and window filters,
+the log histogram and the lines around a log, which the Logs screen is built on
+(see "Log IDs, levels, histogram and lines around" below).
 
 ## API
 
@@ -32,6 +34,10 @@ let page = store.search_traces(&TraceFilter::default(), &PageRequest { limit: 20
 store.ingest_logs(logs);                 // Vec<loctel_model::LogRecord>
 let page = store.search_logs(&LogFilter::default(), &PageRequest { limit: 50, cursor: None });
 let lines = store.logs_for_span(trace_id, span_id); // Vec<LogRecord>, oldest first
+let page = store.search_logs_keyed(&LogFilter::default(), &PageRequest { limit: 50, cursor: None }); // Page<(LogId, LogRecord)>
+let record = store.log(log_id);          // Option<LogRecord>
+let bars = store.log_histogram(&LogFilter::default(), since, until, 48); // Vec<HistogramBucket>
+let around = store.logs_around(log_id, 3, 3); // Around { lines, target }
 let map = store.service_map(TimeWindow { since_unix_nano }); // ServiceMap
 let services = store.services(TimeWindow { since_unix_nano }); // Vec<ServiceStats>
 let stats = store.stats();               // StoreStats
@@ -357,8 +363,10 @@ condition that is set must hold; the default keeps everything.
 | Field | Keeps |
 |---|---|
 | `since_unix_nano` | logs at or after it (inclusive), by the time defined above |
+| `until_unix_nano` | logs strictly before it (exclusive), by the same time. `[since, until)` is a window that tiles with the next one |
 | `service` | logs from that service (exact name; `unknown_service` for logs without one) |
 | `min_severity` | logs of that severity or higher. `Unspecified` is the lowest level, so any `Some(level)` above it drops unlabelled logs |
+| `levels` | logs whose severity is in the `LevelSet` (see "Log IDs, levels, histogram and lines around"). `None` keeps every level, `Some` of an empty set keeps nothing. Combines with `min_severity` (both must hold) |
 | `contains` | logs whose **body** contains the text, ignoring case (Unicode lowercase folding). Attributes and service name are not searched. The empty text matches every log |
 | `trace_id` | logs emitted in that trace (with or without a span ID) |
 | `span_id` | logs emitted in a span with that ID, in any trace unless `trace_id` is set too |
@@ -379,8 +387,9 @@ first). Paging is a keyset, as for traces:
   the listing sooner.
 - A cursor the store did not produce yields an empty page with no cursor.
 
-Cost: the scan runs from the newest log and stops when the page is full or
-the logs are older than `since`, so a recent page costs about its size. A
+Cost: the scan starts at the newest log older than `until` (and than the
+cursor) and stops when the page is full or the logs are older than `since`, so a
+recent page costs about its size. A
 filter that matches rarely (`contains`, `service`, `trace_id`) scans every log
 that is newer than `since`. On the development container (one-off, release
 build, 1,000,000 logs held), a search that matches nothing took about 0.12 s,
@@ -396,9 +405,80 @@ that has a trace ID but no span ID is not linked to any span (find it with
 call works before the span arrives and after its trace is evicted. It reads a
 per-span index, so it costs the number of logs the span has.
 
+### Log IDs, levels, histogram and lines around
+
+Added in Milestone 4 for the Logs screen (plan Task 1). Nothing about
+`search_logs` changed: it is now `search_logs_keyed` with the IDs dropped.
+
+**`LogId { time_unix_nano, seq }`** is the key the store already used inside
+(`time` as defined above, then the arrival number), made public. It is `Copy`,
+`Ord` (the order of the store: by time, a tie going to the later arrival) and
+`Hash`. It is stable for as long as the log is held (a late log inserting in
+the middle or the eviction of older logs does not change it), and it is never
+given to a second log: the arrival counter only counts up, `clear` included.
+Because of that, an ID that outlives its log (evicted, removed by a discard rule,
+cleared) reads as "gone", never as some other log.
+
+- `Store::search_logs_keyed(&LogFilter, &PageRequest) -> Page<(LogId, LogRecord)>`
+  is `search_logs` with each log's ID: the same filter, order and cursor
+  (`"{time}-{arrival}"`, still opaque to callers). Both bound the page from
+  above by the older of `until` and the cursor.
+- `Store::log(LogId) -> Option<LogRecord>` is a map lookup: `None` once the log
+  is gone, or for an ID never issued.
+
+**`LevelSet`** is a `u8` with a bit per `Severity` (a `match` without a wildcard
+maps severities to bits, so a new severity is a compile error until it has one).
+`LevelSet::default()` is the empty set, `LevelSet::ALL` every level, `with(sev)`
+adds one and `contains(sev)` asks. `LevelSet::from_groups(err, wrn, inf, dbg)`
+is the Logs screen's four toggles, as the union of the groups that are on:
+
+| group | severities |
+|---|---|
+| `err` | error, fatal |
+| `wrn` | warn |
+| `inf` | info, **unspecified** |
+| `dbg` | debug, trace |
+
+Unlabelled logs (OTLP severity 0) count as `INF`, so switching `INF` off hides
+them and no toggle combination makes a log unreachable.
+
+**`Store::log_histogram(&LogFilter, since, until, buckets) -> Vec<HistogramBucket>`**
+counts the logs in `[since, until)` that match the filter into `buckets` buckets
+of equal width, oldest first. `HistogramBucket { total, errors }`: `errors`
+counts error and fatal. Rules:
+
+- The result is always exactly `buckets` long. No buckets gives an empty vector;
+  an empty or backwards window (`until <= since`) gives all-zero buckets.
+- The filter's own `since_unix_nano` and `until_unix_nano` are ignored: the
+  window is the arguments (the Logs screen keeps its search window, the
+  histogram its own range). Every other condition holds, `levels` and `query`
+  included.
+- A log at `t` goes into bucket `(t - since) * buckets / (until - since)`, rounded
+  down, worked out in 128 bits (a window of years times 48 cannot overflow). So
+  a log at exactly `since` is in bucket 0, one at exactly `until` is out, and
+  a window that does not divide evenly still tiles: every log in it is counted
+  once. The 48 buckets over 15 minutes of the mockup are 18.75 s wide.
+- Cost: a pass over the logs inside the window, each tested against the filter.
+  The Logs screen asks every 2 s. That is fine at the sizes M4 meets; M5's
+  segment store gets a real index for it.
+
+**`Store::logs_around(LogId, before, after) -> Around`** is the "Show lines
+around" of the Logs screen. It ignores every filter (the lines in between are
+the point) and returns the lines oldest first, as `Around { lines:
+Vec<(LogId, LogRecord)>, target: Option<usize> }`:
+
+- The target is held: up to `before` logs older than it, the log itself and up to
+  `after` newer ones. `target` is its index in `lines`, which is `before` unless
+  fewer older logs remain (the oldest log held gives `Some(0)`).
+- The target is not held (evicted, removed or cleared): `target` is `None` and
+  the lines are the ones on either side of where it was, the `before` just
+  older than its time and the `after` just newer. With nothing held the result is
+  empty. The Logs screen shows `This line is no longer held` when `target` is
+  `None` (see Review Focus 5 of the M4 plan).
+
 ### How logs are held
 
-A `BTreeMap` keyed by `(time, arrival number)`, a `HashSet` of the dedup keys
+A `BTreeMap` keyed by `LogId` (`(time, arrival number)`), a `HashSet` of the dedup keys
 of the held logs, and two indexes of those keys, each kept in time order: one
 per span (`logs_for_span`) and one per trace for every log that carries a trace
 ID, with or without a span ID (so a whole trace's logs can be removed without a

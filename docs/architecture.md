@@ -183,9 +183,13 @@ rules) are written to disk.
 - **Logs.** `Store::ingest_logs` keeps log records in time order (observed
   time when the timestamp is unset), drops exporter retries by
   `LogRecord::dedup_key()` and evicts the oldest past `max_log_records`.
-  `Store::search_logs` filters by time, service, minimum severity, body text
-  (case-insensitive), trace and span, newest first with the same keyset
-  paging; `LogFilter::query` adds a LogQL query. `Store::logs_for_span` returns
+  `Store::search_logs` filters by time window (`since` inclusive, `until`
+  exclusive), service, minimum severity, a set of levels (`LogFilter::levels`),
+  body text (case-insensitive), trace and span, newest first with the same keyset
+  paging; `LogFilter::query` adds a LogQL query. `Store::search_logs_keyed` also
+  returns each log's stable `LogId`, which `Store::log` and `Store::logs_around`
+  read, and `Store::log_histogram` counts a search into equal buckets (the Logs
+  screen's volume bars). `Store::logs_for_span` returns
   a span's logs, oldest first, linked by ID only, so it works whether or not the
   span is held.
 - **Removal and scans.** `Store::remove_trace` and `Store::remove_spans`

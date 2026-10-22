@@ -494,8 +494,10 @@ impl LoctelTools {
     ) -> Result<Json<SearchLogsResult>, String> {
         let filter = LogFilter {
             since_unix_nano: since(args.since.as_deref())?,
+            until_unix_nano: None,
             service: args.service.filter(|service| !service.is_empty()),
             min_severity: args.min_level.map(Severity::from),
+            levels: None,
             contains: args.contains,
             trace_id: args.trace_id.as_deref().map(parse_trace_id).transpose()?,
             span_id: None,
