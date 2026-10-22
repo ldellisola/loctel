@@ -4,7 +4,7 @@
 
 use std::borrow::Cow;
 
-use gpui::{App, Rgba, rgb};
+use gpui::{App, Global, Rgba, WindowAppearance, rgb};
 
 /// The family every view asks for. It is the bundled Inter (see
 /// `assets/fonts/LICENSE.txt`), registered by [`register_fonts`].
@@ -29,8 +29,16 @@ pub fn register_fonts(cx: &mut App) {
 }
 
 /// Every colour a view uses. Views read these and never write a hex literal.
+///
+/// The main window keeps the current one as a GPUI global (set by
+/// [`kit_theme::apply`](crate::app::kit_theme::apply), which also maps it onto
+/// GPUI Kit's theme): a view reads it with `cx.global::<Theme>()` while it
+/// renders, so it follows the system appearance without being told.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Theme {
+    /// Whether this is the dark look. GPUI Kit's theme has a mode of its own
+    /// (its defaults, scrollbars and shadows follow it), and this says which.
+    pub dark: bool,
     /// The window background.
     pub bg: Rgba,
     /// Raised surfaces: cards and lists.
@@ -57,6 +65,7 @@ impl Theme {
     /// The mocked-up look.
     pub fn dark() -> Theme {
         Theme {
+            dark: true,
             bg: rgb(0x15161a),
             panel: rgb(0x1a1b20),
             border: rgb(0x2a2b32),
@@ -83,6 +92,7 @@ impl Theme {
     /// builder's reading of it.
     pub fn light() -> Theme {
         Theme {
+            dark: false,
             bg: rgb(0xf4f4f6),
             panel: rgb(0xffffff),
             border: rgb(0xdcdce2),
@@ -104,6 +114,19 @@ impl Theme {
         }
     }
 }
+
+impl Theme {
+    /// The look that goes with a window's appearance: the dark theme for
+    /// `Dark` and `VibrantDark`, the light one for the other two.
+    pub fn for_appearance(appearance: WindowAppearance) -> Theme {
+        match appearance {
+            WindowAppearance::Dark | WindowAppearance::VibrantDark => Theme::dark(),
+            WindowAppearance::Light | WindowAppearance::VibrantLight => Theme::light(),
+        }
+    }
+}
+
+impl Global for Theme {}
 
 #[cfg(test)]
 mod tests {

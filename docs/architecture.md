@@ -33,7 +33,7 @@ crate updates this table and the diagram below it.
 | `loctel-engine` | core | Wires store, ingest, MCP and the discard rules; settings, pause, rates; owns threads and runtime | implemented: store, OTLP receivers and MCP server, `settings.toml`, pause, rates, and (Milestone 2) the discard rules at ingest with live reload of `rules.toml` and the handle API (see "Engine" below) |
 | `loctel-meshgen` | test tooling | Fake microservice mesh scenarios (library and `meshgen` binary) | implemented: six scenarios and a sender over gRPC, HTTP protobuf and HTTP JSON (see "Test tooling" below) |
 | `loctel-e2e` | test tooling | End-to-end tests through real OTLP and a real MCP client (`publish = false`) | implemented: a `Harness` over a real engine (with or without a rules file) and the tests of the transports, assembly, service map, agent flow, pause, release fixture, discard rules and queries (see "Test tooling" below) |
-| `loctel-ui` | UI | GPUI views, the pure view models and the headless screenshot harness | implemented: the status view (with the discard rules line, from Milestone 2), the shared menu text, the theme, the pure models of the main window (`model`: formats, service colours, trace table rows, query bar state, map layout, waterfall rows and inspector text; Milestone 3 in progress) and `testing::{render_png, assert_snapshot}` behind the `screenshot` feature (see "UI" below) |
+| `loctel-ui` | UI | GPUI views, the pure view models and the headless screenshot harness | implemented: the status view (with the discard rules line, from Milestone 2), the shared menu text, the theme, the pure models of the main window (`model`: formats, service colours, trace table rows, query bar state, map layout, waterfall rows and inspector text), the main window's shell (`app`: sidebar, toolbar, `UiBackend`, the GPUI Kit theme bridge; Milestone 3 in progress) and `testing::{render_png, render_window_png, Driver, assert_snapshot}` behind the `screenshot` feature (see "UI" below) |
 | `loctel-macos` | macOS | Status item, activation policy, login item (`cfg(target_os = "macos")`) | implemented, never run: the menu bar item and its menu (with the discard rules line and Edit discard rules…), the login item and the first-launch step; empty off macOS apart from three plain-Rust modules that the Linux tests cover (see "macOS shell" below) |
 | `loctel-app` | binary | The `loctel` binary: headless mode and GUI, bundle metadata | implemented: headless mode, on Linux the status window and on macOS the menu bar app (see "Headless mode", "UI" and "macOS shell" below); `[package.metadata.bundle]` and `bundle/` hold what goes into `loctel.app` (see "Release pipeline" below) |
 | `xtask` | tooling | Screenshots, next-version, release notes, MCP smoke test | implemented: `screenshots [--update]`, `run-shot`, `next-version`, `release-notes` and `mcp-smoke --url URL` (see "UI" and "Release pipeline" below) |
@@ -473,7 +473,8 @@ loctel [--headless] [--grpc-port N] [--http-port N] [--mcp-port N]
 `loctel-ui` is the thin GPUI layer: it depends on the engine (for
 `EngineStatus` and `EngineHandle`), on the store, the query crate and the model
 (for the `model` module below) and on GPUI (`gpui-pre`, `gpui-pre-platform`,
-`gpui-pre-wgpu`, all pinned `=0.3.9`), and the core depends on none of it. The
+`gpui-pre-wgpu`, all pinned `=0.3.9`, and GPUI Kit `=0.8.0` for the main
+window's components), and the core depends on none of it. The
 details, the theme tokens and the workflow are in
 [`areas/ui.md`](areas/ui.md); the choices and their reasons are in
 [`decisions/0008-ui-and-screenshot-choices.md`](decisions/0008-ui-and-screenshot-choices.md).
@@ -503,7 +504,18 @@ details, the theme tokens and the workflow are in
   pin every string and every place with plain assertions. The formats, the
   layout and the waterfall rules are in [`areas/ui.md`](areas/ui.md)
   ("Models").
-- **Screenshot tests** (`crates/loctel-ui/tests/screenshots.rs`) render views
+- **The `app` module** (`crates/loctel-ui/src/app/`, Milestone 3) is the main
+  window's shell: `MainWindow` (the floating sidebar with its status box, the
+  toolbar and the content panel, which show a `Screen`), the `UiBackend` trait
+  that gives views the `Store` and the `EngineStatus` (`EngineHandle` implements
+  it; tests use `testing::FixedBackend`), `open_main_window`, the `Backdrop`
+  and `GlassRegion` types through which a platform learns where the glass parts
+  are, and `kit_theme::apply`, the one place loctel's `Theme` is mapped onto GPUI
+  Kit's. Data flows engine, then `UiBackend`, then the models, then the views.
+  See [`areas/ui.md`](areas/ui.md) ("The main window") and
+  [`decisions/0024-gpui-kit.md`](decisions/0024-gpui-kit.md).
+- **Screenshot tests** (`crates/loctel-ui/tests/screenshots.rs`, and `screens.rs`
+  for the main window through `testing::render_window_png` and `Driver`) render views
   through GPUI's headless renderer (software wgpu, no GPU or display) with a
   bundled font, and compare pixel for pixel with references in
   `crates/loctel-ui/tests/snapshots/`. The `screenshot` feature is on in every

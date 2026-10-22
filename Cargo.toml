@@ -73,6 +73,12 @@ gpui-pre = "=0.3.9"
 gpui-pre-platform = { version = "=0.3.9", features = ["x11", "wayland"] }
 gpui-pre-wgpu = "=0.3.9"
 image = { version = "0.25.1", default-features = false, features = ["png"] }
+# GPUI Kit: the component library the main window is built from (table, input,
+# toggles, buttons, split panels, scroll areas, tooltips) and the `Root` every
+# window sits in. Its `gpui-pre =0.3.9` is the snapshot above, so the GPUI types
+# are the same ones. Pinned exactly, like GPUI: upgrading is its own change
+# (decision 0024, `.claude/skills/upgrade-gpui`).
+gpui-kit = "=0.8.0"
 
 # macOS shell (loctel-macos, loctel-app on macOS). `gpui-tray` is the status
 # item. It is generic over which GPUI it is built for, and `gpui-kit` is the

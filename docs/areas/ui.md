@@ -7,15 +7,17 @@ feel), §10.3 (screenshot tests) and §10.5 (gotchas from the spike).
 Status: Milestones 1 and 2 have one view, the **status view**, and the Linux
 window that shows it. Milestone 2 added the discard rules line to it and to the
 macOS menu; the rules screen is Milestone 4. The main window (Map & traces, Trace view) is Milestone 3
-(in progress: the pure models in `src/model` are done, the views are not; see
-"Models" below), the
-remaining screens and the popover Milestone 4. The macOS menu bar item is in
-`loctel-macos`; it only borrows the strings from `menu_text`.
+(in progress: the pure models in `src/model` and the window's shell in
+`src/app` are done, the screens are not; see "Models" and "The main window"
+below), the remaining screens and the popover Milestone 4. The macOS menu bar
+item is in `loctel-macos`; it only borrows the strings from `menu_text`.
 
 GPUI comes as the weekly `gpui-pre` snapshot, `gpui-pre`, `gpui-pre-platform`
-and `gpui-pre-wgpu`, all pinned to exactly `=0.3.9` (zed@93d7456). Upgrading is
-its own change: the API moves, and the screenshots are what shows you what
-moved.
+and `gpui-pre-wgpu`, all pinned to exactly `=0.3.9` (zed@93d7456), and GPUI Kit
+(`gpui-kit =0.8.0`, which depends on that same `gpui-pre`) for the components of
+the main window. Upgrading is its own change: the API moves, and the screenshots
+are what shows you what moved (the `upgrade-gpui` skill has the steps; decision
+0024 has why Kit).
 
 ## What is in the crate
 
@@ -28,9 +30,11 @@ moved.
 | `menu_text::rules_line(&StatusModel)` | the discard rules in one line, the first that applies: `Discard rules file has an error`; `1 discard rule on · 1 has an error` (for more than one, `3 discard rules on · 2 have errors`); `No discard rules on`; `1 discard rule on · 31% dropped` or `3 discard rules on · 0% dropped`. The percentage is the share the rules dropped of what arrived since launch, rounded to a whole number; a value that is not a number reads `0%` and one outside 0 to 1 is cut to it. A file error wins over a rule error, a rule error over "no rules on" |
 | `menu_text::format_rate(f64)` | `412` is `412`, `1234` is `1.2k`, `0.4` is `0`. One decimal under ten thousand, none above, never `.0` (`1k`, `10k`, `1.3M`); NaN, infinity and negatives read `0` |
 | `model` | the pure models of the main window: `format`, `colors`, `trace_table`, `query_bar`, `map_layout`, `waterfall`, `inspector` (see "Models" below) |
-| `Theme` | the colours below. `Theme::dark()` and `Theme::light()` |
+| `app` | the main window's shell (see "The main window"): `MainWindow`, `Screen`, `UiBackend`, `open_main_window`, `Backdrop`/`GlassRegion`, `kit_theme` |
+| `Theme` | the colours below. `Theme::dark()`, `Theme::light()` and `Theme::for_appearance(WindowAppearance)`. It is also a GPUI global once `kit_theme::apply` has run |
+| `KitAssets` | GPUI Kit's bundled icons, to register with `Application::with_assets` |
 | `register_fonts(cx)`, `FONT_FAMILY` | the bundled typeface (below) |
-| `testing` (feature `screenshot`) | `render_png` and `assert_snapshot` |
+| `testing` (feature `screenshot`) | `render_png` and `assert_snapshot`; for the main window `render_window_png`, `Driver`, `FixedBackend`, `RecordingBackdrop` (see "Screenshot tests") |
 
 The strings in `menu_text` are the contract: the macOS menu header and the
 status view's pill both use `status_line`, the macOS menu's rules header and the
@@ -288,6 +292,84 @@ span's first `exception` event: type, message, stack trace), and `attributes` an
 long ones (design 9.2 and the Task 8 plan: over 200 characters, `… (show all)`).
 Decision 0023 has the reasons for the details above.
 
+## The main window
+
+`loctel_ui::app` is the shell of the main window (Milestone 3, Task 4): the
+screens of Tasks 6 to 8 go into its content area. Decision 0024 has the choices.
+
+**Layout** (logical pixels, the constants are `pub` in `app`):
+
+- The window opens at 1440 by 900 (`DEFAULT_SIZE`) and cannot be made smaller
+  than 1000 by 640 (`MIN_SIZE`); its title is `loctel`.
+- Everything floats on the window colour (`Theme::bg`) with `INSET` = 10 around
+  and between the panels, and `PANEL_RADIUS` = 16 on each.
+  - The **sidebar** is `SIDEBAR_WIDTH` = 220 wide, the window's full height less
+    the inset. From the top it has `TRAFFIC_LIGHT_SPACE` (52, where the macOS
+    traffic lights sit; plain room on Linux), the navigation (one entry,
+    `Map & traces`, `NAV_ITEM_HEIGHT` 34, lit with the accent at 18%; Logs and
+    Discard rules arrive in Milestone 4) and, at the bottom, the **status
+    box**.
+  - The status box shows `status_line` and `rules_line` (the words of the macOS
+    menu) and a row per endpoint (`OTLP gRPC`, `OTLP HTTP`, `MCP`) with its
+    address, a red dot and address when it failed. It reads a `StatusModel` from
+    `UiBackend::status()` once a second and redraws only when it changed.
+  - To its right, the **toolbar** (`TOOLBAR_HEIGHT` 48) over the **content
+    panel**. The toolbar's contents depend on the screen: its title is
+    `toolbar_title(&Screen)`: `Map & traces`, or
+    `Map & traces › 4bf92f35…0e0e4736` on a trace. The Live indicator, the
+    time range, Pause and Clear all arrive with the home screen.
+
+**Screens.** `Screen` is `Home` or `Trace(TraceId)`; `MainWindow::screen()` and
+`navigate(screen, cx)` read and change it, and clicking the navigation entry
+shows `Home`.
+
+**The backend.** Views never name the engine: they hold an `Rc<dyn UiBackend>`
+with `store() -> Store`, `status() -> EngineStatus`, `clear_all()` and
+`utc_offset() -> i32` (the system zone's offset in seconds for the clock times;
+tests use 0). `impl UiBackend for EngineHandle` is the real one.
+`testing::FixedBackend { store, status, utc_offset }` is the test one;
+`FixedBackend::new(store)` gives the status of a healthy engine
+(`testing::listening_status()`: three listening endpoints, nothing received, no
+rules). Store reads that take time go through `store()` clones onto the
+background executor, never on the frame.
+
+**Opening it.** `open_main_window(backend, cx, attach_backdrop)` calls
+`app::init(cx)` (the bundled font and `gpui_kit::init`, once per app), opens
+the window with the options above and builds `MainWindow` inside GPUI Kit's
+`Root`. `attach_backdrop` runs inside the new window and returns the
+platform's `Backdrop` (macOS Liquid Glass, Task 10) or `None`. It leaves
+`reduce_motion` at the system's value. The app must register `KitAssets` with
+`Application::with_assets` for Kit's icons to draw.
+
+**Theme.** `Theme::for_appearance` picks dark for `Dark` and `VibrantDark`,
+light for the others. `MainWindow` applies it at creation and from the
+window's appearance observer (`set_appearance`, which a test calls directly).
+`kit_theme::apply(&Theme, cx)` is the one place our tokens meet Kit's:
+
+- It stores the `Theme` as a GPUI global (our views read `cx.global::<Theme>()`
+  while they render).
+- It switches Kit to its dark or light mode.
+- It lays our colours over Kit's `ThemeColor` (`kit_theme::kit_colors`):
+  - `background`, `foreground`, `border` and `input` come from `bg`, `text` and
+    `border`.
+  - `primary`, `ring` and `link` are our `accent`.
+  - Kit's `accent` is its hover tint, not ours.
+  - The surfaces of the table, list, popover and buttons are `panel`.
+  - The selected row is the accent at 18%.
+- It sets the font family to `Inter`.
+
+A component that looks wrong in a theme is fixed in `kit_colors`, never with a
+literal in a view.
+
+**Glass regions.** `Backdrop::set_regions(&[GlassRegion { bounds, corner_radius }])`
+tells a platform where its glass parts are: the sidebar first, then the
+toolbar, in window coordinates. The shell measures the real layout (canvas
+prepaint callbacks over each panel's border box) and calls it once per frame
+in which the pair changed, never otherwise (`RecordingBackdrop` in tests;
+`shell_reports_glass_regions_once`, `glass_regions_follow_a_resize`). It
+is called inside GPUI's frame, so an implementation only stores the regions
+and applies them later (Task 10).
+
 ## Theme tokens
 
 The dark tokens come from the accepted mockups; a test pins them. The light
@@ -315,8 +397,8 @@ Errors are never marked by colour alone: a failed listener says `Failed` and
 the error in words, the pill says `Port problem`, and the rules row says
 `has an error` or `Discard rules file has an error`.
 
-The Linux window always uses the dark theme. Following the system appearance
-(§9.3) arrives with the main window in Milestone 3.
+The status view's window always uses the dark theme. The main window follows
+the system appearance (§9.3): see "The main window".
 
 ## The font
 
@@ -364,6 +446,44 @@ assert_snapshot("status_view_dark", &image);
   about a second together.
 - **Determinism** is a test of its own (`render_is_deterministic` renders
   twice and compares bytes, and also that the image is not one flat colour).
+
+### Window screenshots and driving a window
+
+The main window's views need GPUI Kit, the forced theme and input, which a bare
+`render_png` does not give. `testing` has three more things for them, used by
+`tests/screens.rs` (and `interactions.rs` and `live.rs` later):
+
+```rust
+let image = render_window_png((1440, 900), &Theme::dark(), |window, cx| {
+    cx.new(|cx| MainWindow::new(backend, None, window, cx))
+});
+assert_snapshot("shell_dark", &image);   // 2880 by 1800, about 150 KB
+```
+
+- **`render_window_png(size, &theme, build)`** is `Driver::new` and one
+  `capture`. The harness initialises Kit (`app::init`, with Kit's icon assets),
+  puts the view in Kit's `Root`, calls `cx.set_reduce_motion(true)` (Kit's
+  scrollbar fade reads real time otherwise, and the pixels change from run to
+  run) and **forces the theme** by calling `kit_theme::apply(&theme, cx)` after
+  `build` ran. The test platform always reports the light appearance, so a view
+  that reads the window's appearance has chosen light by then; the forced theme
+  wins. `build` returns an `Entity<V>` (not an `AnyView`).
+- **`Driver`** is the same window kept open: `Driver::new(size, &theme, build)`,
+  then `click(point)`, `hover(point)`, `scroll(point, dy)` (positive `dy` shows
+  later content), `type_text("...")`, `key("enter")` (GPUI keystroke syntax:
+  `escape`, `cmd-f`), `advance(Duration)` (moves the test clock, runs the
+  timers and tasks due, so the 500 ms and 1 s refreshes fire when you say),
+  `resize((w, h))`, `draw()`, `capture()`, `update_root(|view, window, cx| ..)`,
+  `read_root(|view| ..)` and `read(|app| ..)` (globals such as Kit's theme).
+  Points are logical pixels from the top left of the window. Every input goes
+  through `Window::dispatch_event`, the path a real event takes, so hit testing,
+  hover and focus behave as they do for a user. Each call runs what is pending
+  and draws a frame.
+- **`FixedBackend`** (a `UiBackend` over a store you load, with
+  `listening_status()` and UTC), and **`RecordingBackdrop`** (every
+  `set_regions` call, `calls()`).
+- The clock is the test dispatcher's, not the store's: a `ManualClock` store
+  moves only when the test advances that clock too.
 
 ### The feature
 
@@ -415,6 +535,10 @@ The repo skill `run-and-screenshot` covers running with meshgen data.
 
 ## Unverified
 
+- The main window's macOS parts: the transparent title bar with the traffic
+  lights at (20, 20) over the sidebar's top strip, and how GPUI Kit's
+  components look and behave on a Mac. Nothing of the main window has run on a
+  Mac yet; the M3 check does it.
 - Everything here was checked on Linux with software rendering. How the status
   view looks and behaves on macOS (fonts, scale, window chrome) is unverified
   until a milestone check on a real Mac; the macOS app opens no window in

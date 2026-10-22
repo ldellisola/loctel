@@ -154,6 +154,7 @@ that matches before you start:
 | `update-screenshots` | a view's pixels change on purpose, you add a screenshot test, or one fails locally or in CI |
 | `add-mcp-tool` | an agent-facing capability changes: a new tool, argument or result field |
 | `add-query-feature` | TraceQL or LogQL gains syntax or semantics, a feature leaves the "not supported yet" list, or a query pasted from Grafana behaves differently from Grafana |
+| `upgrade-gpui` | the pinned GPUI snapshot (`gpui-pre`) or GPUI Kit has to move: one upgrade per pull request, with the screenshots as the guide |
 | `investigate-ci` | CI is red (the gate on a PR, a screenshot diff, or the release job after a merge): find the failing step, reproduce it, fix the cause |
 
 ## How a change ships

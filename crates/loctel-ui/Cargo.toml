@@ -1,6 +1,6 @@
 [package]
 name = "loctel-ui"
-description = "The loctel GPUI views (the status view in M1), the pure view models, the menu text and the headless screenshot harness"
+description = "The loctel GPUI views (the status view and the main window shell), the pure view models, the menu text and the headless screenshot harness"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -17,11 +17,14 @@ screenshot = [
     "gpui-pre-platform/test-support",
     "dep:gpui-pre-wgpu",
     "gpui-pre-wgpu/test-support",
+    "gpui-kit/test-support",
 ]
 
 [dependencies]
 gpui-pre.workspace = true
 gpui-pre-platform.workspace = true
+# GPUI Kit: the components of the main window, and `Root` (src/app).
+gpui-kit.workspace = true
 loctel-engine.workspace = true
 # The models (src/model) read the store's summaries and parse TraceQL; chrono's
 # `clock` feature gives the system zone's offset for the clock times.

@@ -13,6 +13,10 @@
 //!   place of every node of the service map, the rows of a trace's waterfall
 //!   and the text of the span inspector. No GPUI in them, so plain tests pin
 //!   every string and every place.
+//! - [`app`] is the main window's shell (Milestone 3): the floating sidebar, the
+//!   toolbar and the content area, the [`UiBackend`](app::UiBackend) that gives
+//!   views the store and the engine's status, the bridge from [`Theme`] to GPUI
+//!   Kit's theme, and [`open_main_window`](app::open_main_window).
 //! - [`menu_text`] holds the exact strings for the status line, the discard
 //!   rules line and the rates, so the macOS menu and the view cannot drift apart.
 //! - [`Theme`] holds the colours; [`register_fonts`] the bundled typeface.
@@ -21,6 +25,7 @@
 //!
 //! See `docs/areas/ui.md` for the theme tokens and the screenshot workflow.
 
+pub mod app;
 pub mod menu_text;
 pub mod model;
 mod status_view;
@@ -29,5 +34,9 @@ mod theme;
 #[cfg(feature = "screenshot")]
 pub mod testing;
 
+/// The icons GPUI Kit's components draw (chevrons, a clear button, sort
+/// arrows). An app registers them with `Application::with_assets`, or its
+/// components draw no icons; the screenshot harness does.
+pub use gpui_kit::assets::Assets as KitAssets;
 pub use status_view::{ListenerLine, StatusModel, StatusView, open_status_window};
 pub use theme::{FONT_FAMILY, Theme, register_fonts};
