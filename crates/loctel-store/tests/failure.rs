@@ -6,10 +6,12 @@
 //! exception fallback.
 
 mod fixtures;
+mod modes;
 
 use fixtures::*;
 use loctel_model::{Span, SpanKind};
 use loctel_store::{TraceStatus, classify, trace_exception};
+use modes::each_mode;
 
 /// `root(err) -> payments POST /charges (err, leaf)`, the plan's first case.
 fn checkout_with_failing_payment() -> Vec<Span> {
@@ -29,72 +31,75 @@ fn checkout_with_failing_payment() -> Vec<Span> {
 
 #[test]
 fn root_error_means_failed() {
-    let spans = checkout_with_failing_payment();
-    let (status, failed_in) = classify(&spans, Some(sid(1)));
-    assert_eq!(status, TraceStatus::Failed);
-    let failed_in = failed_in.unwrap();
-    assert_eq!(failed_in.span_id, sid(2));
-    assert_eq!(failed_in.service, "payments-api");
-    assert_eq!(failed_in.span_name, "POST /charges");
-    assert_eq!(failed_in.more, 0);
+    each_mode(|store, _c| {
+        let spans = checkout_with_failing_payment();
+        let (status, failed_in) = classify(&spans, Some(sid(1)));
+        assert_eq!(status, TraceStatus::Failed);
+        let failed_in = failed_in.unwrap();
+        assert_eq!(failed_in.span_id, sid(2));
+        assert_eq!(failed_in.service, "payments-api");
+        assert_eq!(failed_in.span_name, "POST /charges");
+        assert_eq!(failed_in.more, 0);
 
-    // The store reports the same thing on every snapshot.
-    let (store, _c) = store_with_manual_clock();
-    store.ingest_spans(spans);
-    let t = store.trace(tid(1)).unwrap();
-    assert_eq!(t.status, TraceStatus::Failed);
-    assert_eq!(t.failed_in, Some(failed_in));
+        // The store reports the same thing on every snapshot.
+        store.ingest_spans(spans);
+        let t = store.trace(tid(1)).unwrap();
+        assert_eq!(t.status, TraceStatus::Failed);
+        assert_eq!(t.failed_in, Some(failed_in));
+    });
 }
 
 #[test]
 fn inner_error_with_ok_root_is_errors_inside() {
-    let spans = vec![
-        span(1, 1, None, "web-bff", "POST /api/checkout", 0, 500),
-        error(span(
-            1,
-            2,
-            Some(1),
-            "payments-api",
-            "POST /charges",
-            100,
-            50,
-        )),
-        span(1, 3, Some(1), "orders-api", "POST /orders", 200, 50),
-    ];
-    let (status, failed_in) = classify(&spans, Some(sid(1)));
-    assert_eq!(status, TraceStatus::ErrorsInside);
-    let failed_in = failed_in.unwrap();
-    assert_eq!(failed_in.span_id, sid(2));
-    assert_eq!(failed_in.more, 0);
+    each_mode(|store, _c| {
+        let spans = vec![
+            span(1, 1, None, "web-bff", "POST /api/checkout", 0, 500),
+            error(span(
+                1,
+                2,
+                Some(1),
+                "payments-api",
+                "POST /charges",
+                100,
+                50,
+            )),
+            span(1, 3, Some(1), "orders-api", "POST /orders", 200, 50),
+        ];
+        let (status, failed_in) = classify(&spans, Some(sid(1)));
+        assert_eq!(status, TraceStatus::ErrorsInside);
+        let failed_in = failed_in.unwrap();
+        assert_eq!(failed_in.span_id, sid(2));
+        assert_eq!(failed_in.more, 0);
 
-    let (store, _c) = store_with_manual_clock();
-    store.ingest_spans(spans);
-    let t = store.trace(tid(1)).unwrap();
-    assert_eq!(t.status, TraceStatus::ErrorsInside);
-    assert_eq!(t.failed_in, Some(failed_in));
+        store.ingest_spans(spans);
+        let t = store.trace(tid(1)).unwrap();
+        assert_eq!(t.status, TraceStatus::ErrorsInside);
+        assert_eq!(t.failed_in, Some(failed_in));
+    });
 }
 
 #[test]
 fn exception_event_alone_is_not_error() {
-    let spans = vec![
-        with_exception(
-            span(1, 1, None, "web-bff", "POST /api/checkout", 0, 500),
-            "RetryableError",
-            "first attempt timed out",
-        ),
-        with_exception(
-            span(1, 2, Some(1), "payments-api", "POST /charges", 100, 50),
-            "TimeoutError",
-            "slow",
-        ),
-    ];
-    assert_eq!(classify(&spans, Some(sid(1))), (TraceStatus::Ok, None));
+    each_mode(|store, _c| {
+        let spans = vec![
+            with_exception(
+                span(1, 1, None, "web-bff", "POST /api/checkout", 0, 500),
+                "RetryableError",
+                "first attempt timed out",
+            ),
+            with_exception(
+                span(1, 2, Some(1), "payments-api", "POST /charges", 100, 50),
+                "TimeoutError",
+                "slow",
+            ),
+        ];
+        assert_eq!(classify(&spans, Some(sid(1))), (TraceStatus::Ok, None));
 
-    let (store, _c) = store_with_manual_clock();
-    store.ingest_spans(spans);
-    let t = store.trace(tid(1)).unwrap();
-    assert_eq!(t.status, TraceStatus::Ok);
-    assert_eq!(t.failed_in, None);
+        store.ingest_spans(spans);
+        let t = store.trace(tid(1)).unwrap();
+        assert_eq!(t.status, TraceStatus::Ok);
+        assert_eq!(t.failed_in, None);
+    });
 }
 
 #[test]
@@ -123,96 +128,9 @@ fn failed_in_picks_earliest_lowest_error() {
 
 #[test]
 fn missing_root_then_root_arrives() {
-    let (store, _c) = store_with_manual_clock();
-    // Only an erroring child so far: the root has not arrived.
-    store.ingest_spans(vec![error(span(
-        1,
-        2,
-        Some(1),
-        "payments-api",
-        "POST /charges",
-        100,
-        50,
-    ))]);
-    let t = store.trace(tid(1)).unwrap();
-    assert_eq!(t.root, None);
-    assert_eq!(t.status, TraceStatus::ErrorsInside);
-    assert_eq!(t.failed_in.unwrap().span_id, sid(2));
-
-    // The root arrives erroring: now the request failed.
-    store.ingest_spans(vec![error(span(
-        1,
-        1,
-        None,
-        "web-bff",
-        "POST /api/checkout",
-        0,
-        500,
-    ))]);
-    let t = store.trace(tid(1)).unwrap();
-    assert_eq!(t.root, Some(sid(1)));
-    assert_eq!(t.status, TraceStatus::Failed);
-    assert_eq!(t.failed_in.unwrap().span_id, sid(2));
-}
-
-#[test]
-fn exception_falls_back_to_nearest_ancestor() {
-    // The failed-in client span has no exception; its parent has one, and so
-    // does the root, which is further away.
-    let (store, _c) = store_with_manual_clock();
-    store.ingest_spans(vec![
-        error(with_exception(
-            span(1, 1, None, "web-bff", "POST /api/checkout", 0, 500),
-            "RootError",
-            "from the root",
-        )),
-        error(with_exception(
-            span(1, 2, Some(1), "orders-api", "POST /orders", 50, 400),
-            "OrdersError",
-            "from the parent",
-        )),
-        error(with_kind(
-            span(1, 3, Some(2), "orders-api", "POST payments", 100, 50),
-            SpanKind::Client,
-        )),
-    ]);
-    let t = store.trace(tid(1)).unwrap();
-    assert_eq!(t.failed_in.as_ref().unwrap().span_id, sid(3));
-    let exception = trace_exception(&t).unwrap();
-    assert_eq!(exception.type_name, "OrdersError");
-    assert_eq!(exception.message, "from the parent");
-}
-
-// --- the exception choice, in full ---
-
-#[test]
-fn failed_in_span_own_exception_wins_over_ancestors() {
-    let (store, _c) = store_with_manual_clock();
-    store.ingest_spans(vec![
-        error(with_exception(
-            span(1, 1, None, "web-bff", "POST /api/checkout", 0, 500),
-            "RootError",
-            "from the root",
-        )),
-        error(with_exception(
-            span(1, 2, Some(1), "payments-api", "POST /charges", 100, 50),
-            "CardDeclined",
-            "from the failed-in span",
-        )),
-    ]);
-    let t = store.trace(tid(1)).unwrap();
-    assert_eq!(trace_exception(&t).unwrap().type_name, "CardDeclined");
-}
-
-#[test]
-fn exception_falls_back_to_first_in_start_order() {
-    // The failed-in span and its ancestors have no exception. A handled
-    // exception on a sibling branch is still the best thing to show, and the
-    // earliest one wins.
-    let (store, _c) = store_with_manual_clock();
-    store.ingest_spans(vec![
-        error(span(1, 1, None, "web-bff", "POST /api/checkout", 0, 500)),
-        error(span(
+    each_mode(|store, _c| {
+        // Only an erroring child so far: the root has not arrived.
+        store.ingest_spans(vec![error(span(
             1,
             2,
             Some(1),
@@ -220,45 +138,138 @@ fn exception_falls_back_to_first_in_start_order() {
             "POST /charges",
             100,
             50,
-        )),
-        with_exception(
-            span(1, 4, Some(1), "inventory-api", "GET /stock", 300, 20),
-            "Later",
-            "second",
-        ),
-        with_exception(
-            span(1, 3, Some(1), "orders-api", "GET /order", 200, 20),
-            "Earlier",
-            "first",
-        ),
-    ]);
-    let t = store.trace(tid(1)).unwrap();
-    assert_eq!(t.failed_in.as_ref().unwrap().span_id, sid(2));
-    assert_eq!(trace_exception(&t).unwrap().type_name, "Earlier");
+        ))]);
+        let t = store.trace(tid(1)).unwrap();
+        assert_eq!(t.root, None);
+        assert_eq!(t.status, TraceStatus::ErrorsInside);
+        assert_eq!(t.failed_in.unwrap().span_id, sid(2));
+
+        // The root arrives erroring: now the request failed.
+        store.ingest_spans(vec![error(span(
+            1,
+            1,
+            None,
+            "web-bff",
+            "POST /api/checkout",
+            0,
+            500,
+        ))]);
+        let t = store.trace(tid(1)).unwrap();
+        assert_eq!(t.root, Some(sid(1)));
+        assert_eq!(t.status, TraceStatus::Failed);
+        assert_eq!(t.failed_in.unwrap().span_id, sid(2));
+    });
+}
+
+#[test]
+fn exception_falls_back_to_nearest_ancestor() {
+    // The failed-in client span has no exception; its parent has one, and so
+    // does the root, which is further away.
+    each_mode(|store, _c| {
+        store.ingest_spans(vec![
+            error(with_exception(
+                span(1, 1, None, "web-bff", "POST /api/checkout", 0, 500),
+                "RootError",
+                "from the root",
+            )),
+            error(with_exception(
+                span(1, 2, Some(1), "orders-api", "POST /orders", 50, 400),
+                "OrdersError",
+                "from the parent",
+            )),
+            error(with_kind(
+                span(1, 3, Some(2), "orders-api", "POST payments", 100, 50),
+                SpanKind::Client,
+            )),
+        ]);
+        let t = store.trace(tid(1)).unwrap();
+        assert_eq!(t.failed_in.as_ref().unwrap().span_id, sid(3));
+        let exception = trace_exception(&t).unwrap();
+        assert_eq!(exception.type_name, "OrdersError");
+        assert_eq!(exception.message, "from the parent");
+    });
+}
+
+// --- the exception choice, in full ---
+
+#[test]
+fn failed_in_span_own_exception_wins_over_ancestors() {
+    each_mode(|store, _c| {
+        store.ingest_spans(vec![
+            error(with_exception(
+                span(1, 1, None, "web-bff", "POST /api/checkout", 0, 500),
+                "RootError",
+                "from the root",
+            )),
+            error(with_exception(
+                span(1, 2, Some(1), "payments-api", "POST /charges", 100, 50),
+                "CardDeclined",
+                "from the failed-in span",
+            )),
+        ]);
+        let t = store.trace(tid(1)).unwrap();
+        assert_eq!(trace_exception(&t).unwrap().type_name, "CardDeclined");
+    });
+}
+
+#[test]
+fn exception_falls_back_to_first_in_start_order() {
+    // The failed-in span and its ancestors have no exception. A handled
+    // exception on a sibling branch is still the best thing to show, and the
+    // earliest one wins.
+    each_mode(|store, _c| {
+        store.ingest_spans(vec![
+            error(span(1, 1, None, "web-bff", "POST /api/checkout", 0, 500)),
+            error(span(
+                1,
+                2,
+                Some(1),
+                "payments-api",
+                "POST /charges",
+                100,
+                50,
+            )),
+            with_exception(
+                span(1, 4, Some(1), "inventory-api", "GET /stock", 300, 20),
+                "Later",
+                "second",
+            ),
+            with_exception(
+                span(1, 3, Some(1), "orders-api", "GET /order", 200, 20),
+                "Earlier",
+                "first",
+            ),
+        ]);
+        let t = store.trace(tid(1)).unwrap();
+        assert_eq!(t.failed_in.as_ref().unwrap().span_id, sid(2));
+        assert_eq!(trace_exception(&t).unwrap().type_name, "Earlier");
+    });
 }
 
 #[test]
 fn exception_of_a_trace_without_errors_is_the_first_handled_one() {
-    let (store, _c) = store_with_manual_clock();
-    store.ingest_spans(vec![
-        span(1, 1, None, "web-bff", "POST /api/checkout", 0, 500),
-        with_exception(
-            span(1, 2, Some(1), "payments-api", "POST /charges", 100, 50),
-            "Retried",
-            "then succeeded",
-        ),
-    ]);
-    let t = store.trace(tid(1)).unwrap();
-    assert_eq!(t.status, TraceStatus::Ok);
-    assert_eq!(trace_exception(&t).unwrap().type_name, "Retried");
+    each_mode(|store, _c| {
+        store.ingest_spans(vec![
+            span(1, 1, None, "web-bff", "POST /api/checkout", 0, 500),
+            with_exception(
+                span(1, 2, Some(1), "payments-api", "POST /charges", 100, 50),
+                "Retried",
+                "then succeeded",
+            ),
+        ]);
+        let t = store.trace(tid(1)).unwrap();
+        assert_eq!(t.status, TraceStatus::Ok);
+        assert_eq!(trace_exception(&t).unwrap().type_name, "Retried");
+    });
 }
 
 #[test]
 fn no_exception_anywhere_is_none() {
-    let (store, _c) = store_with_manual_clock();
-    store.ingest_spans(checkout_with_failing_payment());
-    let t = store.trace(tid(1)).unwrap();
-    assert_eq!(trace_exception(&t), None);
+    each_mode(|store, _c| {
+        store.ingest_spans(checkout_with_failing_payment());
+        let t = store.trace(tid(1)).unwrap();
+        assert_eq!(trace_exception(&t), None);
+    });
 }
 
 // --- more than one candidate ---
@@ -461,13 +472,14 @@ fn parent_cycle_terminates_and_still_names_a_span() {
 
 #[test]
 fn parent_cycle_does_not_hang_the_exception_walk() {
-    let (store, _c) = store_with_manual_clock();
-    store.ingest_spans(vec![
-        error(span(1, 1, Some(2), "a", "one", 5, 10)),
-        error(span(1, 2, Some(1), "b", "two", 0, 10)),
-    ]);
-    let t = store.trace(tid(1)).unwrap();
-    assert_eq!(trace_exception(&t), None);
+    each_mode(|store, _c| {
+        store.ingest_spans(vec![
+            error(span(1, 1, Some(2), "a", "one", 5, 10)),
+            error(span(1, 2, Some(1), "b", "two", 0, 10)),
+        ]);
+        let t = store.trace(tid(1)).unwrap();
+        assert_eq!(trace_exception(&t), None);
+    });
 }
 
 #[test]

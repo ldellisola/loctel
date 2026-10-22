@@ -165,7 +165,18 @@ rules) are written to disk.
 
 - **One entry point.** Everything goes through `Store` (`Clone + Send +
   Sync`, clones share data). The internals are replaced in Milestone 5, so
-  nothing else may depend on them.
+  nothing else may depend on them: the API is frozen, and every test of the
+  crate runs against a store in memory and one that spills.
+- **Hot and cold traces (Milestone 5).** With a `spill_dir`, a trace that has
+  been complete for a while moves from memory to a temporary segment file, and
+  comes back when a late span arrives. An index of every trace (start, end, count,
+  and for a cold trace its summary) stays in memory, so lists, searches, counts and
+  "oldest start" do not read the files. The spans of a cold trace are decoded on
+  demand through a small cache. `Store::spilled_traces()` counts the cold ones;
+  nothing else tells. Logs are still in memory (the next task of the milestone
+  moves them), and the disk cap is not enforced yet. Details and the reasons:
+  [`areas/store.md`](areas/store.md), "Hot and cold traces", and
+  [`decisions/0045-trace-index-and-spill-policy.md`](decisions/0045-trace-index-and-spill-policy.md).
 - **Time is injected.** `Store::new(config, Arc<dyn Clock>)`. `SystemClock`
   in the app, `ManualClock` in tests, so completeness is tested without
   sleeping.

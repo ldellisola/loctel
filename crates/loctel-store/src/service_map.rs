@@ -110,22 +110,43 @@ struct EdgeCounts {
     errors: u64,
 }
 
-/// Counts built up trace by trace. Names are borrowed from the spans, which
-/// the caller keeps locked while it runs.
-#[derive(Default)]
-pub(crate) struct Aggregate<'a> {
-    nodes: HashMap<(NodeKind, &'a str), Counts>,
-    edges: HashMap<(&'a str, &'a str), EdgeCounts>,
+/// Every kind of node, in the order of [`slot`].
+const KINDS: [NodeKind; 4] = [
+    NodeKind::Service,
+    NodeKind::Database,
+    NodeKind::Queue,
+    NodeKind::External,
+];
+
+/// The place of `kind` in [`KINDS`] and in the aggregate's tables.
+fn slot(kind: NodeKind) -> usize {
+    match kind {
+        NodeKind::Service => 0,
+        NodeKind::Database => 1,
+        NodeKind::Queue => 2,
+        NodeKind::External => 3,
+    }
 }
 
-impl<'a> Aggregate<'a> {
+/// Counts built up trace by trace. The names are owned: a trace read back from
+/// a segment is dropped as soon as it has been counted, and what it said must
+/// outlive it. A name is copied the first time it is seen, not at every span.
+#[derive(Default)]
+pub(crate) struct Aggregate {
+    /// By kind (see [`slot`]), then by name.
+    nodes: [HashMap<String, Counts>; 4],
+    /// By the name of the node the call came from, then of the one it went to.
+    edges: HashMap<String, HashMap<String, EdgeCounts>>,
+}
+
+impl Aggregate {
     /// Adds what the spans of `entry` that start in `window` contribute.
     /// `complete` is the caller's reading of the clock. With `dependencies`
     /// off only the service nodes are counted, which is all the services
     /// list needs.
     pub(crate) fn add_trace(
         &mut self,
-        entry: &'a TraceEntry,
+        entry: &TraceEntry,
         complete: bool,
         window: TimeWindow,
         dependencies: bool,
@@ -183,7 +204,7 @@ impl<'a> Aggregate<'a> {
                     if let Some(queue) = messaging_system(span) {
                         // The delivery is an edge out of the queue. The queue
                         // node exists even if no producer was seen.
-                        self.node(NodeKind::Queue, queue);
+                        self.node(NodeKind::Queue, queue, |_| {});
                         self.edge(queue, service, span.is_error());
                     }
                 }
@@ -193,56 +214,91 @@ impl<'a> Aggregate<'a> {
     }
 
     /// The span's service: a node, its entry-span counts and its last-seen.
-    fn service_span(&mut self, span: &'a Span) {
-        let counts = self.node(NodeKind::Service, span.service());
-        if matches!(span.kind, SpanKind::Server | SpanKind::Consumer) {
-            counts.requests += 1;
-            if span.is_error() {
-                counts.errors += 1;
+    fn service_span(&mut self, span: &Span) {
+        let entry_span = matches!(span.kind, SpanKind::Server | SpanKind::Consumer);
+        let erroring = span.is_error();
+        self.node(NodeKind::Service, span.service(), |counts| {
+            if entry_span {
+                counts.requests += 1;
+                if erroring {
+                    counts.errors += 1;
+                }
             }
-        }
-        counts.last_seen = counts.last_seen.max(span.start_unix_nano);
+            counts.last_seen = counts.last_seen.max(span.start_unix_nano);
+        });
     }
 
     /// A call from `service` to a dependency: the dependency's node counts
     /// it as a request, and the edge counts it as a call.
-    fn call(&mut self, kind: NodeKind, name: &'a str, service: &'a str, erroring: bool) {
-        let counts = self.node(kind, name);
-        counts.requests += 1;
-        counts.errors += u64::from(erroring);
+    fn call(&mut self, kind: NodeKind, name: &str, service: &str, erroring: bool) {
+        self.node(kind, name, |counts| {
+            counts.requests += 1;
+            counts.errors += u64::from(erroring);
+        });
         self.edge(service, name, erroring);
     }
 
-    fn node(&mut self, kind: NodeKind, name: &'a str) -> &mut Counts {
-        self.nodes.entry((kind, name)).or_default()
+    /// Runs `update` on the counts of node `name`, which is made first if it
+    /// is new.
+    fn node(&mut self, kind: NodeKind, name: &str, update: impl FnOnce(&mut Counts)) {
+        let nodes = &mut self.nodes[slot(kind)];
+        match nodes.get_mut(name) {
+            Some(counts) => update(counts),
+            None => {
+                let mut counts = Counts::default();
+                update(&mut counts);
+                nodes.insert(name.to_owned(), counts);
+            }
+        }
     }
 
-    fn edge(&mut self, from: &'a str, to: &'a str, erroring: bool) {
-        let counts = self.edges.entry((from, to)).or_default();
-        counts.calls += 1;
-        counts.errors += u64::from(erroring);
+    fn edge(&mut self, from: &str, to: &str, erroring: bool) {
+        let count = |counts: &mut EdgeCounts| {
+            counts.calls += 1;
+            counts.errors += u64::from(erroring);
+        };
+        let Some(from_edges) = self.edges.get_mut(from) else {
+            let mut counts = EdgeCounts::default();
+            count(&mut counts);
+            self.edges
+                .insert(from.to_owned(), HashMap::from([(to.to_owned(), counts)]));
+            return;
+        };
+        match from_edges.get_mut(to) {
+            Some(counts) => count(counts),
+            None => {
+                let mut counts = EdgeCounts::default();
+                count(&mut counts);
+                from_edges.insert(to.to_owned(), counts);
+            }
+        }
     }
 
     pub(crate) fn into_map(self) -> ServiceMap {
         let mut nodes: Vec<ServiceNode> = self
             .nodes
             .into_iter()
-            .map(|((kind, id), counts)| ServiceNode {
-                id: id.to_owned(),
-                kind,
-                requests: counts.requests,
-                errors: counts.errors,
+            .zip(KINDS)
+            .flat_map(|(names, kind)| {
+                names.into_iter().map(move |(id, counts)| ServiceNode {
+                    id,
+                    kind,
+                    requests: counts.requests,
+                    errors: counts.errors,
+                })
             })
             .collect();
         nodes.sort_unstable_by(|a, b| (&a.id, a.kind).cmp(&(&b.id, b.kind)));
         let mut edges: Vec<ServiceEdge> = self
             .edges
             .into_iter()
-            .map(|((from, to), counts)| ServiceEdge {
-                from: from.to_owned(),
-                to: to.to_owned(),
-                calls: counts.calls,
-                errors: counts.errors,
+            .flat_map(|(from, tos)| {
+                tos.into_iter().map(move |(to, counts)| ServiceEdge {
+                    from: from.clone(),
+                    to,
+                    calls: counts.calls,
+                    errors: counts.errors,
+                })
             })
             .collect();
         edges.sort_unstable_by(|a, b| (&a.from, &a.to).cmp(&(&b.from, &b.to)));
@@ -251,12 +307,11 @@ impl<'a> Aggregate<'a> {
 
     /// The service nodes only, sorted by name.
     pub(crate) fn into_services(self) -> Vec<ServiceStats> {
-        let mut services: Vec<ServiceStats> = self
-            .nodes
+        let [services, ..] = self.nodes;
+        let mut services: Vec<ServiceStats> = services
             .into_iter()
-            .filter(|((kind, _), _)| *kind == NodeKind::Service)
-            .map(|((_, name), counts)| ServiceStats {
-                name: name.to_owned(),
+            .map(|(name, counts)| ServiceStats {
+                name,
                 requests: counts.requests,
                 errors: counts.errors,
                 last_seen_unix_nano: counts.last_seen,

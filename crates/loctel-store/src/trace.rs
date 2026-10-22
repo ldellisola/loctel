@@ -42,6 +42,7 @@ impl TraceSnapshot {
 }
 
 /// What the store keeps for one trace.
+#[derive(Clone)]
 pub(crate) struct TraceEntry {
     /// Where the trace sits in the store's order of first arrival (the key of
     /// the store's `arrival_order`). Never changes while the trace is held.
@@ -86,8 +87,27 @@ impl TraceEntry {
         }
     }
 
+    /// A trace read back from a segment: its `spans` (which have distinct IDs,
+    /// as they did when they were written), the trace's number in the order of
+    /// first arrival and the clock time its last new span arrived, which the
+    /// segment does not hold but the index does.
+    pub(crate) fn from_spans(spans: Vec<Span>, last_arrival: u64, arrival: u64) -> Self {
+        let mut entry = Self::new(last_arrival, arrival);
+        entry.spans.reserve(spans.len());
+        entry.index.reserve(spans.len());
+        for span in spans {
+            entry.insert(span, last_arrival);
+        }
+        entry
+    }
+
     pub(crate) fn len(&self) -> usize {
         self.spans.len()
+    }
+
+    /// Clock time at which the last new span arrived.
+    pub(crate) fn last_arrival(&self) -> u64 {
+        self.last_arrival
     }
 
     /// The trace's number in the store's order of first arrival.
@@ -163,12 +183,6 @@ impl TraceEntry {
     /// out of order).
     pub(crate) fn duration_nanos(&self) -> u64 {
         self.max_end.saturating_sub(self.min_start)
-    }
-
-    /// Nanoseconds since the last new span arrived (0 if the clock stepped
-    /// backwards).
-    pub(crate) fn quiet_for(&self, now: u64) -> u64 {
-        now.saturating_sub(self.last_arrival)
     }
 
     pub(crate) fn snapshot(&self, trace_id: TraceId, complete: bool) -> TraceSnapshot {

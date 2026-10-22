@@ -1,4 +1,4 @@
-//! The in-memory store behind loctel.
+//! The store behind loctel: traces and logs, in memory and in temporary files.
 //!
 //! Spans arrive from several services, in batches and in any order. The
 //! store assembles them into traces by trace ID, ignores exporter retries,
@@ -20,12 +20,14 @@
 //! ([`Store::with_trace_spans`], [`Store::scan_traces`], [`Store::scan_logs`]),
 //! which is what the discard rules are built on.
 //!
-//! Everything goes through [`Store`]; the internals are free to change (the
-//! design replaces them with a spill-to-disk segment store, Milestone 5) as long
-//! as that API holds. The building blocks of that store are the [`segment`]
-//! files (append-only files of checksummed, compressed records) and the
-//! [`run_dir`] that holds one run's segments; both are public, and hidden from
-//! the docs, only so that tests can reach them.
+//! Everything goes through [`Store`]; the internals are free to change as long
+//! as that API holds, and Milestone 5 changes them a good deal. Given a
+//! `spill_dir` ([`StoreConfig`]), the store moves the traces that are complete
+//! out of memory into [`segment`] files (append-only files of checksummed,
+//! compressed records), keeps a small index of every trace in memory, and brings
+//! a trace back when a late span arrives for it. The [`run_dir`] holds one run's
+//! segments. Both modules are public, and hidden from the docs, only so that
+//! tests can reach them.
 //!
 //! Time comes from a [`Clock`], so tests drive completeness with a
 //! [`ManualClock`] instead of sleeping.
@@ -39,10 +41,12 @@ mod page;
 pub mod run_dir;
 #[doc(hidden)]
 pub mod segment;
+mod segment_set;
 mod service_map;
 mod store;
 mod summary;
 mod trace;
+mod trace_index;
 
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use config::StoreConfig;

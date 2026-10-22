@@ -239,6 +239,13 @@ target). Times are distinct, so the store's duplicate check keeps them all.
   `CheckoutFailure` table row by row, the other scenarios against their
   description, determinism, valid IDs through the real converter, the store's
   verdict on the checkout traces, and that scenarios never share IDs.
+- **`crates/loctel-store/tests/`** runs every test that builds a store twice,
+  through `each_mode` (`tests/modes.rs`): once on a store in memory, once on one
+  that spills to segment files (`StoreConfig::spilling_for_tests`), because the
+  store's API is frozen across Milestone 5 and must answer the same either way.
+  `tests/spill.rs` looks at the spill itself with a store of each kind fed the same
+  data (Milestone 5). See `store.md`, "Tests". A new store test file builds its stores
+  with `each_mode`, unless it is about spilling and needs to see the files.
 - **`crates/loctel-meshgen/tests/send.rs`** sends every scenario over every
   transport to the real receivers from `loctel-ingest`: counts, delays,
   gzip, rejections and unreachable endpoints.

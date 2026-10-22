@@ -1,8 +1,11 @@
 //! The clocks the store reads "now" from (plan Task 3).
 
+mod modes;
+
 use std::time::Duration;
 
 use loctel_store::{Clock, ManualClock, StoreConfig, SystemClock};
+use modes::each_mode;
 
 #[test]
 fn manual_clock_starts_where_told() {
@@ -77,9 +80,10 @@ fn store_config_defaults_match_the_design() {
 fn store_reads_now_from_its_own_clock() {
     // The MCP marker tool hands out the store's time, so a test that drives
     // the store with a manual clock gets a marker it controls.
-    let clock = std::sync::Arc::new(ManualClock::new(1_800_000_000_000_000_000));
-    let store = loctel_store::Store::new(StoreConfig::default(), clock.clone());
-    assert_eq!(store.now_unix_nano(), 1_800_000_000_000_000_000);
-    clock.advance(Duration::from_secs(3));
-    assert_eq!(store.now_unix_nano(), 1_800_000_003_000_000_000);
+    each_mode(|store, clock| {
+        clock.set(1_800_000_000_000_000_000);
+        assert_eq!(store.now_unix_nano(), 1_800_000_000_000_000_000);
+        clock.advance(Duration::from_secs(3));
+        assert_eq!(store.now_unix_nano(), 1_800_000_003_000_000_000);
+    });
 }

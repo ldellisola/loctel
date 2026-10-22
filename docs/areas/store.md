@@ -1,8 +1,10 @@
 # Store (`loctel-store`)
 
-The in-memory store behind loctel. It takes spans in any order from any
+The store behind loctel. It takes spans in any order from any
 service, assembles them into traces, says when a trace has gone quiet, and
-evicts the oldest trace whole when it holds too many. It also holds log
+evicts the oldest trace whole when it holds too many. Traces that are complete
+move out of memory into temporary segment files and come back when a late span
+arrives (Milestone 5, see "Hot and cold traces" below). It also holds log
 records, linked to spans by ID, and works out the service map and the services
 list from the traces, filters both by TraceQL and LogQL queries, and can
 remove traces, spans and their logs again (for the discard rules). Design references: §4 (order and lateness, completeness,
@@ -10,8 +12,9 @@ logs), §5 (storage, eviction, clear all), §9.2 (the map) and §9.4 (what
 "failed" means).
 
 Everything outside the crate goes through `Store`. M5 replaces the internals
-with a spill-to-disk segment store, so keep the public API below stable and
-keep callers away from anything else.
+with a spill-to-disk segment store, so the public API below is frozen (M5 adds
+to it, never changes it) and callers stay away from anything else: every test of
+the crate runs against a store in memory and against one that spills.
 
 Status: trace assembly, completeness, dedup, eviction, failure
 classification, trace summaries, trace search, logs, the service map and the
@@ -21,8 +24,9 @@ and "Scans" below), and (Milestone 4) the log IDs, the level and window filters,
 the log histogram and the lines around a log, which the Logs screen is built on
 (see "Log IDs, levels, histogram and lines around" below). Milestone 5 is under
 way: the segment files and the run directory it spills into exist (see "Segment
-files" below), and the store does not use them yet, so everything is still held
-in memory.
+files" below), and **traces** now spill through them (see "Hot and cold traces"
+below). Logs are still all held in memory until the next task, and the disk cap
+is not enforced yet.
 
 ## API
 
@@ -79,6 +83,15 @@ store.clear();
   | `max_traces` | 200,000 | past this, the oldest trace is evicted whole |
   | `max_log_records` | 5,000,000 | past this, the oldest log records are evicted |
   | `completeness_quiet` | 10 s | quiet time after which a trace is complete |
+  | `spill_dir` | `None` | where the segment files go; `None` keeps everything in memory |
+  | `spill_after` | 30 s | how long a complete trace stays in memory before it is spilled |
+  | `hot_max_spans` | 2,000,000 | spans of traces in memory before the oldest complete ones go early |
+  | `segment_max_bytes` | 64 MiB | a segment file is finished at this size and the next trace starts a new one |
+  | `disk_cap_bytes` | 4 GiB | the most the segment files may take (not enforced yet) |
+
+  `StoreConfig::spilling_for_tests(dir)` (hidden from the docs) is the config
+  the tests spill with: `spill_after` 0, `segment_max_bytes` 4 KiB and
+  `hot_max_spans` 16, the rest the defaults.
 
 - `StoreStats`: `traces`, `spans` and `logs` are what the store holds now.
   `spans_received` and `logs_received` are lifetime totals of what it
@@ -142,9 +155,10 @@ A trace is complete when `now - last_arrival >= completeness_quiet`, where
 `last_arrival` is the clock time at which its last new span was stored (design
 §4: "complete once no new span has arrived for it for 10 seconds").
 
-- It is computed on read from the store's clock. Nothing runs in the
-  background, and the span timestamps play no part: it is about when the
-  spans arrived, not when they happened.
+- It is computed on read from the store's clock. The span timestamps play no
+  part: it is about when the spans arrived, not when they happened. (A trace
+  that is spilled keeps the time its last span arrived in the index, so the
+  answer is the same for a trace in a segment file as for one in memory.)
 - A new span arriving for a complete trace makes it incomplete again.
 - If the clock steps backwards, the quiet time reads as 0 (not complete); it
   never underflows.
@@ -158,6 +172,9 @@ arrival** is removed, whole, never a few of its spans (design §5).
 
 - Order is by when the trace first appeared, not by recent activity or span
   timestamps. A busy old trace is still the first to go.
+- A trace in a segment file is evicted like any other: it leaves the index
+  without being read, and its record in the file is dead (see "Dead bytes"
+  below).
 - A batch is applied in full before eviction runs. Evicting in the middle of
   a batch would drop a trace and then resurrect a fragment of it from the
   batch's remaining spans.
@@ -318,12 +335,15 @@ Paging is keyset-based:
   circles; the MCP layer is free to reject such a cursor with a clear error
   before it gets here.
 
-Cost: the cheap conditions (`since`, `min_duration`, the cursor) use the trace
-start and duration that each entry keeps up to date, so they need no pass over
-the spans. The survivors are sorted, and the remaining work (service
-membership, the query, classification, the summary) is done newest first only
-until the page is full. The read lock is held for the call. M5 replaces this with an
-indexed segment store behind the same API.
+Cost: the search walks the trace index newest first, from the top or from the
+cursor, and stops at the first trace that starts before `since` and once the
+page is full and one more match has shown that there is a next page. It never
+sorts or copies the traces held. The cheap conditions (`since`, `min_duration`,
+the cursor) are read from the index; service membership, `errors_only` and the
+summary of a trace in a segment file are too (see "Hot and cold traces"), and
+only a TraceQL query has to read the spans of a trace in a segment file, one
+trace at a time and only for traces the other conditions kept. The read lock is
+held for the call.
 
 ## Logs
 
@@ -692,9 +712,9 @@ temporary files, and keeps the disk use under a cap (design §5). The building
 blocks are two modules of this crate, `segment` and `run_dir`. Both are `pub`
 and hidden from the generated docs (`#[doc(hidden)]`) only so that tests can
 reach them; nothing outside the crate uses them, and `Store` is still the only
-entry point. **Status:** the modules and their tests exist, and `Store` does not
-call them yet (the trace index, spill and rehydration come next, then log
-chunks, then the disk cap). The decision and its reasons are
+entry point. **Status:** the modules and their tests exist, and `Store` spills
+traces through them (see "Hot and cold traces"); log chunks and the disk cap
+come in the next tasks. The decision and its reasons are
 [`decisions/0044-segment-file-format.md`](../decisions/0044-segment-file-format.md).
 
 ### The record
@@ -789,10 +809,165 @@ Linux). The macOS build compiles `zstd`'s C sources; `script/check-macos.sh` has
 no Apple SDK to do that with and compiles them with a stand-in
 (`script/stub-cc.sh`), see decision 0044.
 
+## Hot and cold traces
+
+With a `spill_dir` in the config (the app passes its run directory; tests and
+`--no-spill` runs leave it `None` and nothing below happens), a trace is in one
+of two places:
+
+- **hot**: its spans are in memory, in the store's map of hot traces. A trace is
+  hot while spans are still arriving, for `completeness_quiet` after the last
+  one, and for `spill_after` more.
+- **cold**: its spans are one record in a traces segment file (an encoded span
+  list, see "Blobs"), and only the index entry stays in memory.
+
+Nothing outside the crate can tell which a trace is, except that
+`Store::spilled_traces()` counts the cold ones. Every method gives the same
+answer for a cold trace as for the same trace hot (the test files run each body
+in both modes to hold that, see "Tests"); the rest of this section is how.
+
+### The trace index
+
+Every held trace, hot or cold, has an entry in the index
+(`src/trace_index.rs`, `TraceMeta`): its ID, the order it first arrived in, the
+earliest start, the latest end, the span count, `last_arrival` (the clock time
+its last new span arrived) and where it is (`Hot`, or `Cold` with the position of
+its record). A cold trace's entry also holds the **summary it had when it left
+memory**: its services in the order of their first span (the service set), status,
+failed-in span, first exception and root. Nothing in a cold trace can change, since a
+new span brings it back to memory first, so that summary stays true.
+
+The index orders its entries three ways: by start (a `BTreeSet<(start, id)>`,
+walked backwards for "newest first" and for cursors), by first arrival (what
+eviction and `scan_traces` use) and, for the hot traces, by `last_arrival` (what
+the spill step uses). So these cost the traces they look at, not the traces held:
+
+| call | what it reads for a cold trace |
+|---|---|
+| `summary` | the index entry |
+| `search_traces` (time, service, errors only, duration, paging) | the index entry |
+| `search_traces` with a TraceQL `query` | the index entry for every candidate, and the record for the ones the other conditions kept, newest first, until the page and one more match are found |
+| `oldest_start_unix_nano` | the index (the first key) |
+| `stats` | counters |
+| `trace`, `with_trace_spans` | the record (through the cache) |
+| `scan_traces` | the record, for every trace from `since` on (not cached) |
+| `service_map`, `services` | the record, for every trace that reaches into the window (not cached) |
+| `remove_trace`, eviction | the index entry only; the record is marked dead |
+| `remove_spans` | the record (through the cache), to see whether the trace has any of the spans |
+
+The two last "not cached" passes read every cold trace they touch, so the service
+map over a window that covers a lot of cold data decodes a lot of it, on every call
+(the window's refresh is every 2 s). That is the cost of keeping the cold
+traces' spans out of memory; a trace that ended before the window is never read.
+
+### The spill step
+
+A trace goes from hot to cold in the **spill step**. It runs at the end of every
+`ingest_spans` and `ingest_logs`, and ahead of every call about traces (`trace`,
+`summary`, `search_traces`, `with_trace_spans`, `scan_traces`, `service_map`,
+`services`, `oldest_start_unix_nano`, `remove_trace`, `remove_spans`) and of `stats`,
+so that a store that nobody writes to gives its memory back too. It runs at most once a second by the
+store's clock (every call in the test config, whose `spill_after` is 0: the interval
+is the smaller of a second and `spill_after`). The step takes the hot traces
+oldest first, by when their last span arrived, and spills one when
+
+- it has been quiet for `completeness_quiet + spill_after`, or
+- the hot traces hold more than `hot_max_spans` spans and it is complete (quiet for
+  `completeness_quiet`), without waiting for `spill_after`.
+
+It stops at the first trace that is neither, because the traces after it arrived
+later. A trace that is still being written is never spilled. Spilling encodes the
+trace, appends it to the open traces segment, and swaps its index entry to `Cold`
+with the summary computed from the spans. The work is done under the store's write
+lock, a trace at a time.
+
+If a write fails (the disk is full, the directory is gone) the trace stays hot, the
+step ends, the reason is kept (`Store::spill_error`, a hidden accessor until the
+status reports it) and the next step tries again. The store never panics over it.
+Memory then grows with the data, up to `max_traces`, as it did before M5; stopping
+and reporting that cleanly is the next task's.
+
+### Rehydration
+
+A span for a cold trace, a slow service or a retried exporter, brings the trace back:
+
+1. The trace is read (through the cache) and, if it already has a span with that ID
+   (a retry), **nothing changes** and the trace stays cold.
+2. Otherwise it becomes hot again, with the first arrival and `last_arrival` it
+   had, and its old record is **dead**. Then the span is added as to any hot
+   trace, which moves `last_arrival` to now: the trace is **incomplete again**, and
+   will spill again when it goes quiet. `stats().spans` does not count the trace
+   twice (the spans were counted when they first came), and `spans_received` goes
+   up by the one new span.
+3. A cold trace that cannot be read (its record is damaged, see "Damage") is
+   forgotten: its spans leave the counts, and the new span starts a new, partial
+   trace, as for a trace that was evicted.
+
+`remove_spans` does the same, with one difference: it is not a new arrival, so the
+trace keeps its `last_arrival` (it stays complete and is spilled again by the
+next step) and a cold trace that has none of the spans is not brought back at all.
+
+### Dead bytes and segments
+
+A record cannot be taken out of its file. When its trace comes back to memory or is
+removed or evicted, the record is **dead**: still on disk, counted in the disk
+total (`Store::spill_disk_bytes`, hidden for now) and in `spill_dead_bytes`, until
+its whole segment is deleted. M5's disk cap (a later task) deletes the oldest
+segment whole, which takes its traces with it; a trace never straddles two segments.
+
+`src/segment_set.rs` keeps the books. One segment is open for writing for each kind of
+record; when an append makes it reach `segment_max_bytes` it is finished and the next
+append opens a new one. Segment numbers count up over all kinds and are never reused
+(not even after `clear`), so the order of the numbers is the order of the files'
+age. A segment is memory-mapped the first time one of its records is read, and
+mapped again when the file has grown past what the map covers (reading a record of
+the segment still being written). `clear` and dropping the last clone of the store
+delete the store's files.
+
+### The cache of decoded traces
+
+`trace`, `with_trace_spans` and the checks of `remove_spans` and of a late span
+decode a cold trace and keep the result in a cache of the last 64 decoded traces
+(and at most a million spans in all, so that a few huge traces cannot fill memory
+behind a small cache). It is keyed by the position of the record, so an entry can
+never be mistaken for a later version of its trace, and it forgets a trace's entry
+when its record dies. A search, `scan_traces` and the service map read through the
+cache without adding to it: they look at many traces once, and must not push out
+the trace the window has open.
+
+A hidden `Store::trace_decodes()` counts the traces decoded from a segment (a cache
+hit is not one), which is how the tests show a search stops early.
+
 ## Tests
 
 `crates/loctel-store/tests/`:
 
+- `modes.rs`: the both-modes harness. `each_mode(|store, clock| { ... })` runs a
+  body on a default store in memory and then on one that spills
+  (`StoreConfig::spilling_for_tests`), each on its own manual clock;
+  `each_mode_with(config, ...)` does it with the limits of a config. Every test
+  file of this crate that builds a store runs its bodies through one of them
+  (`fixtures::store_with_manual_clock` and `store_with_config` stay for the tests that
+  want one store of their own), so the public API is held equal in both modes.
+  The spilling store only spills what the plan says it may, a *complete* trace, so a
+  body that never moves the clock past the quiet period never leaves memory in
+  either mode: the cold paths are pinned by `spill.rs`, and by the bodies that
+  advance the clock (the completeness tests, the service-map tests). A file
+  declares `mod fixtures; mod modes;` (`modes.rs` has its own clock start, which
+  `spill.rs` checks against `fixtures::CLOCK_START`).
+- `spill.rs`: Milestone 5, Task 2. The settings and `spilling_for_tests`; what
+  spills and when (`complete_trace_spills_and_reads_back_equal`, the hot-span
+  budget, segments rolling, `clear` and drop deleting the files, reads of a
+  segment that is still growing); `late_span_rehydrates_cold_trace` and its
+  neighbours (a retry changes nothing, a late span that starts earlier moves the
+  trace in the order); `search_order_and_cursor_identical_across_modes` over 60
+  traces, hot and cold; `traceql_search_decodes_newest_first_and_stops_at_page`
+  (the decode hook); `service_map_identical_across_modes`;
+  `remove_trace_on_cold_trace`, `remove_spans_on_cold_trace_keeps_it_complete`
+  and eviction of a cold trace; a damaged record (skipped, never a panic); a write
+  that fails (the trace stays hot, and the next step retries); and readers and a
+  writer on one spilling store. Most compare a store in memory
+  with one that spills, fed the same data on the same clock.
 - `fixtures.rs`: `span(...)`, `error(span)`, `with_kind`, `with_attr`,
   `with_exception`, `log(...)`, `with_severity`, `in_span`, `in_trace`,
   `tid(n)`, `sid(n)` and the `store_with_manual_clock()` builders every store
