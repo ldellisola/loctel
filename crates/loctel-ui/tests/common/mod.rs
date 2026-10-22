@@ -9,7 +9,7 @@ use loctel_ingest::{logs_from_request, spans_from_request};
 use loctel_meshgen::{Generated, Scenario, generate};
 use loctel_model::TraceId;
 use loctel_store::{ManualClock, Store, StoreConfig};
-use loctel_ui::app::{MainWindow, Screen, TraceModel};
+use loctel_ui::app::{HomeControls, MainWindow, Screen, ToolbarPart, TraceModel};
 use loctel_ui::model::inspector::SpanDetails;
 use loctel_ui::testing::Driver;
 use loctel_ui::views::{TracePart, TraceView, WaterfallView};
@@ -150,4 +150,26 @@ pub fn row_center(driver: &Driver<MainWindow>, row: usize) -> Point<Pixels> {
     driver
         .read(|cx| waterfall.read(cx).row_center(row))
         .unwrap_or_else(|| panic!("row {row} is not in view"))
+}
+
+/// The controls of the home toolbar.
+#[allow(dead_code)]
+pub fn toolbar(driver: &Driver<MainWindow>) -> Entity<HomeControls> {
+    driver.read_root(|main| main.toolbar().clone())
+}
+
+/// Where `part` of the home toolbar is in the window now, `None` while it is
+/// not on the screen (an entry of the range menu while the menu is closed).
+#[allow(dead_code)]
+pub fn toolbar_bounds(driver: &Driver<MainWindow>, part: ToolbarPart) -> Option<Bounds<Pixels>> {
+    let controls = toolbar(driver);
+    driver.read(|cx| controls.read(cx).bounds_of(part))
+}
+
+/// The middle of `part` of the home toolbar.
+#[allow(dead_code)]
+pub fn toolbar_center(driver: &Driver<MainWindow>, part: ToolbarPart) -> Point<Pixels> {
+    toolbar_bounds(driver, part)
+        .unwrap_or_else(|| panic!("the toolbar has no {part:?} on the screen"))
+        .center()
 }

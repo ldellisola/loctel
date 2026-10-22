@@ -25,6 +25,13 @@
 //!    refreshes (nobody takes its row, and it returns to it) and is forgotten
 //!    at the fourth, so a gap of a moment does not make the map jump.
 //! 5. **Rates** are counts over the window: `count / window_secs`.
+//! 6. **Routes** ([`route_edges`]) say where each edge is drawn. An edge to
+//!    the next column is one curve. An edge that skips a column, or turns
+//!    back, never goes through a node: it leaves along a *lane*, a horizontal
+//!    line in the 32 px gap between two rows (or above the first row, or below
+//!    the last), travels along it past the columns in between and comes down
+//!    to the node it enters. Nodes only ever fill the rows, so a lane is
+//!    free of them in every column.
 //!
 //! `docs/areas/ui.md` ("Map layout") has the details and the reasons.
 
@@ -48,6 +55,22 @@ const MARGIN_Y: f32 = 32.0;
 /// How many refreshes in a row a node can be missing from the map and still
 /// have its place kept. The next one forgets it.
 const KEPT_REFRESHES: u8 = 3;
+/// The distance between the start of one row and the next.
+const ROW_PITCH: f32 = NODE_H + ROW_GAP;
+/// The distance between the left edge of one column and the next.
+const COLUMN_PITCH: f32 = NODE_W + COLUMN_GAP;
+/// An edge leaves and enters a node level: the control points of its curves
+/// are at least this far out, so a curve that has little room still has a
+/// shape.
+const MIN_BEND: f32 = 48.0;
+/// How far an edge that turns back bulges out of the node it leaves and the
+/// node it enters. The curve reaches three quarters of it, which is inside the
+/// 40 px margin of the picture.
+const LOOP_BULGE: f32 = 40.0;
+/// Where the edges that share a lane run, as distances from its middle, in
+/// the order the edges take them. The lane is 32 px high between the rows, so
+/// the farthest is 8 px from the middle and 8 px clear of the nodes.
+const LANE_OFFSETS: [f32; 5] = [0.0, -5.0, 5.0, -8.0, 8.0];
 
 /// A node of the map, placed.
 #[derive(Clone, Debug, PartialEq)]
@@ -443,4 +466,225 @@ fn subtitle(node: &ServiceNode, window_secs: f64) -> String {
         NodeKind::Queue => format!("queue \u{b7} {}", format::rate(per_sec, "msg/s")),
         NodeKind::External => format!("external \u{b7} {}", format::rate(per_sec, "req/s")),
     }
+}
+
+// --- routes -------------------------------------------------------------------
+
+/// A point of the picture: `(x, y)` in px from its top left corner.
+pub type PicturePoint = (f32, f32);
+
+/// One piece of an edge's path, drawn from where the last piece ended.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RouteSegment {
+    /// A straight line to the point.
+    Line(PicturePoint),
+    /// A cubic Bezier curve to `to`, with the control points `c1` (after the
+    /// start) and `c2` (before `to`).
+    Cubic {
+        c1: PicturePoint,
+        c2: PicturePoint,
+        to: PicturePoint,
+    },
+}
+
+impl RouteSegment {
+    fn end(self) -> PicturePoint {
+        match self {
+            RouteSegment::Line(to) | RouteSegment::Cubic { to, .. } => to,
+        }
+    }
+}
+
+/// Where an edge is drawn: the right-edge middle of the node that calls, the
+/// left-edge middle of the node that is called, and what is between.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EdgeRoute {
+    pub start: PicturePoint,
+    /// At least one. The last one is a curve that arrives level, heading
+    /// right, so the arrowhead points into the node.
+    pub segments: Vec<RouteSegment>,
+}
+
+impl EdgeRoute {
+    /// Where the route ends: the callee's left-edge middle.
+    pub fn end(&self) -> PicturePoint {
+        self.segments.last().map_or(self.start, |last| last.end())
+    }
+
+    /// The direction the route arrives in, as a unit vector: along the last
+    /// control point (or line) into the end. `(1, 0)` when it has no length.
+    pub fn arrival(&self) -> (f32, f32) {
+        let end = self.end();
+        let before = match self.segments.as_slice() {
+            [] => self.start,
+            [.., RouteSegment::Cubic { c2, .. }] => *c2,
+            [rest @ .., RouteSegment::Line(_)] => rest.last().map_or(self.start, |s| s.end()),
+        };
+        let (dx, dy) = (end.0 - before.0, end.1 - before.1);
+        let length = dx.hypot(dy);
+        if length > f32::EPSILON {
+            (dx / length, dy / length)
+        } else {
+            (1.0, 0.0)
+        }
+    }
+
+    /// Where the rate label of the edge goes (above it): the middle of the
+    /// first piece, which is in the gap right of the node that calls.
+    pub fn label_anchor(&self) -> PicturePoint {
+        match self.segments.first() {
+            Some(RouteSegment::Cubic { c1, c2, to }) => (
+                (self.start.0 + 3.0 * c1.0 + 3.0 * c2.0 + to.0) / 8.0,
+                (self.start.1 + 3.0 * c1.1 + 3.0 * c2.1 + to.1) / 8.0,
+            ),
+            Some(RouteSegment::Line(to)) => {
+                ((self.start.0 + to.0) / 2.0, (self.start.1 + to.1) / 2.0)
+            }
+            None => self.start,
+        }
+    }
+
+    /// The route as points: the start, then `per_segment` points along each
+    /// piece, the last of the piece included. For checking where a route goes.
+    pub fn points(&self, per_segment: usize) -> Vec<PicturePoint> {
+        let per_segment = per_segment.max(1);
+        let mut points = vec![self.start];
+        let mut from = self.start;
+        for segment in &self.segments {
+            for step in 1..=per_segment {
+                let t = step as f32 / per_segment as f32;
+                points.push(match *segment {
+                    RouteSegment::Line(to) => {
+                        (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t)
+                    }
+                    RouteSegment::Cubic { c1, c2, to } => {
+                        let u = 1.0 - t;
+                        let (a, b, c, d) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
+                        (
+                            a * from.0 + b * c1.0 + c * c2.0 + d * to.0,
+                            a * from.1 + b * c1.1 + c * c2.1 + d * to.1,
+                        )
+                    }
+                });
+            }
+            from = segment.end();
+        }
+        points
+    }
+}
+
+/// The routes of the edges of `layout`, one per edge in the order of
+/// `layout.edges`: `None` for an edge that has nothing to draw (a call of a node
+/// to itself).
+///
+/// - **To the next column**: one S-shaped curve, level at both ends.
+/// - **Over one column or more**: a curve into a lane, a straight line along
+///   the lane and a curve out of it to the node. The lane is the gap between two
+///   rows, the one nearest the middle between the two ends, so the edge does not
+///   wander. It is only ever in a gap, so it passes between the nodes of the
+///   columns in between and under none of them.
+/// - **To the same column or back**: a bulge out of the right of the caller, a
+///   lane to the left past the callee and a bulge into its left. Nodes can sit
+///   in such a pair because a node keeps its place while the calls change.
+///
+/// Edges that share a lane are spread over it ([`LANE_OFFSETS`]), in the order
+/// of `layout.edges`.
+pub fn route_edges(layout: &MapLayout) -> Vec<Option<EdgeRoute>> {
+    // An edge's end is the first node with that id, and the kinds sort
+    // service first.
+    let mut by_id: HashMap<&str, &PlacedNode> = HashMap::new();
+    for node in &layout.nodes {
+        by_id
+            .entry(node.id.as_str())
+            .and_modify(|first| {
+                if node.kind < first.kind {
+                    *first = node;
+                }
+            })
+            .or_insert(node);
+    }
+    let last_row = layout
+        .nodes
+        .iter()
+        .map(|node| ((node.y - MARGIN_Y) / ROW_PITCH).round() as i32)
+        .max()
+        .unwrap_or(0);
+
+    // How many edges have taken a lane already, by the gap it is in.
+    let mut taken: HashMap<i32, usize> = HashMap::new();
+    layout
+        .edges
+        .iter()
+        .map(|edge| {
+            let from = by_id.get(edge.from.as_str())?;
+            let to = by_id.get(edge.to.as_str())?;
+            if std::ptr::eq(*from, *to) {
+                return None;
+            }
+            let start = (from.x + from.w, from.y + from.h / 2.0);
+            let end = (to.x, to.y + to.h / 2.0);
+            let columns = ((to.x - from.x) / COLUMN_PITCH).round() as i32;
+            if columns == 1 {
+                return Some(EdgeRoute {
+                    start,
+                    segments: vec![s_curve(start, end)],
+                });
+            }
+
+            let gap = lane_gap(start.1, end.1, last_row);
+            let used = taken.entry(gap).or_insert(0);
+            let y = lane_y(gap) + LANE_OFFSETS[*used % LANE_OFFSETS.len()];
+            *used += 1;
+            let segments = if columns > 1 {
+                // The lane starts where the next column does and stops where
+                // the one before the callee's ends.
+                let lane_start = (start.0 + COLUMN_GAP, y);
+                let lane_end = (end.0 - COLUMN_GAP, y);
+                vec![
+                    s_curve(start, lane_start),
+                    RouteSegment::Line(lane_end),
+                    s_curve(lane_end, end),
+                ]
+            } else {
+                vec![
+                    RouteSegment::Cubic {
+                        c1: (start.0 + LOOP_BULGE, start.1),
+                        c2: (start.0 + LOOP_BULGE, y),
+                        to: (start.0, y),
+                    },
+                    RouteSegment::Line((end.0, y)),
+                    RouteSegment::Cubic {
+                        c1: (end.0 - LOOP_BULGE, y),
+                        c2: (end.0 - LOOP_BULGE, end.1),
+                        to: end,
+                    },
+                ]
+            };
+            Some(EdgeRoute { start, segments })
+        })
+        .collect()
+}
+
+/// A curve from `from` to `to` that leaves and arrives level (heading right).
+fn s_curve(from: PicturePoint, to: PicturePoint) -> RouteSegment {
+    let bend = ((to.0 - from.0) / 2.0).max(MIN_BEND);
+    RouteSegment::Cubic {
+        c1: (from.0 + bend, from.1),
+        c2: (to.0 - bend, to.1),
+        to,
+    }
+}
+
+/// The y of the middle of the gap under row `gap` (-1 is the margin above the
+/// first row).
+fn lane_y(gap: i32) -> f32 {
+    MARGIN_Y + NODE_H + ROW_GAP / 2.0 + gap as f32 * ROW_PITCH
+}
+
+/// The gap, from -1 (above the first row) to `last_row` (under the last), whose
+/// middle is nearest the middle of `y_from` and `y_to`; half way between two
+/// gaps takes the lower.
+fn lane_gap(y_from: f32, y_to: f32, last_row: i32) -> i32 {
+    let ideal = ((y_from + y_to) / 2.0 - lane_y(0)) / ROW_PITCH;
+    ((ideal + 0.5).floor() as i32).clamp(-1, last_row.max(0))
 }

@@ -26,7 +26,7 @@ use super::backend::UiBackend;
 use super::data::HomeModel;
 use super::kit_theme;
 use super::sidebar::sidebar_contents;
-use super::toolbar::toolbar_contents;
+use super::toolbar::{HomeControls, toolbar_contents};
 use crate::theme::FONT_FAMILY;
 use crate::views::{MapView, TraceTableEvent, TraceTableView, TraceView, TraceViewEvent};
 use crate::{StatusModel, Theme};
@@ -116,6 +116,9 @@ pub struct MainWindow {
     map: Entity<MapView>,
     /// The trace table of the home screen.
     table: Entity<TraceTableView>,
+    /// The controls in the home screen's toolbar: Live, the time range, Pause
+    /// and Clear all.
+    controls: Entity<HomeControls>,
     /// The trace screen, while [`Screen::Trace`] is showing: made when the
     /// screen is first drawn and dropped when the window goes to another screen
     /// (its refresh stops with it).
@@ -173,6 +176,7 @@ impl MainWindow {
         let home = cx.new(|cx| HomeModel::new(Rc::clone(&backend), cx));
         let map = cx.new(|cx| MapView::new(home.clone(), cx));
         let table = cx.new(|cx| TraceTableView::new(home.clone(), window, cx));
+        let controls = cx.new(|cx| HomeControls::new(home.clone(), cx));
         let open = cx.subscribe(&table, |main, _table, event: &TraceTableEvent, cx| {
             let TraceTableEvent::Open(id) = event;
             main.navigate(Screen::Trace(*id), cx);
@@ -184,6 +188,7 @@ impl MainWindow {
             home,
             map,
             table,
+            controls,
             trace: None,
             regions: Rc::new(RegionReport::new(backdrop)),
             _appearance: appearance,
@@ -266,6 +271,11 @@ impl MainWindow {
         &self.table
     }
 
+    /// The controls of the home screen's toolbar.
+    pub fn toolbar(&self) -> &Entity<HomeControls> {
+        &self.controls
+    }
+
     /// Switches to the look of `appearance` (dark for `Dark` and
     /// `VibrantDark`, light for the others): ours and Kit's. This is what the
     /// window's appearance observer calls when the system switches.
@@ -290,6 +300,11 @@ impl Render for MainWindow {
         if let Screen::Trace(id) = self.screen {
             self.open_trace(id, window, cx);
         }
+        if self.screen != Screen::Home {
+            // Not drawn now: a test (or anyone) asking where its parts are must
+            // not be told where they were on the home screen.
+            self.controls.read(cx).forget_places();
+        }
         let regions = &self.regions;
         let glass = regions.has_backdrop();
 
@@ -303,7 +318,7 @@ impl Render for MainWindow {
             .w_full()
             .h(px(TOOLBAR_HEIGHT))
             .flex_none()
-            .child(toolbar_contents(&theme, &self.screen));
+            .child(toolbar_contents(&theme, &self.screen, &self.controls));
 
         let content = match &self.screen {
             Screen::Home => home_screen(&theme, &self.map, &self.table),

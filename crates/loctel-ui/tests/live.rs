@@ -22,7 +22,7 @@ use gpui::{AppContext as _, Context, Entity, HeadlessAppContext};
 use loctel_ingest::{logs_from_request, spans_from_request};
 use loctel_meshgen::{Generated, Scenario, generate};
 use loctel_model::{AttrValue, Resource, Span, SpanId, SpanKind, StatusCode, TraceId};
-use loctel_store::{ManualClock, NodeKind, Store, StoreConfig};
+use loctel_store::{ManualClock, NodeKind, PageRequest, Store, StoreConfig, TraceFilter};
 use loctel_ui::app::{
     DONE_REFRESH, HOME_MAX_ROWS, HomeData, HomeModel, LoadState, OPEN_REFRESH, TimeRange,
     TraceModel,
@@ -163,6 +163,53 @@ fn lone_trace(
 
 fn tid(n: u8) -> TraceId {
     TraceId([n; 16])
+}
+
+#[test]
+fn clear_all_empties_the_store_and_the_view_at_once_and_receiving_goes_on() {
+    let mut f = Fixture::new(BASE + SECOND);
+    f.ingest(&generate(&Scenario::CheckoutFailure, SEED, BASE));
+    f.tick();
+    assert_eq!(f.rows().len(), 1);
+    assert!(!f.data().map.nodes.is_empty());
+    f.update(|home, cx| home.set_errors_only(true, cx));
+    f.update(|home, cx| home.set_range(TimeRange::LastHour, cx));
+    f.settle();
+
+    // Paused, so the timer would show nothing for a long time: the clear reads
+    // by itself.
+    f.update(|home, cx| home.set_paused(true, cx));
+    f.update(|home, cx| home.clear_all(cx));
+    f.settle();
+    assert!(f.rows().is_empty(), "the table is empty at once");
+    assert!(f.data().map.nodes.is_empty(), "so is the map");
+    assert_eq!(
+        f.store
+            .search_traces(
+                &TraceFilter::default(),
+                &PageRequest {
+                    limit: 10,
+                    cursor: None
+                }
+            )
+            .items
+            .len(),
+        0,
+        "the store itself is empty, not only the view"
+    );
+    // What the user set stays: the filters, the range and the pause.
+    assert!(f.read(|home| home.errors_only() && home.paused()));
+    assert_eq!(f.read(|home| home.range()), TimeRange::LastHour);
+
+    // Receiving carries on: after the pause the next trace shows.
+    f.ingest(&generate(
+        &Scenario::CheckoutFailure,
+        SEED + 1,
+        BASE + 2 * SECOND,
+    ));
+    f.update(|home, cx| home.set_paused(false, cx));
+    f.settle();
+    assert_eq!(f.rows().len(), 1);
 }
 
 // --- the time range ---------------------------------------------------------

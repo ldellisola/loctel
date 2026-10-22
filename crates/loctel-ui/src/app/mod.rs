@@ -9,6 +9,8 @@
 //! - [`TraceModel`]: the trace screen's live data (the trace read from the store
 //!   while it is open, its waterfall, the selection and the selected span's
 //!   logs).
+//! - [`HomeControls`]: the home toolbar's Live indicator, time range, Pause and
+//!   Clear all, over the [`HomeModel`].
 //! - [`MainWindow`] is the root view; [`Screen`] says what it shows.
 //! - [`open_main_window`] opens it.
 //! - [`Backdrop`] and [`GlassRegion`]: how the shell tells a platform where its
@@ -42,7 +44,10 @@ pub use shell::{
     Screen, TOOLBAR_HEIGHT, content_width,
 };
 pub use sidebar::{NAV_ITEM_HEIGHT, TRAFFIC_LIGHT_SPACE};
-pub use toolbar::toolbar_title;
+pub use toolbar::{
+    CLEAR_ALL_LABEL, HomeControls, LIVE_LABEL, PAUSE_LABEL, PAUSED_LABEL, RESUME_LABEL,
+    ToolbarPart, live_label, pause_label, toolbar_title,
+};
 pub use trace_data::{DONE_REFRESH, LoadState, OPEN_REFRESH, TraceModel, TraceModelEvent};
 
 /// Marks that [`init`] has run on an app.

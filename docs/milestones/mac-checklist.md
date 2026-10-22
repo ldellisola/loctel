@@ -148,10 +148,9 @@ are tested on Linux with software rendering; what nobody has seen is any of it
 on a Mac: the window opening from the menu bar, loctel in the Dock while it is
 open, Apple's Liquid Glass behind the sidebar and the toolbar, and the trackpad
 and the fast scrolling. Some things are not in this release, so do not report
-their absence: the toolbar shows only its title (no Live indicator, time range,
-Pause or Clear all yet), the sidebar has the one entry `Map & traces` (Logs and
-Discard rules come later), and the text is the bundled Inter font, not San
-Francisco (say if it looks out of place). Items 4 to 7 need data: from a
+their absence: the sidebar has the one entry `Map & traces` (Logs and Discard
+rules come later), and the text is the bundled Inter font, not San Francisco
+(say if it looks out of place). Items 4 to 8 need data: from a
 checkout of this repository, the commands in Milestone 1, item 3 send it, and
 each item says which scenario to use. Report what you see, and say which item
 it is.
@@ -203,7 +202,8 @@ it is.
    shows non-zero rates. Then scroll the table down a little while the traffic
    goes on and say what the rows you were looking at do: loctel keeps the scroll
    position and does not hold your place against rows arriving above it, so they
-   drift down, and it is worth knowing whether that is tolerable.
+   drift down, and it is worth knowing whether that is tolerable (item 8 has
+   the Pause button for reading a moving table).
 5. **Filtering.** Click `payments-api` on the map.
    *Right:* the node gets a blue ring, the query bar fills in with
    `{ resource.service.name = "payments-api" }` and the table shows only traces
@@ -237,3 +237,17 @@ it is.
    *Right:* it stays smooth, with no blank rows while you flick and no beachball.
    Report any stutter, how long the trace takes to open, and whether the window
    stayed responsive.
+8. **The toolbar.** With the traffic of item 4 running, look at the right end of
+   the toolbar: a `Live` pill with a green dot, `Last 15 minutes` with a caret,
+   `Pause` and `Clear all`. Click `Pause`.
+   *Right:* the pill turns amber and says `Paused`, the button becomes a blue
+   `Resume`, and the table and the map stop changing (the numbers on the nodes,
+   the rows) while the status box in the sidebar still shows traffic arriving.
+   Click `Resume`: they catch up at once and run again. Click `Last 15 minutes`:
+   a menu of `Last 5 minutes`, `Last 15 minutes`, `Last hour` and `Everything`
+   opens under it, over the map; choose `Last 5 minutes` and the menu closes and
+   the button says so; open it again and click anywhere else: it closes and
+   nothing changes. Finally click `Clear all`: the map and the table empty at
+   once (there is no confirmation), and new traces show up again within a
+   second. Report whether the buttons look right on the glass (they are solid,
+   not glass) and whether every click lands where you aimed it.

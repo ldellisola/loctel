@@ -504,7 +504,8 @@ details, the theme tokens and the workflow are in
   `failed_in_text`), `query_bar` (`QueryState`, `validate`,
   `service_filter`), `map_layout` (`layout`, `MapLayout`, `LayoutMemory`:
   the service map's nodes and edges placed in columns and rows, stable as
-  services come and go), `waterfall` (`Waterfall`, `WaterfallRow`,
+  services come and go; `route_edges`: where each edge is drawn, through the
+  gaps between rows so that none passes under a node), `waterfall` (`Waterfall`, `WaterfallRow`,
   `initial_selection`: one trace as rows in tree order with their bars, folding,
   find and the errors path, kept by span ID as the trace fills in),
   `inspector` (`SpanDetails`, `span_details`: the text of the selected span's
@@ -516,8 +517,9 @@ details, the theme tokens and the workflow are in
   [`areas/ui.md`](areas/ui.md) ("Models").
 - **The `app` module** (`crates/loctel-ui/src/app/`, Milestone 3) is the main
   window's shell and its data: `MainWindow` (the floating sidebar with its
-  status box, the toolbar and the content panel, which show a `Screen`: `Home`
-  or `Trace(id)`), the `UiBackend` trait that gives views the `Store` and the
+  status box, the toolbar (with `HomeControls`: Live, the time range, Pause and
+  Clear all over the `HomeModel`) and the content panel, which show a `Screen`:
+  `Home` or `Trace(id)`), the `UiBackend` trait that gives views the `Store` and the
   `EngineStatus` (`EngineHandle` implements it; tests use
   `testing::FixedBackend`), `open_main_window`, the `Backdrop` and
   `GlassRegion` types through which a platform learns where the glass parts

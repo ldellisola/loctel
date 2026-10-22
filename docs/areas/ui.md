@@ -94,20 +94,18 @@ screen is made the first time it is drawn and dropped when the window leaves it,
 which also stops its refresh (it starts again from the initial selection on the
 next visit).
 
-**Not in the window yet.** Design §9.2 puts a Live indicator, the time range,
-Pause and Clear all in the home screen's toolbar. The Milestone 3 plan has no
-task that draws them, so the toolbar shows only its title. The models are done
-and tested (`HomeModel::set_range`, `set_paused` and `UiBackend::clear_all`, see
-"Live data"), but nothing in the window calls them: it always shows `Last 15
-minutes` and refreshes every 500 ms. Whoever adds the controls writes them over
-those calls, with a screenshot of the toolbar in both themes (decision 0031 has
-this and the other two gaps of Milestone 3).
+**The toolbar's controls.** Design §9.2 puts a Live indicator, the time range,
+Pause and Clear all in the home screen's toolbar, and they are there
+(`HomeControls`, see "The main window": the toolbar). Each one calls the
+`HomeModel` (`set_range`, `set_paused`, `clear_all`, see "Live data") and keeps
+no state of its own, except whether the range menu is open. Decision 0032 has
+the choices; decision 0031 has the two gaps of Milestone 3 that remain.
 
 ### Views and the models behind them
 
 | View | File (`src/`) | Reads | Pure model | Section |
 |---|---|---|---|---|
-| `MainWindow`, sidebar, toolbar | `app/{shell,sidebar,toolbar,nav}.rs` | `UiBackend::status()` once a second | `StatusModel`, `menu_text`, `NavItem`, `toolbar_title` | "The main window" |
+| `MainWindow`, sidebar, toolbar (`HomeControls`) | `app/{shell,sidebar,toolbar,nav}.rs` | `UiBackend::status()` once a second; `HomeModel`: range and pause | `StatusModel`, `menu_text`, `NavItem`, `toolbar_title`, `live_label`, `pause_label` | "The main window" |
 | `MapView` | `views/map_view.rs` | `HomeModel`: the placed map | `model::map_layout` (with `colors`, `format`) | "The service map" |
 | `TraceTableView` | `views/trace_table_view.rs` | `HomeModel`: rows, query state, toggles | `model::trace_table`, `query_bar` (with `format`) | "The trace table" |
 | `TraceView` | `views/trace_view.rs` | `TraceModel`: header, load state | `model::trace_view` (`header`, `find_status`) | "The trace view" |
@@ -331,6 +329,13 @@ its number in the session's `ServiceColors`, the one shared with the trace
 table (new services are numbered in the order of the picture); a database,
 queue or external host has none.
 
+**Routes.** `route_edges(&MapLayout)` says where each edge is drawn: an
+`EdgeRoute` per edge, in the order of `edges`, with `start` (the caller's
+right-edge middle), `segments` (`Line` and `Cubic` pieces; the last is a curve
+that arrives level) and the helpers `end()`, `arrival()` (the direction of the
+arrowhead), `label_anchor()` and `points(n)` (the route sampled, for tests);
+`None` for an edge from a node to itself. "The service map" has the rules.
+
 **Ids.** An edge's ends are ids, and ids are unique within a kind only (a
 database can be named like a service). The store's edges carry names and no
 kind, so an end means the first node with that id, in the order service,
@@ -463,9 +468,34 @@ screens of Tasks 6 to 8 go into its content area. Decision 0024 has the choices.
   - To its right, the **toolbar** (`TOOLBAR_HEIGHT` 48) over the **content
     panel**. The toolbar's contents depend on the screen: its title is
     `toolbar_title(&Screen)`: `Map & traces`, or
-    `Map & traces › 4bf92f35…0e0e4736` on a trace. Nothing else is in it yet:
-    the Live indicator, the time range, Pause and Clear all of design §9.2 have
-    no control (see "Screens and views at a glance").
+    `Map & traces › 4bf92f35…0e0e4736` on a trace. On the home screen the four
+    controls of design §9.2 are at its right (below); the trace screen has the
+    title alone.
+
+**The toolbar's controls** (`HomeControls`, `app/toolbar.rs`; the shell owns it
+as `main.toolbar()`). Left to right, 26 px high:
+
+| Control | Looks | A click |
+|---|---|---|
+| Live | a pill: a green dot and `Live`; an amber dot and `Paused` while the view is frozen (`live_label(paused)`) | nothing (it is an indicator) |
+| time range | an outline button with the range (`Last 15 minutes`, `TimeRange::label`) and a caret | opens a menu of the four ranges (`TimeRange::ALL`, the current one lit with the accent); a choice calls `HomeModel::set_range` and closes the menu; a click outside closes it and changes nothing |
+| Pause | an outline button with the pause icon and `Pause`; while frozen the accent-filled `Resume` with the play icon (`pause_label(paused)`) | `HomeModel::set_paused(!paused)`: the map and the table stop reading while ingest goes on; `Resume` reads at once |
+| Clear all | an outline button with `Clear all` | `HomeModel::clear_all`: empties the store through `UiBackend::clear_all` and reads at once, even while frozen. No confirmation (design §5: "Clear all empties everything immediately"; the macOS menu's `Clear all data…` asks, the window's button is a developer's reset). The filters, the range and the pause stay |
+
+The controls hold no data: the model owns the range and the pause, and the
+controls redraw when it changes (`cx.observe`), so a range set from anywhere
+shows on the button at the next frame. The range menu is Kit's `Popover`, opened
+and closed by the controls (`range_open()`), drawn over the content like any
+popup. The Pause button freezes the *view*; the macOS menu's `Pause receiving`
+stops *ingest* in the engine and is a different thing (the status box says
+`Paused` for that one). For tests, `bounds_of(ToolbarPart)` and `center_of` say
+where each part was drawn in the latest frame (`Live`, `Range`, `RangeOption(r)`
+while the menu is open, `Pause`, `ClearAll`), `live_text`, `pause_text` and
+`range_open` read what they show, and `tests/interactions.rs` ("the toolbar")
+clicks them: Pause freezes the table and the map while the store goes on
+receiving and `Resume` catches up, the range menu lists the four ranges and each
+choice changes the rows, a click outside closes the menu, Clear all empties the
+map, the table and the store (and works while frozen).
 
 **Screens.** `Screen` is `Home` or `Trace(TraceId)`; `MainWindow::screen()` and
 `navigate(screen, cx)` read and change it, and clicking the navigation entry
@@ -597,6 +627,7 @@ the value it has):
 | `select_service(Some(name))` | writes `service_filter(name)` into the query and remembers the selection (`selected_service()`) |
 | `select_service(None)` | clears the selection: the query goes back to empty, but only while it is still that service's filter; a query the user typed is left alone |
 | `set_paused(bool)` | freezes the timer (below); un-pausing reads at once |
+| `clear_all()` | empties the store through `UiBackend::clear_all` and reads at once, whatever pause says; the filters, the range and the pause stay (the toolbar's `Clear all`) |
 | `refresh_now()` | reads now, whatever pause says |
 
 The table's filter is the range, errors only, slow only and the valid query
@@ -665,13 +696,35 @@ rest. The Trace screen keeps its one panel.
 | failing node | a 2 px `error` border and an `error_text` subtitle |
 | not a service | a dashed border |
 | selected service | a 3 px `accent` ring just outside the node |
-| edge | a cubic bézier from the caller's right-edge middle to the callee's left-edge middle, 2 px, a filled arrowhead (10 long, 10 wide); `text_tertiary` at 55% normally, `error` when failing; failing edges are drawn last. An edge to the same node is not drawn |
-| edge label | the layout's `label` (`84 req/s`, only on edges out of the first column) in a small pill (`panel` fill, `border`) above the curve's midpoint, over the nodes |
+| edge | a 2 px line from the caller's right-edge middle to the callee's left-edge middle along the route of `route_edges` (below), ending in a filled arrowhead (10 long, 10 wide) that points right into the callee; `text_tertiary` at 55% normally, `error` when failing; failing edges are drawn last. An edge to the same node is not drawn |
+| edge label | the layout's `label` (`84 req/s`, only on edges out of the first column) in a small pill (`panel` fill, `border`) above the middle of the edge's first curve, over the nodes |
 | empty map | `Waiting for telemetry` and `Point OTEL_EXPORTER_OTLP_ENDPOINT at http://localhost:4317` (`EMPTY_TITLE`, `EMPTY_HINT`), centred, instead of the canvas and the Fit button |
 
-Nodes are drawn after the edges, so a line that crosses a node goes behind it
-(an edge between columns that are not neighbours does this; it is the layout's
-doing, not a bug of the view).
+**Where an edge goes** (`model::map_layout::route_edges`, decision 0033: pure and
+tested without a window, the view only draws what it says). Nodes are drawn after
+the edges, so an edge that went under a node would show only as a stray piece
+between two others, looking like a call that does not exist; none does:
+
+- **To the next column**: one S-shaped cubic bézier, level at both ends (control
+  points half way, at least 48 px out). This is every edge of the checkout but
+  one.
+- **Over one column or more** (the checkout's `orders-api` to `postgresql`): a
+  curve into a *lane*, a straight line along it and a curve out of it into the
+  callee. A lane is a gap between two rows, 32 px high, which no node is ever in,
+  in every column; the one nearest the middle of the two ends is taken (the
+  gap above the first row and the one under the last are lanes too). The line
+  starts at the left edge of the first column in between and ends at the right
+  edge of the last, and the arrowhead is level into the callee.
+- **To the same column or back** (a node keeps its place while its calls change,
+  so this happens, and so does a loop `a` calls `b` calls `a`): a bulge out of the
+  caller's right edge, a lane back to the left past the callee, and a bulge into
+  its left edge from outside.
+- **Edges that share a lane** are spread over it, 0, -5, +5, -8, +8 px from its
+  middle, in the order of the edges, so two lines never lie on one another.
+
+Every route stays inside the picture, under no node and at least 6 px from every
+node it does not join (`tests/model_map.rs`, "where the edges are drawn": the
+checkout, 300 random maps and 150 growing ones with remembered places).
 
 **The camera** (`Camera { zoom, pan_x, pan_y }`, pure and tested without a
 window): a picture point `(x, y)` shows at `(pan + (x, y) x zoom)` from the
@@ -715,7 +768,9 @@ table" below. `shell_glass_dark.png` and `shell_glass_light.png` are the same
 window with a backdrop attached, over a flat stand-in for the desktop (see "The
 main window", "With a backdrop"): the sidebar and the toolbar show the stand-in
 colour through them, with the hairline and the highlight round them, and
-everything else is as above.
+everything else is as above. The toolbar's controls are in all of them, and
+`toolbar_*.png` are crops of the strip (running, with the range menu open, and
+frozen), see "The main window".
 
 ## The trace table
 
@@ -1100,13 +1155,16 @@ complete; "empty store" has nothing in it.
 |---|---|---|---|
 | `status_view_dark` | `screenshots.rs` | a fixed `StatusModel`: `otlp-http` failed, 412 spans/s, 2 rules, 31% dropped | the standalone status view (900 by 600): the red `Port problem` pill, the four numbers, the rules line, the three endpoints with the failure in words |
 | `status_view_light` | `screenshots.rs` | the same model, paused, no failed listener, one rule with an error | the same view in the light theme, with the pill `Paused` and the red rules line. It is not the dark picture re-coloured: it covers the other readings of the pill and the rules row |
-| `shell_dark`, `shell_light` | `screens.rs` | empty store, healthy engine status | the window shell and the home screen with nothing in it: the sidebar with the entry lit and the status box, the toolbar title, `Waiting for telemetry` over the map and `No traces yet` in the table (`0 traces · newest first`) |
+| `shell_dark`, `shell_light` | `screens.rs` | empty store, healthy engine status | the window shell and the home screen with nothing in it: the sidebar with the entry lit and the status box, the toolbar with its title and controls, `Waiting for telemetry` over the map and `No traces yet` in the table (`0 traces · newest first`) |
 | `shell_glass_dark`, `shell_glass_light` | `screens.rs` | the same, with a `RecordingBackdrop`, over a flat stand-in for the desktop | the glass look: the sidebar and the toolbar clear (the stand-in colour shows through, with a hairline and a highlight ring), the panels solid. On a Mac the stand-in is Apple's glass |
-| `home_dark`, `home_light` | `screens.rs` | home store | the whole home screen: the checkout's nine nodes in four columns with `web-bff`, `orders-api` and `payments-api` and the edges between them in red, `card-gateway` dashed, the `Fit` button, the TraceQL bar, the seven traces newest first with the failed one's `Failed in payments-api · POST card-gateway +1`, the service dots and the duration bars |
+| `home_dark`, `home_light` | `screens.rs` | home store | the whole home screen: the toolbar with its four controls, the checkout's nine nodes in four columns with `web-bff`, `orders-api` and `payments-api` and the edges between them in red, `card-gateway` dashed, `orders-api` to `postgresql` along the lane between `inventory-api` and `payments-api` (not behind them), the `Fit` button, the TraceQL bar, the seven traces newest first with the failed one's `Failed in payments-api · POST card-gateway +1`, the service dots and the duration bars |
 | `home_payments_selected_dark` | `interactions.rs` | home store, a click on `payments-api` | the 3 px accent ring on the node, `{ resource.service.name = "payments-api" }` in the bar (with its clear button), and the table filtered to three traces |
 | `home_errors_only_dark` | `interactions.rs` | home store, `Errors only` clicked | the toggle lit with the accent, one row (the failed checkout), `1 trace · newest first` |
 | `home_query_error_dark` | `interactions.rs` | home store, `{ status = ` typed | the focused input, `at column 12: expected a value` in red under it, and the seven rows kept (the table runs on under the panel's edge, as a scrolling table does) |
 | `home_no_match_dark` | `interactions.rs` | home store, a query for a service that does not exist | no error line, an empty table with `No traces match` and the `Clear filters` button, `0 traces · newest first` |
+| `toolbar_dark`, `toolbar_light` | `screens.rs` | home store | a crop (2420 by 136) of the toolbar strip: the title, and at the right the green `Live` pill, `Last 15 minutes` with its caret, `Pause` with its icon and `Clear all` |
+| `toolbar_menu_dark`, `toolbar_menu_light` | `screens.rs` | home store, a click on the range button | the same strip with the range menu open under it (`Last 5 minutes`, `Last 15 minutes` lit, `Last hour`, `Everything`) over the map, where the long edge `orders-api` to `postgresql` runs through its lane |
+| `toolbar_paused_dark`, `toolbar_paused_light` | `screens.rs` | home store, a click on `Pause` | the strip with the amber dot and `Paused` and the accent-filled `Resume` |
 | `trace_dark`, `trace_light` | `screens.rs` | home store, the failing checkout opened | the trace view: the `Traces` button, the root name, the red `Failed in` badge, `Complete`, `1.84 s · 15 spans · 5 services · 08:00:00.000`, the ruler, 15 waterfall rows in tree order with the failed-in `POST` to `card-gateway` (236 ms) selected, the inspector with its attributes and resource, and `No logs from this span` |
 | `trace_charges_selected_dark` | `screens.rs` | the same, a click on `POST /charges` | the inspector's exception card (type, message, stack trace, `Copy`) and the span's four logs with their `INF`, `WRN` and `ERR` badges |
 | `trace_errors_path_only_dark` | `screens.rs` | the same, `Errors path only` on | the toggle lit and the seven erroring spans only, the selection kept |
@@ -1114,7 +1172,7 @@ complete; "empty store" has nothing in it.
 | `long_values_dark` | `screens.rs` | one trace with a 300-character span name, a 20 KB attribute, a 600-character token and a long exception | the name cut with an ellipsis in the header, the badge, the row and the logs title; wrapped in the inspector; every long value cut; the layout unchanged (inspector 340 wide at the panel's edge) |
 | `long_values_shown_whole_dark` | `screens.rs` | the same, the inspector scrolled and `… (show all)` pressed on the 20 KB payload | the pane scrolled and the value shown in full, the pane longer and never wider |
 
-`shell_light`, `shell_glass_light`, `home_light` and `trace_light` are the same
+`shell_light`, `shell_glass_light`, `home_light`, `trace_light` and the `toolbar_*_light` ones are the same
 picture as their dark twins with the light `Theme`: the same data and the same
 layout, so a difference other than colour between a pair is a bug (the
 status view's pair differs on purpose, see above). A new screen needs a pair of
@@ -1232,6 +1290,11 @@ The repo skill `run-and-screenshot` covers running with meshgen data.
   the code assumes (a trackpad sends pixel deltas, a mouse wheel lines), and
   that the zoom feels right. The tests send the events GPUI documents; a real
   trackpad has not.
+- The toolbar's controls on a Mac: that a click on `Pause`, `Clear all` and the
+  range button reaches GPUI through the glass host that sits under the
+  toolbar, that the range menu opens over the content (it is a GPUI popup in
+  the transparent window), and that the buttons, which are opaque, look right
+  on the glass.
 - The trace table on a Mac: the monospace face of the `Started` column and the
   query input (the theme's `mono_font_family`; Linux shows Inter), Kit's input
   and toggles with a real keyboard and IME, the tooltip of the dots, and that a

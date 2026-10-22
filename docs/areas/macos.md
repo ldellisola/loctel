@@ -315,8 +315,8 @@ it sees:
   the sidebar's edge over busy backgrounds.
 - **How far the glass trails a live resize.** It follows each layout one
   main-queue turn late; report whether it is visible.
-- **Clicks reach GPUI** through the glass hosts (the nav entry, the toolbar,
-  the traffic lights), and the hosts never take a click or the keyboard.
+- **Clicks reach GPUI** through the glass hosts (the nav entry, the toolbar's
+  `Pause`, `Clear all` and range button, the traffic lights), and the hosts never take a click or the keyboard.
 - **The transparent window**: its shadow, the traffic lights over the sidebar,
   and the title bar. The window colour must not show a see-through window
   anywhere (a gap that shows the desktop is a bug).

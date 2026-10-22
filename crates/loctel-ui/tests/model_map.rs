@@ -6,6 +6,11 @@
 //! implementation: a node is 176 by 64 px, the columns start at x = 40 and are
 //! 272 px apart (176 + a 96 px gap), the rows start at y = 32 and are 96 px
 //! apart (64 + a 32 px gap).
+//!
+//! The last section is where the edges are drawn (`route_edges`): an edge to the
+//! next column is one curve, and one that skips a column or turns back runs
+//! along a lane in the gap between two rows and never under a node (decision
+//! 0033).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -17,7 +22,9 @@ use loctel_store::{
     ManualClock, NodeKind, ServiceEdge, ServiceMap, ServiceNode, Store, StoreConfig, TimeWindow,
 };
 use loctel_ui::model::colors::ServiceColors;
-use loctel_ui::model::map_layout::{LayoutMemory, MapLayout, PlacedEdge, PlacedNode, layout};
+use loctel_ui::model::map_layout::{
+    EdgeRoute, LayoutMemory, MapLayout, PlacedEdge, PlacedNode, RouteSegment, layout, route_edges,
+};
 
 /// 2027-01-15T08:00:00Z. The failing checkout starts here.
 const BASE: u64 = 1_800_000_000_000_000_000;
@@ -1214,4 +1221,348 @@ fn a_wide_map_is_laid_out_in_reasonable_time() {
         "{:?}",
         started.elapsed()
     );
+}
+
+// --- where the edges are drawn --------------------------------------------------
+//
+// An edge to the next column is one curve. An edge that skips a column (or turns
+// back) runs along a lane, a horizontal line in the 32 px gap between two rows
+// (the rows are 96 px apart from y = 32, so the gap under row k has its middle at
+// y = 112 + 96 k), and never goes under a node. The numbers below are the
+// picture's: a node is 176 by 64, the columns 272 apart from x = 40.
+
+/// The route of the edge `from` to `to`.
+fn route_of(laid: &MapLayout, from: &str, to: &str) -> EdgeRoute {
+    let index = laid
+        .edges
+        .iter()
+        .position(|edge| edge.from == from && edge.to == to)
+        .unwrap_or_else(|| panic!("no edge {from} to {to}"));
+    route_edges(laid)[index]
+        .clone()
+        .unwrap_or_else(|| panic!("the edge {from} to {to} has no route"))
+}
+
+/// The distance from a point to a node's rectangle, 0 on it and inside it.
+fn distance_to(node: &PlacedNode, (x, y): (f32, f32)) -> f32 {
+    let dx = (node.x - x).max(x - (node.x + node.w)).max(0.0);
+    let dy = (node.y - y).max(y - (node.y + node.h)).max(0.0);
+    dx.hypot(dy)
+}
+
+/// Whether a point is inside the node, not counting its outline (half a pixel).
+fn inside(node: &PlacedNode, (x, y): (f32, f32)) -> bool {
+    x > node.x + 0.5 && x < node.x + node.w - 0.5 && y > node.y + 0.5 && y < node.y + node.h - 0.5
+}
+
+/// What every route of `laid` must be, whatever the map: one per edge, from the
+/// right-edge middle of the caller to the left-edge middle of the callee
+/// arriving level, inside the picture, under no node and at least 6 px from the
+/// nodes it does not join (the farthest edge of a shared lane is 8 px from the
+/// middle of the gap, so it has 8 px; the arrow and the selection ring take a
+/// few).
+fn assert_routes_clear(laid: &MapLayout, context: &str) {
+    let routes = route_edges(laid);
+    assert_eq!(routes.len(), laid.edges.len(), "{context}: one per edge");
+    for (edge, route) in laid.edges.iter().zip(&routes) {
+        if edge.from == edge.to {
+            assert!(route.is_none(), "{context}: a call to itself has no line");
+            continue;
+        }
+        let route = route
+            .as_ref()
+            .unwrap_or_else(|| panic!("{context}: {} to {} has no route", edge.from, edge.to));
+        // Both ends are nodes: the first of their id.
+        let end_of = |id: &str| {
+            laid.nodes
+                .iter()
+                .filter(|node| node.id == id)
+                .min_by_key(|node| node.kind)
+                .expect("the edge's ends are nodes")
+        };
+        let (from, to) = (end_of(&edge.from), end_of(&edge.to));
+        assert_eq!(
+            route.start,
+            (from.x + from.w, from.y + from.h / 2.0),
+            "{context}: {} to {}",
+            edge.from,
+            edge.to
+        );
+        assert_eq!(
+            route.end(),
+            (to.x, to.y + to.h / 2.0),
+            "{context}: {} to {}",
+            edge.from,
+            edge.to
+        );
+        assert_eq!(route.arrival(), (1.0, 0.0), "{context}: arrives level");
+        for point in route.points(48) {
+            assert!(
+                point.0 >= 0.0 && point.0 <= laid.width && point.1 >= 0.0 && point.1 <= laid.height,
+                "{context}: {} to {} leaves the picture at {point:?}",
+                edge.from,
+                edge.to
+            );
+            for node in &laid.nodes {
+                assert!(
+                    !inside(node, point),
+                    "{context}: {} to {} goes under {} at {point:?}",
+                    edge.from,
+                    edge.to,
+                    node.id
+                );
+                let joined = std::ptr::eq(node, from) || std::ptr::eq(node, to);
+                assert!(
+                    joined || distance_to(node, point) >= 6.0,
+                    "{context}: {} to {} passes within 6 px of {} at {point:?}",
+                    edge.from,
+                    edge.to,
+                    node.id
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn an_edge_to_the_next_column_is_one_level_curve() {
+    let laid = fresh(&checkout_map());
+    // web-bff (column 0, row 0) to orders-api (column 1, row 0): 216 to 312 at
+    // y = 64, with the control points half way (48 px out).
+    let route = route_of(&laid, "web-bff", "orders-api");
+    assert_eq!(route.start, (216.0, 64.0));
+    assert_eq!(
+        route.segments,
+        vec![RouteSegment::Cubic {
+            c1: (264.0, 64.0),
+            c2: (264.0, 64.0),
+            to: (312.0, 64.0),
+        }]
+    );
+    // payments-api (2, 1) to card-gateway (3, 2): from y = 160 down to y = 256.
+    let route = route_of(&laid, "payments-api", "card-gateway");
+    assert_eq!(route.start, (760.0, 160.0));
+    assert_eq!(
+        route.segments,
+        vec![RouteSegment::Cubic {
+            c1: (808.0, 160.0),
+            c2: (808.0, 256.0),
+            to: (856.0, 256.0),
+        }]
+    );
+    // The rate label of an edge out of the first column sits on the middle of
+    // that curve.
+    assert_eq!(route.label_anchor(), (808.0, 208.0));
+    assert_eq!(
+        route_of(&laid, "web-bff", "orders-api").label_anchor(),
+        (264.0, 64.0)
+    );
+}
+
+#[test]
+fn the_edge_over_a_column_runs_in_the_gap_between_two_rows() {
+    let laid = fresh(&checkout_map());
+    // orders-api (column 1, row 0) calls postgresql (column 3, row 1) over
+    // column 2, which holds inventory-api (row 0) and payments-api (row 1).
+    // The nearest gap to the middle of the two ends (y = 112) is the one under
+    // row 0, whose middle is y = 112: the edge goes into it at the left edge
+    // of column 2 (x = 584), along it to the right edge (x = 760), and down to
+    // postgresql at (856, 160).
+    let route = route_of(&laid, "orders-api", "postgresql");
+    assert_eq!(route.start, (488.0, 64.0));
+    assert_eq!(
+        route.segments,
+        vec![
+            RouteSegment::Cubic {
+                c1: (536.0, 64.0),
+                c2: (536.0, 112.0),
+                to: (584.0, 112.0),
+            },
+            RouteSegment::Line((760.0, 112.0)),
+            RouteSegment::Cubic {
+                c1: (808.0, 112.0),
+                c2: (808.0, 160.0),
+                to: (856.0, 160.0),
+            },
+        ]
+    );
+    assert_eq!(route.end(), (856.0, 160.0));
+    assert_eq!(route.arrival(), (1.0, 0.0));
+
+    // Between the two nodes of column 2, 16 px from each and under neither.
+    let inventory = at(&laid, "inventory-api");
+    let payments = at(&laid, "payments-api");
+    for point in route.points(64) {
+        if point.0 > 584.0 && point.0 < 760.0 {
+            assert_eq!(point.1, 112.0);
+            assert_eq!(distance_to(inventory, point), 16.0);
+            assert_eq!(distance_to(payments, point), 16.0);
+        }
+    }
+}
+
+#[test]
+fn no_edge_of_the_checkout_goes_under_a_node() {
+    // The reported picture: orders-api to postgresql used to be one curve from
+    // 488 to 856, behind inventory-api and payments-api, with a stray piece
+    // showing between them that looked like a call from one to the other.
+    assert_routes_clear(&fresh(&checkout_map()), "checkout");
+}
+
+#[test]
+fn edges_that_share_a_lane_are_spread_over_it() {
+    // A chain in one row, with calls that skip: a to c (over b), a to d (over b
+    // and c) and b to d (over c). All three want the gap under the row; they
+    // take it in the order of the edges, at 0, -5 and +5 px from its middle.
+    let map = services(
+        &["a", "b", "c", "d"],
+        &[
+            ("a", "b"),
+            ("b", "c"),
+            ("c", "d"),
+            ("a", "c"),
+            ("a", "d"),
+            ("b", "d"),
+        ],
+    );
+    let laid = fresh(&map);
+    assert_eq!(cell(&laid, "d"), (3, 0));
+    let lane = |from: &str, to: &str| match route_of(&laid, from, to).segments[1] {
+        RouteSegment::Line((_, y)) => y,
+        other => panic!("the middle piece is a line: {other:?}"),
+    };
+    assert_eq!(lane("a", "c"), 112.0);
+    assert_eq!(lane("a", "d"), 107.0);
+    assert_eq!(lane("b", "d"), 117.0);
+    assert_routes_clear(&laid, "chain with skips");
+}
+
+#[test]
+fn an_edge_that_turns_back_goes_round_by_a_lane() {
+    // a and b call each other: b is in column 1, and its call back to a
+    // (column 0) leaves b's right edge, bulges out of it, runs left along the
+    // gap under the row (y = 112) past both nodes and bulges into a's left edge
+    // from outside it.
+    let laid = fresh(&services(&["a", "b"], &[("a", "b"), ("b", "a")]));
+    assert_eq!(cell(&laid, "a"), (0, 0));
+    assert_eq!(cell(&laid, "b"), (1, 0));
+    let route = route_of(&laid, "b", "a");
+    assert_eq!(route.start, (488.0, 64.0));
+    assert_eq!(
+        route.segments,
+        vec![
+            RouteSegment::Cubic {
+                c1: (528.0, 64.0),
+                c2: (528.0, 112.0),
+                to: (488.0, 112.0),
+            },
+            RouteSegment::Line((40.0, 112.0)),
+            RouteSegment::Cubic {
+                c1: (0.0, 112.0),
+                c2: (0.0, 64.0),
+                to: (40.0, 64.0),
+            },
+        ]
+    );
+    assert_eq!(
+        route.arrival(),
+        (1.0, 0.0),
+        "into a's left edge, heading right"
+    );
+    assert_routes_clear(&laid, "a and b call each other");
+}
+
+#[test]
+fn an_edge_between_nodes_that_share_a_column_is_routed_too() {
+    // A node keeps its place while the calls change: a and b were drawn with no
+    // call between them (both in column 0), and then a calls b. Its edge goes
+    // from the right of a, round by the gap between the two rows, to the left
+    // of b, and under neither.
+    let mut memory = LayoutMemory::default();
+    let first = lay(&services(&["a", "b"], &[]), &mut memory);
+    assert_eq!((cell(&first, "a"), cell(&first, "b")), ((0, 0), (0, 1)));
+    let laid = lay(&services(&["a", "b"], &[("a", "b")]), &mut memory);
+    assert_eq!((cell(&laid, "a"), cell(&laid, "b")), ((0, 0), (0, 1)));
+    let route = route_of(&laid, "a", "b");
+    // The middle of the two ends is y = 112: the gap between the rows.
+    assert_eq!(route.segments[1], RouteSegment::Line((40.0, 112.0)));
+    assert_routes_clear(&laid, "a calls b in its own column");
+}
+
+#[test]
+fn a_call_to_itself_has_no_route() {
+    let laid = fresh(&services(&["a", "b"], &[("a", "a"), ("a", "b")]));
+    let routes = route_edges(&laid);
+    assert_eq!(routes.len(), 2);
+    assert!(routes[0].is_none(), "a to a");
+    assert!(routes[1].is_some(), "a to b");
+}
+
+#[test]
+fn a_lane_never_leaves_the_picture() {
+    // Two rows, an edge between the rows' two ends in the far columns: the lane
+    // is the gap above the first row, or under the last, at the nearest, never
+    // outside the 32 px margins.
+    let map = services(
+        &["a", "b", "c", "x", "y"],
+        &[("a", "b"), ("b", "c"), ("a", "c"), ("x", "c"), ("y", "c")],
+    );
+    let laid = fresh(&map);
+    assert_routes_clear(&laid, "wide");
+    // Every lane is a gap in the picture: between y = 16 - 8 and the bottom.
+    for route in route_edges(&laid).into_iter().flatten() {
+        for point in route.points(16) {
+            assert!(point.1 >= 8.0 && point.1 <= laid.height, "{point:?}");
+        }
+    }
+}
+
+#[test]
+fn random_maps_have_clear_routes() {
+    let mut rng = Rng(0x51F1_5EED_0000_0001);
+    for round in 0..300 {
+        let count = 1 + rng.below(30);
+        let map = random_map(&mut rng, count);
+        assert_routes_clear(&fresh(&map), &format!("round {round}"));
+    }
+}
+
+#[test]
+fn routes_stay_clear_while_a_map_grows_and_nodes_keep_their_places() {
+    // The maps a window shows: nodes appear a few at a time and keep their
+    // column and row, so edges end up between any two columns, backwards and
+    // within one.
+    let mut rng = Rng(0xC0FF_EE00_ABCD_0123);
+    for round in 0..150 {
+        let count = 4 + rng.below(26);
+        let full = random_map(&mut rng, count);
+        let mut memory = LayoutMemory::default();
+        let mut colors = ServiceColors::new();
+        let mut order: Vec<usize> = (0..count).collect();
+        for i in (1..count).rev() {
+            order.swap(i, rng.below(i + 1));
+        }
+        let mut shown = 0;
+        while shown < count {
+            shown = (shown + 1 + rng.below(4)).min(count);
+            let known: HashSet<String> =
+                order[..shown].iter().map(|i| format!("n{i:02}")).collect();
+            let map = ServiceMap {
+                nodes: full
+                    .nodes
+                    .iter()
+                    .filter(|n| known.contains(&n.id))
+                    .cloned()
+                    .collect(),
+                edges: full
+                    .edges
+                    .iter()
+                    .filter(|e| known.contains(&e.from) && known.contains(&e.to))
+                    .cloned()
+                    .collect(),
+            };
+            let laid = layout(&map, WINDOW, &mut colors, &mut memory);
+            assert_routes_clear(&laid, &format!("round {round}, {shown} nodes"));
+        }
+    }
 }

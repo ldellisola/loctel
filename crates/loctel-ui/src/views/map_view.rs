@@ -11,9 +11,13 @@
 //!   failing node has an `error` border and an `error_text` subtitle; a node
 //!   that is not a service has a dashed border; the selected service has a 3 px
 //!   `accent` ring.
-//! - **Edges**: cubic béziers from the right-edge middle of the caller to the
-//!   left-edge middle of the callee, 2 px, with a filled arrowhead; `error`
-//!   when failing. The rate label of an edge sits above the curve's midpoint.
+//! - **Edges**: 2 px lines from the right-edge middle of the caller to the
+//!   left-edge middle of the callee, with a filled arrowhead; `error` when
+//!   failing. An edge to the next column is one cubic bézier. An edge that skips
+//!   a column, or turns back, runs along a lane in the gap between two rows, so
+//!   it never passes under a node ([`route_edges`](crate::model::map_layout::route_edges),
+//!   decision 0033). The rate label of an edge sits above the middle of its
+//!   first curve.
 //!
 //! **The camera** ([`Camera`]) is the zoom and the offset of the picture in the
 //! view. A new map is *fitted*: full size from the top left corner, or scaled
@@ -31,7 +35,6 @@
 
 use std::borrow::Cow;
 use std::cell::Cell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use gpui::{
@@ -47,7 +50,9 @@ use loctel_store::NodeKind;
 
 use crate::Theme;
 use crate::app::HomeModel;
-use crate::model::map_layout::{MapLayout, PlacedEdge, PlacedNode};
+use crate::model::map_layout::{
+    EdgeRoute, MapLayout, PlacedEdge, PlacedNode, RouteSegment, route_edges,
+};
 use crate::theme::FONT_FAMILY;
 
 /// The most the map zooms out.
@@ -73,9 +78,6 @@ const EDGE_WIDTH: f32 = 2.0;
 /// The arrowhead of an edge: how long it is and how wide (half of it).
 const ARROW_LENGTH: f32 = 10.0;
 const ARROW_HALF_WIDTH: f32 = 5.0;
-/// An edge leaves and enters a node level; its control points are at least
-/// this far out, so a loop that goes back still has a shape.
-const MIN_BEND: f32 = 48.0;
 /// The dot of a node: its size, and how far from the node's left edge and top
 /// it starts.
 const DOT_SIZE: f32 = 10.0;
@@ -550,30 +552,21 @@ impl Painter<'_> {
     }
 
     fn paint(&self, layout: &MapLayout, selected: Option<&str>, window: &mut Window, cx: &mut App) {
-        // An edge's end is the first node with that id, and the kinds sort
-        // service first.
-        let mut by_id: HashMap<&str, &PlacedNode> = HashMap::new();
-        for node in &layout.nodes {
-            by_id
-                .entry(node.id.as_str())
-                .and_modify(|first| {
-                    if node.kind < first.kind {
-                        *first = node;
-                    }
-                })
-                .or_insert(node);
-        }
-
         // Failing edges last, so they are on top where lines cross.
+        let routes = route_edges(layout);
         let mut labels = Vec::new();
         for failing in [false, true] {
-            for edge in layout.edges.iter().filter(|edge| edge.failing == failing) {
-                let (Some(from), Some(to)) =
-                    (by_id.get(edge.from.as_str()), by_id.get(edge.to.as_str()))
-                else {
+            for (edge, route) in layout
+                .edges
+                .iter()
+                .zip(&routes)
+                .filter(|(edge, _)| edge.failing == failing)
+            {
+                // A call of a node to itself has no line to draw.
+                let Some(route) = route else {
                     continue;
                 };
-                if let Some(label) = self.paint_edge(edge, from, to, window) {
+                if let Some(label) = self.paint_edge(edge, route, window) {
                     labels.push(label);
                 }
             }
@@ -586,19 +579,14 @@ impl Painter<'_> {
         }
     }
 
-    /// One edge and its arrowhead. Returns its label to draw once the nodes
-    /// are, with where to put it.
+    /// One edge along its route and its arrowhead. Returns its label to draw
+    /// once the nodes are, with where to put it.
     fn paint_edge(
         &self,
         edge: &PlacedEdge,
-        from: &PlacedNode,
-        to: &PlacedNode,
+        route: &EdgeRoute,
         window: &mut Window,
     ) -> Option<EdgeLabel> {
-        // A call of a node to itself has no line to draw.
-        if std::ptr::eq(from, to) {
-            return None;
-        }
         let color = if edge.failing {
             hsla(self.theme.error)
         } else {
@@ -607,32 +595,35 @@ impl Painter<'_> {
                 ..self.theme.text_tertiary
             })
         };
-        let start = self.at(from.x + from.w, from.y + from.h / 2.0);
-        let end = self.at(to.x, to.y + to.h / 2.0);
-        let bend = ((end.x - start.x) / 2.0).max(self.scaled(MIN_BEND));
-        let control_a = point(start.x + bend, start.y);
-        let control_b = point(end.x - bend, end.y);
+        let end = self.at(route.end().0, route.end().1);
 
         // The line stops where the arrowhead starts, along the direction the
-        // curve arrives in.
-        let (dx, dy) = (
-            f32::from(end.x - control_b.x),
-            f32::from(end.y - control_b.y),
-        );
-        let length = dx.hypot(dy);
-        let (ux, uy) = if length > f32::EPSILON {
-            (dx / length, dy / length)
-        } else {
-            (1.0, 0.0)
-        };
+        // route arrives in.
+        let (ux, uy) = route.arrival();
         let head = f32::from(self.scaled(ARROW_LENGTH));
         let half = f32::from(self.scaled(ARROW_HALF_WIDTH));
         let base = point(end.x - px(ux * head), end.y - px(uy * head));
 
         let width = self.scaled(EDGE_WIDTH).max(px(1.0));
         let mut line = PathBuilder::stroke(width);
-        line.move_to(start);
-        line.cubic_bezier_to(base, control_a, control_b);
+        line.move_to(self.at(route.start.0, route.start.1));
+        let last = route.segments.len().saturating_sub(1);
+        for (index, segment) in route.segments.iter().enumerate() {
+            // The last piece ends at the base of the arrowhead.
+            let stops = |to: (f32, f32)| {
+                if index == last {
+                    base
+                } else {
+                    self.at(to.0, to.1)
+                }
+            };
+            match *segment {
+                RouteSegment::Line(to) => line.line_to(stops(to)),
+                RouteSegment::Cubic { c1, c2, to } => {
+                    line.cubic_bezier_to(stops(to), self.at(c1.0, c1.1), self.at(c2.0, c2.1))
+                }
+            }
+        }
         if let Ok(path) = line.build() {
             window.paint_path(path, color);
         }
@@ -650,14 +641,10 @@ impl Painter<'_> {
             window.paint_path(path, color);
         }
 
-        // The curve at t = 1/2.
-        let middle = point(
-            (start.x + control_a.x * 3.0 + control_b.x * 3.0 + end.x) / 8.0,
-            (start.y + control_a.y * 3.0 + control_b.y * 3.0 + end.y) / 8.0,
-        );
+        let (x, y) = route.label_anchor();
         edge.label.as_ref().map(|text| EdgeLabel {
             text: text.clone(),
-            middle,
+            middle: self.at(x, y),
             failing: edge.failing,
         })
     }

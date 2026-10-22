@@ -354,6 +354,15 @@ impl HomeModel {
         }
     }
 
+    /// Empties the store, traces and logs, through the backend (the toolbar's
+    /// `Clear all`; receiving carries on), and reads at once, so the map and the
+    /// table are empty at the next frame, paused or not. The filters, the range
+    /// and the pause stay as they are.
+    pub fn clear_all(&mut self, cx: &mut Context<Self>) {
+        self.backend.clear_all();
+        self.refresh_now(cx);
+    }
+
     /// Clicks a service on the map (`Some`): its filter,
     /// `{ resource.service.name = "..." }`, goes into the query bar and the
     /// table follows. `None` clears the selection: the query goes back to empty,

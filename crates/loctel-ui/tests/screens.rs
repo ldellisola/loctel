@@ -3,8 +3,9 @@
 //! the trace table (Tasks 6 and 7) and the trace screen (Task 8: the header, the
 //! waterfall, the inspector and the span's logs), rendered through GPUI Kit's
 //! `Root` in the headless harness. The references are `snapshots/shell_*.png`,
-//! `home_*.png` and `trace_*.png` (and `huge_trace_middle_dark.png`,
-//! `long_values_dark.png`); build them with `cargo xtask screenshots --update`
+//! `home_*.png`, `toolbar_*.png` (crops of the home toolbar, decision 0032) and
+//! `trace_*.png` (and `huge_trace_middle_dark.png`, `long_values_dark.png`);
+//! build them with `cargo xtask screenshots --update`
 //! and look at them before committing (`docs/areas/ui.md`).
 
 mod common;
@@ -20,7 +21,7 @@ use loctel_model::{AttrValue, Resource, Span, SpanEvent, SpanId, SpanKind, Statu
 use loctel_store::{ManualClock, Store, StoreConfig};
 use loctel_ui::app::{
     GlassRegion, INSET, MainWindow, NAV_ITEM_HEIGHT, PANEL_RADIUS, SIDEBAR_WIDTH, Screen,
-    TOOLBAR_HEIGHT, TRAFFIC_LIGHT_SPACE, toolbar_title,
+    TOOLBAR_HEIGHT, TRAFFIC_LIGHT_SPACE, TimeRange, ToolbarPart, toolbar_title,
 };
 use loctel_ui::testing::{
     Driver, FixedBackend, RecordingBackdrop, assert_snapshot, render_window_png,
@@ -33,7 +34,8 @@ use loctel_ui::{StatusModel, Theme};
 
 use common::{
     BASE, SEED, WINDOW, failing_trace_id, feed, home_store, open_trace, part_bounds, part_center,
-    row_center, row_named, row_names, selected_details, trace_model, trace_view, waterfall_view,
+    row_center, row_named, row_names, selected_details, toolbar, toolbar_center, trace_model,
+    trace_view, waterfall_view,
 };
 
 /// A store with nothing in it, on a clock that never moves.
@@ -486,6 +488,135 @@ fn glass_region_is_plain_data() {
         corner_radius: px(16.0),
     };
     assert_eq!(region.clone(), region);
+}
+
+// --- the home toolbar ---------------------------------------------------------
+//
+// Live, the time range, Pause and Clear all (design 9.2). The references are
+// crops of the window, 2x like the others: the strip of the toolbar (and, with
+// the range menu open, what hangs under it), from the gap left of the toolbar
+// to the window's right edge.
+
+/// The window over the home data, with its first frame drawn.
+fn toolbar_driver(theme: &Theme) -> Driver<MainWindow> {
+    let backend = Rc::new(FixedBackend::new(home_store()));
+    Driver::new(WINDOW, theme, move |window, cx| {
+        cx.new(|cx| MainWindow::new(backend, None, window, cx))
+    })
+}
+
+/// The toolbar's strip of `image` (a capture of the window) and `below`
+/// logical pixels under it, with the window's inset round it.
+fn toolbar_crop(image: &image::RgbaImage, below: f32) -> image::RgbaImage {
+    let scale = image.width() as f32 / WINDOW.0 as f32;
+    let left = SIDEBAR_WIDTH + INSET;
+    let height = INSET + TOOLBAR_HEIGHT + below;
+    image::imageops::crop_imm(
+        image,
+        (left * scale) as u32,
+        0,
+        ((WINDOW.0 as f32 - left) * scale) as u32,
+        (height * scale) as u32,
+    )
+    .to_image()
+}
+
+/// The room under the toolbar the open range menu takes, with its shadow.
+const MENU_ROOM: f32 = 190.0;
+
+fn toolbar_running(theme: &Theme, name: &str) {
+    let mut driver = toolbar_driver(theme);
+    let image = toolbar_crop(&driver.capture(), INSET);
+    assert_snapshot(name, &image);
+}
+
+fn toolbar_menu(theme: &Theme, name: &str) {
+    let mut driver = toolbar_driver(theme);
+    driver.click(toolbar_center(&driver, ToolbarPart::Range));
+    let image = toolbar_crop(&driver.capture(), MENU_ROOM);
+    assert_snapshot(name, &image);
+}
+
+fn toolbar_paused(theme: &Theme, name: &str) {
+    let mut driver = toolbar_driver(theme);
+    driver.click(toolbar_center(&driver, ToolbarPart::Pause));
+    let image = toolbar_crop(&driver.capture(), INSET);
+    assert_snapshot(name, &image);
+}
+
+#[test]
+fn toolbar_dark() {
+    toolbar_running(&Theme::dark(), "toolbar_dark");
+}
+
+#[test]
+fn toolbar_light() {
+    toolbar_running(&Theme::light(), "toolbar_light");
+}
+
+#[test]
+fn toolbar_menu_dark() {
+    toolbar_menu(&Theme::dark(), "toolbar_menu_dark");
+}
+
+#[test]
+fn toolbar_menu_light() {
+    toolbar_menu(&Theme::light(), "toolbar_menu_light");
+}
+
+#[test]
+fn toolbar_paused_dark() {
+    toolbar_paused(&Theme::dark(), "toolbar_paused_dark");
+}
+
+#[test]
+fn toolbar_paused_light() {
+    toolbar_paused(&Theme::light(), "toolbar_paused_light");
+}
+
+#[test]
+fn the_toolbar_shows_the_range_the_model_has() {
+    // The button says the range: a range set on the model (not by a click) is
+    // what the next frame shows, so the control cannot disagree with the data.
+    let mut driver = toolbar_driver(&Theme::dark());
+    let home = driver.read_root(|main| main.home().clone());
+    let before = driver.capture();
+    driver.update_root(|_, _, cx| {
+        home.update(cx, |home, cx| home.set_range(TimeRange::Everything, cx))
+    });
+    let after = driver.capture();
+    assert_ne!(
+        toolbar_crop(&before, INSET).as_raw(),
+        toolbar_crop(&after, INSET).as_raw(),
+        "`Everything` is a different label from `Last 15 minutes`"
+    );
+}
+
+#[test]
+fn the_trace_screen_has_a_toolbar_with_only_the_title() {
+    // The controls belong to the home screen: on the trace screen the toolbar
+    // is the title alone (the references `trace_dark` and `trace_light` did not
+    // change when the controls came), and back home they are there again.
+    let mut driver = toolbar_driver(&Theme::dark());
+    let controls = toolbar(&driver);
+    let has = |driver: &Driver<MainWindow>, part| {
+        driver.read(|cx| controls.read(cx).bounds_of(part).is_some())
+    };
+    for part in [ToolbarPart::Live, ToolbarPart::Pause, ToolbarPart::ClearAll] {
+        assert!(has(&driver, part), "{part:?} on the home screen");
+    }
+    open_trace(&mut driver, failing_trace_id());
+    for part in [
+        ToolbarPart::Live,
+        ToolbarPart::Range,
+        ToolbarPart::Pause,
+        ToolbarPart::ClearAll,
+    ] {
+        assert!(!has(&driver, part), "no {part:?} on the trace screen");
+    }
+    driver.update_root(|main, _, cx| main.navigate(Screen::Home, cx));
+    driver.draw();
+    assert!(has(&driver, ToolbarPart::Pause), "back on the home screen");
 }
 
 // --- the home screen: the service map -----------------------------------------

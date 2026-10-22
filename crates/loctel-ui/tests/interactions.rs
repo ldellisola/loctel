@@ -7,7 +7,9 @@
 //! puts the map back. The table: typing a query validates live and keeps the
 //! last good rows when it does not parse, Enter and `Run` read again, the two
 //! toggles narrow the rows, a click on a row opens its trace and the empty
-//! table offers `Clear filters`.
+//! table offers `Clear filters`. The toolbar's (decision 0032): Pause freezes the
+//! view while the store goes on receiving, the range menu changes the rows, and
+//! Clear all empties the map, the table and the store.
 //!
 //! They drive the real window (`testing::Driver`) over the home screen's data
 //! (`common::home_store`: the failing and the successful checkout and a health
@@ -24,9 +26,9 @@ use std::time::Duration;
 
 use gpui::{AppContext as _, Entity, Modifiers, Pixels, Point, point, px};
 use loctel_model::{AttrValue, Resource, Span, SpanId, SpanKind, StatusCode, TraceId};
-use loctel_store::Store;
+use loctel_store::{PageRequest, Store, TraceFilter};
 use loctel_ui::Theme;
-use loctel_ui::app::{HomeModel, MainWindow, Screen};
+use loctel_ui::app::{HomeModel, MainWindow, Screen, TOOLBAR_HEIGHT, TimeRange, ToolbarPart};
 use loctel_ui::model::query_bar::{QueryState, service_filter};
 use loctel_ui::testing::{Driver, FixedBackend, assert_snapshot};
 use loctel_ui::views::{
@@ -37,7 +39,8 @@ use loctel_ui::views::{
 use common::row_center as trace_row_center;
 use common::{
     WINDOW, failing_trace_id, home_store, open_trace, part_bounds, part_center, row_named,
-    row_names, selected_details, trace_model, waterfall_view,
+    row_names, selected_details, toolbar, toolbar_bounds, toolbar_center, trace_model,
+    waterfall_view,
 };
 
 const PAYMENTS: &str = "payments-api";
@@ -1398,4 +1401,268 @@ fn the_trace_view_follows_the_appearance() {
     // Still the same screen, in the other look.
     assert_eq!(selected_offset(&driver), "starts at +236 ms");
     assert!(part_bounds(&driver, TracePart::Inspector).is_some());
+}
+
+// --- the toolbar: Live, the time range, Pause and Clear all -----------------------
+//
+// Design 9.2: the home screen's toolbar has a Live indicator, the time range,
+// Pause (which freezes the view while ingest continues) and Clear all. Each
+// control is a click on a button of the real window that lands in the
+// `HomeModel` (`set_range`, `set_paused`, `clear_all`): nothing is kept in the
+// toolbar but whether the range menu is open.
+
+const MINUTE: u64 = 60 * common::SECOND;
+
+/// How many traces the store holds, whatever the window shows.
+fn stored_traces(store: &Store) -> usize {
+    store
+        .search_traces(
+            &TraceFilter::default(),
+            &PageRequest {
+                limit: 1_000,
+                cursor: None,
+            },
+        )
+        .items
+        .len()
+}
+
+fn live_text(driver: &Driver<MainWindow>) -> &'static str {
+    let controls = toolbar(driver);
+    driver.read(|cx| controls.read(cx).live_text(cx))
+}
+
+fn pause_text(driver: &Driver<MainWindow>) -> &'static str {
+    let controls = toolbar(driver);
+    driver.read(|cx| controls.read(cx).pause_text(cx))
+}
+
+fn range_open(driver: &Driver<MainWindow>) -> bool {
+    let controls = toolbar(driver);
+    driver.read(|cx| controls.read(cx).range_open())
+}
+
+fn range_of(driver: &Driver<MainWindow>) -> TimeRange {
+    let home = home_of(driver);
+    driver.read(|cx| home.read(cx).range())
+}
+
+fn is_paused(driver: &Driver<MainWindow>) -> bool {
+    let home = home_of(driver);
+    driver.read(|cx| home.read(cx).paused())
+}
+
+/// Opens the range menu and clicks the entry of `range`.
+fn choose_range(driver: &mut Driver<MainWindow>, range: TimeRange) {
+    driver.click(toolbar_center(driver, ToolbarPart::Range));
+    assert!(range_open(driver), "the button opens the menu");
+    driver.click(toolbar_center(driver, ToolbarPart::RangeOption(range)));
+}
+
+#[test]
+fn the_toolbar_has_the_four_controls_in_order_inside_its_strip() {
+    let driver = home_driver(&Theme::dark());
+    let bounds = |part| {
+        toolbar_bounds(&driver, part)
+            .unwrap_or_else(|| panic!("the toolbar has no {part:?} on the screen"))
+    };
+    let live = bounds(ToolbarPart::Live);
+    let range = bounds(ToolbarPart::Range);
+    let pause = bounds(ToolbarPart::Pause);
+    let clear = bounds(ToolbarPart::ClearAll);
+
+    // Left to right, in the order of the design, without overlapping.
+    assert!(live.right() <= range.left(), "Live, then the range");
+    assert!(range.right() <= pause.left(), "then Pause");
+    assert!(pause.right() <= clear.left(), "then Clear all");
+
+    // Inside the strip of the toolbar (a 48 px strip under the window's 10 px
+    // inset), at the right of the content area and in the window.
+    let strip_top = px(10.0);
+    let strip_bottom = px(10.0 + TOOLBAR_HEIGHT);
+    for part in [live, range, pause, clear] {
+        assert!(part.top() >= strip_top && part.bottom() <= strip_bottom);
+        assert!(part.right() <= px(WINDOW.0 as f32 - 10.0));
+        assert!(part.left() > px(240.0 + 200.0), "right of the title");
+    }
+
+    assert_eq!(live_text(&driver), "Live");
+    assert_eq!(pause_text(&driver), "Pause");
+    assert_eq!(range_of(&driver), TimeRange::Last15m);
+    assert!(!range_open(&driver));
+    assert!(
+        toolbar_bounds(&driver, ToolbarPart::RangeOption(TimeRange::Last5m)).is_none(),
+        "no menu until it is opened"
+    );
+}
+
+#[test]
+fn the_toolbar_fits_the_smallest_window() {
+    // 1000 by 640: the content is 750 px wide. The title, then the four
+    // controls, with no overlap and nothing past the window's edge, and the
+    // range menu still opens.
+    let mut driver = home_driver(&Theme::dark());
+    driver.resize((1000, 640));
+    let bounds = |driver: &Driver<MainWindow>, part| {
+        toolbar_bounds(driver, part)
+            .unwrap_or_else(|| panic!("the toolbar has no {part:?} on the screen"))
+    };
+    let live = bounds(&driver, ToolbarPart::Live);
+    let range = bounds(&driver, ToolbarPart::Range);
+    let pause = bounds(&driver, ToolbarPart::Pause);
+    let clear = bounds(&driver, ToolbarPart::ClearAll);
+    // The title starts 18 px in from the toolbar's left edge (x = 240) and is
+    // about 110 px wide.
+    assert!(live.left() > px(240.0 + 18.0 + 110.0), "clear of the title");
+    assert!(live.right() <= range.left());
+    assert!(range.right() <= pause.left());
+    assert!(pause.right() <= clear.left());
+    assert!(clear.right() <= px(1000.0 - 10.0), "inside the window");
+
+    driver.click(range.center());
+    assert!(range_open(&driver));
+    let option = bounds(&driver, ToolbarPart::RangeOption(TimeRange::Everything));
+    assert!(option.right() <= px(1000.0) && option.bottom() <= px(640.0));
+}
+
+#[test]
+fn pause_freezes_the_view_while_ingest_continues() {
+    let (mut driver, store) = home_driver_with_store(&Theme::dark());
+    assert_eq!(row_ids(&driver).len(), TRACES);
+    assert_eq!(stored_traces(&store), TRACES);
+
+    driver.click(toolbar_center(&driver, ToolbarPart::Pause));
+    assert!(is_paused(&driver), "the click paused the view");
+    assert_eq!(live_text(&driver), "Paused");
+    assert_eq!(pause_text(&driver), "Resume");
+
+    // Traces keep arriving, and the view does not move: not after one refresh
+    // period, not after several.
+    let now = store.now_unix_nano();
+    store.ingest_spans(vec![lone_span(1, now)]);
+    driver.advance(Duration::from_millis(1_200));
+    store.ingest_spans(vec![lone_span(2, now + 1_000_000)]);
+    driver.advance(Duration::from_millis(1_200));
+    assert_eq!(stored_traces(&store), TRACES + 2, "ingest went on");
+    assert_eq!(row_ids(&driver).len(), TRACES, "the table is frozen");
+    let home = home_of(&driver);
+    assert_eq!(
+        driver.read(|cx| home.read(cx).data().map.nodes.len()),
+        9,
+        "and so is the map"
+    );
+
+    // The same button resumes, and the view catches up at once.
+    driver.click(toolbar_center(&driver, ToolbarPart::Pause));
+    assert!(!is_paused(&driver));
+    assert_eq!(live_text(&driver), "Live");
+    assert_eq!(pause_text(&driver), "Pause");
+    assert_eq!(row_ids(&driver).len(), TRACES + 2, "caught up");
+
+    // And it runs again by itself.
+    store.ingest_spans(vec![lone_span(3, now + 2_000_000)]);
+    driver.advance(Duration::from_millis(600));
+    assert_eq!(row_ids(&driver).len(), TRACES + 3);
+}
+
+#[test]
+fn the_range_menu_lists_the_four_ranges_and_a_choice_changes_the_rows() {
+    let (mut driver, store) = home_driver_with_store(&Theme::dark());
+    // One trace ten minutes old (inside the default 15 minutes, outside 5) and
+    // one thirty minutes old (outside the default, inside the hour).
+    let now = store.now_unix_nano();
+    store.ingest_spans(vec![
+        lone_span(1, now - 10 * MINUTE),
+        lone_span(2, now - 30 * MINUTE),
+    ]);
+    driver.advance(Duration::from_millis(600));
+    assert_eq!(range_of(&driver), TimeRange::Last15m);
+    assert_eq!(row_ids(&driver).len(), TRACES + 1, "the ten minute one");
+
+    // The button opens a menu of the four ranges, top to bottom.
+    driver.click(toolbar_center(&driver, ToolbarPart::Range));
+    assert!(range_open(&driver));
+    let ys: Vec<_> = TimeRange::ALL
+        .iter()
+        .map(|&range| {
+            toolbar_bounds(&driver, ToolbarPart::RangeOption(range))
+                .unwrap_or_else(|| panic!("the menu has no entry for {range:?}"))
+                .top()
+        })
+        .collect();
+    assert!(
+        ys.windows(2).all(|pair| pair[0] < pair[1]),
+        "in order: {ys:?}"
+    );
+
+    // Last 5 minutes drops the ten minute one and closes the menu.
+    driver.click(toolbar_center(
+        &driver,
+        ToolbarPart::RangeOption(TimeRange::Last5m),
+    ));
+    assert_eq!(range_of(&driver), TimeRange::Last5m);
+    assert!(!range_open(&driver), "a choice closes the menu");
+    assert!(toolbar_bounds(&driver, ToolbarPart::RangeOption(TimeRange::Last5m)).is_none());
+    assert_eq!(row_ids(&driver).len(), TRACES);
+
+    // Last hour has the thirty minute one too.
+    choose_range(&mut driver, TimeRange::LastHour);
+    assert_eq!(range_of(&driver), TimeRange::LastHour);
+    assert_eq!(row_ids(&driver).len(), TRACES + 2);
+
+    // Everything, and back to the default.
+    choose_range(&mut driver, TimeRange::Everything);
+    assert_eq!(range_of(&driver), TimeRange::Everything);
+    assert_eq!(row_ids(&driver).len(), TRACES + 2);
+    choose_range(&mut driver, TimeRange::Last15m);
+    assert_eq!(row_ids(&driver).len(), TRACES + 1);
+}
+
+#[test]
+fn a_click_outside_closes_the_range_menu_and_keeps_the_range() {
+    let mut driver = home_driver(&Theme::dark());
+    driver.click(toolbar_center(&driver, ToolbarPart::Range));
+    assert!(range_open(&driver));
+
+    // Somewhere that is not the menu: the table's query bar.
+    driver.click(part(&driver, TablePart::QueryInput));
+    assert!(!range_open(&driver), "closed");
+    assert_eq!(range_of(&driver), TimeRange::Last15m, "and nothing changed");
+}
+
+#[test]
+fn clear_all_empties_the_map_and_the_table_and_receiving_goes_on() {
+    let (mut driver, store) = home_driver_with_store(&Theme::dark());
+    assert_eq!(row_ids(&driver).len(), TRACES);
+    let home = home_of(&driver);
+
+    driver.click(toolbar_center(&driver, ToolbarPart::ClearAll));
+    assert_eq!(stored_traces(&store), 0, "the store is empty");
+    assert!(row_ids(&driver).is_empty(), "so is the table, at once");
+    assert_eq!(driver.read(|cx| home.read(cx).data().map.nodes.len()), 0);
+    assert_eq!(empty_state(&driver), Some(EMPTY_NO_DATA));
+    assert_eq!(
+        map_empty_message(&driver).map(|(title, _)| title),
+        Some("Waiting for telemetry")
+    );
+
+    // Receiving carries on: a new trace shows by the next refresh.
+    store.ingest_spans(vec![lone_span(1, store.now_unix_nano())]);
+    driver.advance(Duration::from_millis(600));
+    assert_eq!(row_ids(&driver).len(), 1);
+}
+
+#[test]
+fn clear_all_clears_a_frozen_view_too() {
+    let mut driver = home_driver(&Theme::dark());
+    driver.click(toolbar_center(&driver, ToolbarPart::Pause));
+    assert!(is_paused(&driver));
+    driver.click(toolbar_center(&driver, ToolbarPart::ClearAll));
+    assert!(row_ids(&driver).is_empty(), "the user asked: it reads");
+    assert!(is_paused(&driver), "and the view stays paused");
+}
+
+fn map_empty_message(driver: &Driver<MainWindow>) -> Option<(&'static str, &'static str)> {
+    let map = map_of(driver);
+    driver.read(|cx| map.read(cx).empty_message(cx))
 }

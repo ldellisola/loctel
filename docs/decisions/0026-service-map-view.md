@@ -45,9 +45,11 @@ later agent does not "fix" them.
   our own `canvas`. Names, subtitles and labels are shaped and painted with the
   text system (`shape_line`, cut with `LineWrapper::truncate_line` and an
   ellipsis to the room in the node), so zoom scales the text with the boxes and
-  a long service name never widens a node. Nodes are drawn after the edges, so
-  a line that runs between non-neighbouring columns passes behind the nodes in
-  between; routing around them is the layout's business and not done.
+  a long service name never widens a node. Nodes are drawn after the edges. (This
+  entry first said a line between non-neighbouring columns passes behind the
+  nodes in between and that routing around them was not done. That drew a stray
+  piece between two nodes that read as a call that does not exist; decision
+  0033 routes those edges through the gaps between the rows.)
 - **Edge labels sit in a small pill.** The label is above the curve's midpoint
   as the plan says, in a `panel`-filled pill with a hairline, and drawn after
   the nodes so a steep curve does not strike through the text.
