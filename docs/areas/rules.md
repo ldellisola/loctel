@@ -6,16 +6,17 @@ match. Whatever an enabled rule matches is **dropped for good**: it is never
 stored or shown. Design references: §7 (discard rules), §6 (the query
 languages) and §8 (MCP can see rules, not change them).
 
-Status (Milestone 2): implemented end to end: the model, `rules.toml`, the
-ingest filter (`RuleSet`) and the preview. The engine runs every batch through
-it, reloads the file and reports the counts ("In the engine" below). MCP shows
-the rules in `get_status` ("In MCP" below), and the menu and the main window's status box show
-the rules line and the macOS menu opens the file for editing ("In the menu and
-the window" below; see the M2 plan,
-`superpowers/plans/2026-10-21-loctel-m2-query-rules.md`). The Discard rules
-screen (Milestone 4 Task 5, with the editor and the preview) is described in
-[`ui.md`](ui.md) ("The Discard rules screen"). What no one has seen run is the Mac side (the menu), which the
-Milestone 2 Mac checklist covers.
+Status (through Milestone 4): implemented end to end: the model, `rules.toml`,
+the ingest filter (`RuleSet`), the preview and the screen that edits them. The
+engine runs every batch through the filter, reloads the file and reports the
+counts ("In the engine" below). MCP shows the rules in `get_status` ("In MCP"
+below). The main window's status box and the menu bar popover show the rules
+line, and the popover's rules line opens the Discard rules screen ("In the
+popover and the window" below). The screen (Milestone 4 Task 5, with the editor
+and the preview) is described in [`ui.md`](ui.md) ("The Discard rules screen");
+the Milestone 2 plan is
+`superpowers/plans/2026-10-21-loctel-m2-query-rules.md`. What no one has seen
+run is the Mac side (the popover), which the Mac checklist covers.
 
 The crate depends on `loctel-model`, `loctel-query` and `loctel-store` (to read
 and remove stored data), plus `serde`, `toml`, `dirs`, `anyhow` and
@@ -368,7 +369,7 @@ arrives last is `whole_trace_drop_covers_stored_and_late_spans`, and
 
 `get_status` lists the rules, read-only (design §7: MCP cannot change rules; the
 server has no tool that does). The engine builds the list from the same
-`EngineStatus` the menu and the window read, so they cannot disagree: `rules`
+`EngineStatus` the popover and the window read, so they cannot disagree: `rules`
 (name, `language`, `scope` for TraceQL only, `enabled`, `error` if the query does
 not parse, `dropped_spans`, `dropped_logs`, `dropped_traces`), `rules_file_error`
 and `dropped_fraction`. Names and errors are cut at 2,000 characters. The shapes
@@ -376,10 +377,10 @@ and the reasons are in [`mcp.md`](mcp.md), "Rules in `get_status`"; the engine
 test `mcp_get_status_lists_the_rules_the_engine_has` reads them through a real
 MCP client.
 
-## In the menu and the window
+## In the popover and the window
 
-The menu bar menu (macOS) and the main window's status box (both platforms; the standalone status
-view too) show the rules in one
+The menu bar popover (macOS) and the main window's status box (both platforms;
+the standalone status view too) show the rules in one
 line, `loctel_ui::menu_text::rules_line`, built from the same `EngineStatus` as
 everything else (never from the file). In priority order:
 
@@ -397,16 +398,20 @@ the line warns about what you expect to be working. Because of that, the number
 of rules with errors never exceeds the number on, which keeps "3 discard rules on
 · 2 have errors" from ever reading "0 on · 1 has an error".
 
-On macOS the menu also has **Edit discard rules…**, which opens
-`engine.rules_path()` in the default text editor (`NSWorkspace` `openURL`, and
-`open -t` if no app handles `.toml`). Editing the file by hand is the other way
-to edit rules, beside the rules screen of the main window; the engine reloads the file within about 2 seconds (`RULES_POLL`, see "In the
-engine"). The item is greyed out when the engine has no rules file. Saving
-through the handle (the rules screen's `Save`, `Delete` and switches)
-rewrites the file and drops hand-written comments, but keeps the header, so the
-menu item and the screen must not be offered as if both were lossless (decision
-0018). See [`macos.md`](macos.md) for what is unverified until the Mac check, and
-[`ui.md`](ui.md) for the strings and the view.
+On macOS the popover's rules line is also the way in to the rules: a click opens
+the main window on the **Discard rules** screen
+(`PopoverActions::open_main(Screen::Rules { draft: None })`, see
+[`ui.md`](ui.md), "The popover"). There is no menu item
+that opens `rules.toml` in a text editor any more (the `Edit discard rules…`
+item went with the menu, Milestone 4 Task 9, decision
+[0042](../decisions/0042-popover.md)). The other way to edit rules is the file
+itself, by hand; the engine reloads it within about 2 seconds (`RULES_POLL`, see "In the
+engine") and the screen shows the change. Saving through the handle (the
+screen's `Save`, `Delete` and switches) rewrites the file and drops hand-written
+comments, but keeps the header, so the app must not offer the screen and the
+file as if both were lossless (decision 0018). See [`macos.md`](macos.md), "The
+popover", for what is unverified until the Mac check, and [`ui.md`](ui.md) for
+the strings and the views.
 
 ## Not here
 

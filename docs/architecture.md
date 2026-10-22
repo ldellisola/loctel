@@ -299,7 +299,7 @@ What other crates rely on:
 - **The engine runs it** (`loctel-engine`, "Engine" above): each batch the
   receivers accept goes receivers, then sink, then rules, then store, and
   `EngineHandle::{rules, set_rules, set_rule_enabled, preview_rule}` is the API
-  the menu, the window and, later, the rules screen use. MCP cannot change
+  the popover, the window and the Discard rules screen use. MCP cannot change
   rules.
 
 ## Ingest
@@ -520,7 +520,7 @@ details, the theme tokens and the workflow are in
   file error as a flag and the share dropped), so it is tested by building the
   model by hand. The window refreshes it every second and shows the rules line
   under the rates. The text of the status line, the rules line and the rates is
-  in `menu_text`, shared with the macOS menu so the two cannot drift.
+  in `menu_text`, shared with the macOS popover so the two cannot drift.
 - **The `model` module** (`crates/loctel-ui/src/model/`, from Milestone 3) is
   everything the main window shows that is not a pixel, as plain Rust over the
   store's `TraceSummary` and the TraceQL parser: `format` (durations, clock
@@ -644,14 +644,18 @@ details, the theme tokens and the workflow are in
 
 `loctel-macos` is the only crate with `objc2` or `unsafe` code, and it is empty
 off macOS (its dependencies are macOS-only) apart from plain-Rust parts that
-hold decisions and are compiled for tests everywhere: the menu's rows, the
-first-launch step, the icon files and the y flip of the glass frames. It
-depends on the engine, `loctel-ui` (for `menu_text` and the main window),
-`gpui-pre`, `gpui-tray` (the `NSStatusItem`), `objc2`, `objc2-app-kit`,
-`objc2-service-management`, `raw-window-handle` and `dispatch2`. The details, the menu and the list of what no one
-has seen work yet are in [`areas/macos.md`](areas/macos.md); the choices and
-their reasons are in
-[`decisions/0009-macos-check-from-linux.md`](decisions/0009-macos-check-from-linux.md).
+hold decisions and are compiled for tests everywhere: the popover's anchoring
+(`popover::anchor` and `popover::containing_screen`), the first-launch step, the
+icon files and the y flip of the glass frames. It
+depends on the engine, `loctel-ui` (for `menu_text`, the main window and the
+popover's view), `gpui-pre`, `gpui-kit` (its `Root`, which the popover's window
+sits in like every loctel window), `gpui-tray` (the `NSStatusItem`), `objc2`,
+`objc2-app-kit`, `objc2-foundation`, `objc2-service-management`,
+`raw-window-handle` and `dispatch2`. The details, the popover and the list of
+what no one has seen work yet are in [`areas/macos.md`](areas/macos.md); the
+choices and their reasons are in
+[`decisions/0009-macos-check-from-linux.md`](decisions/0009-macos-check-from-linux.md)
+and, for the popover, [`decisions/0042-popover.md`](decisions/0042-popover.md).
 
 - **One entry point.** `loctel_macos::install(cx, engine, settings_path)`, called
   by `loctel-app` inside `Application::run` after it set
