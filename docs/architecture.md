@@ -20,7 +20,12 @@ Milestone 2 (`superpowers/plans/2026-10-21-loctel-m2-query-rules.md`) added:
 `loctel-query` and `loctel-rules`, and the changes they brought to the store,
 MCP, engine, UI and macOS crates. Milestone 3
 (`superpowers/plans/2026-10-22-loctel-m3-main-window.md`) added the main window
-to `loctel-ui`, `loctel-macos` and `loctel-app` and no crate. Everything
+to `loctel-ui`, `loctel-macos` and `loctel-app` and no crate. Milestone 4
+(`superpowers/plans/2026-10-22-loctel-m4-logs-rules-popover.md`) added the Logs and
+Discard rules screens, the Settings window and the popover view to `loctel-ui`,
+the popover to `loctel-macos` (it replaces the menu), live port rebinding to
+`loctel-engine` and log IDs, level and window filters, the histogram and the
+lines around a log to `loctel-store`, and no crate. Everything
 Mac-only in it is unverified until the milestone check
 (`milestones/mac-checklist.md`). The change that adds a
 crate updates this table and the diagram below it.
@@ -28,15 +33,15 @@ crate updates this table and the diagram below it.
 | Crate | Layer | Owns | Status |
 |---|---|---|---|
 | `loctel-model` | core | Domain types (spans, logs, resources, IDs, severity), independent of OTLP | implemented (see "Domain model" below) |
-| `loctel-store` | core | In-memory store: trace assembly, completeness, dedup, eviction, failure semantics, search (with TraceQL and LogQL filters), logs, removal and scans, service map | implemented: assembly, completeness, dedup, eviction, failure semantics, trace summaries and search, logs, service map and services list, and (Milestone 2) query filters with matched spans, `remove_trace`, `remove_spans`, `with_trace_spans` and the scans (see "Store" below) |
+| `loctel-store` | core | In-memory store: trace assembly, completeness, dedup, eviction, failure semantics, search (with TraceQL and LogQL filters), logs, removal and scans, service map | implemented: assembly, completeness, dedup, eviction, failure semantics, trace summaries and search, logs, service map and services list, and (Milestone 2) query filters with matched spans, `remove_trace`, `remove_spans`, `with_trace_spans` and the scans, and (Milestone 4) log IDs, level and window filters on log search, the log histogram and the lines around a log (see "Store" below) |
 | `loctel-query` | core | TraceQL and LogQL lexers, parsers and evaluators, with errors that carry the position in the query. Pure: depends only on `loctel-model` (and `regex`) | implemented (Milestone 2): `QueryError`, `Pattern`, duration literals, the TraceQL lexer, parser and evaluator (`TraceView`, `evaluate`, `matches_span`) and LogQL (`logql::parse`, `LogQuery::matches`, `logql::labels`); the store, the rules and MCP (the `query` arguments of `search_traces` and `search_logs`) use them (see "Query languages" below) |
 | `loctel-rules` | core | Discard rules: the rule model and `rules.toml`, `RuleSet` (the ingest filter for spans and logs, with a bounded memory of what was dropped), and the preview | implemented (Milestone 2): `RuleSpec`, `RulesFile`, `RuleSet`, `preview`; the engine runs it at ingest (see "Discard rules" and "Engine" below) |
 | `loctel-ingest` | core | OTLP gRPC and HTTP receivers, protobuf and JSON to model conversion | implemented: gRPC and HTTP receivers, gzip, conversion, `partial_success` (see "Ingest" below) |
 | `loctel-mcp` | core | MCP server (rmcp, Streamable HTTP), tools and their DTOs | implemented: nine read-only tools, the `Origin` check, both protocol generations and, from Milestone 2, the TraceQL and LogQL `query` arguments, the discard rules in `get_status` and the answer size budget (see "MCP" below) |
-| `loctel-engine` | core | Wires store, ingest, MCP and the discard rules; settings, pause, rates; owns threads and runtime | implemented: store, OTLP receivers and MCP server, `settings.toml`, pause, rates, and (Milestone 2) the discard rules at ingest with live reload of `rules.toml` and the handle API (see "Engine" below) |
+| `loctel-engine` | core | Wires store, ingest, MCP and the discard rules; settings, pause, rates; owns threads and runtime | implemented: store, OTLP receivers and MCP server, `settings.toml`, pause, rates, and (Milestone 2) the discard rules at ingest with live reload of `rules.toml` and the handle API, and (Milestone 4) rebinding the three ports live (see "Engine" below) |
 | `loctel-meshgen` | test tooling | Fake microservice mesh scenarios (library and `meshgen` binary) | implemented: six scenarios and a sender over gRPC, HTTP protobuf and HTTP JSON (see "Test tooling" below) |
 | `loctel-e2e` | test tooling | End-to-end tests through real OTLP and a real MCP client (`publish = false`) | implemented: a `Harness` over a real engine (with or without a rules file) and the tests of the transports, assembly, service map, agent flow, pause, release fixture, discard rules and queries (see "Test tooling" below) |
-| `loctel-ui` | UI | GPUI views, the pure view models and the headless screenshot harness | implemented: the status view (with the discard rules line, from Milestone 2), the shared menu text, the theme, the pure models of the main window (`model`: formats, service colours, trace table rows, query bar state, map layout, waterfall rows, inspector text and the trace view's text), the main window's shell (`app`: sidebar, toolbar, `UiBackend`, the GPUI Kit theme bridge, `open_main_window`, and the live data entities `HomeModel`, `TraceModel` and, from Milestone 4, `LogsModel`), the views of its two screens (`views`: the service map, the trace table, and the trace view with its waterfall, inspector and span logs; Milestone 3) and `testing::{render_png, render_window_png, Driver, headless_app, assert_snapshot}` behind the `screenshot` feature (see "UI" below) |
+| `loctel-ui` | UI | GPUI views, the pure view models and the headless screenshot harness | implemented: the status view (with the discard rules line, from Milestone 2), the shared menu text, the theme, the pure models of the main window (`model`: formats, service colours, trace table rows, query bar state, map layout, waterfall rows, inspector text and the trace view's text), the main window's shell (`app`: sidebar, toolbar, `UiBackend`, the GPUI Kit theme bridge, `open_main_window`, and the live data entities `HomeModel`, `TraceModel` and, from Milestone 4, `LogsModel` and `RulesModel`), the views of its four screens (`views`: the service map, the trace table, and the trace view with its waterfall, inspector and span logs from Milestone 3; and, from Milestone 4, the Logs screen with its histogram and the Discard rules screen with its editor), the Settings window's and the menu bar popover's views (Milestone 4) and `testing::{render_png, render_window_png, Driver, headless_app, assert_snapshot}` behind the `screenshot` feature (see "UI" below) |
 | `loctel-macos` | macOS | Status item, activation policy, login item (`cfg(target_os = "macos")`) | implemented, never run: the menu bar item (no menu since Milestone 4: a click opens the popover, `popover::toggle`, placed from the mouse by `popover::anchor`), the windows' lifecycle (`window::open_or_focus`, `show_screen`, `open_settings`: the Dock while the main or Settings window is open, Accessory after the last closes), Liquid Glass behind the main window's sidebar and toolbar and the popover's panel (`glass::attach`), the login item and the first-launch step; empty off macOS apart from plain-Rust parts that the Linux tests cover (see "macOS shell" below) |
 | `loctel-app` | binary | The `loctel` binary: headless mode and GUI, bundle metadata | implemented: headless mode, on Linux the main window (it also quits cleanly on SIGINT and SIGTERM) and on macOS the menu bar app that opens the main window from its popover (see "Headless mode", "UI" and "macOS shell" below); `[package.metadata.bundle]` and `bundle/` hold what goes into `loctel.app` (see "Release pipeline" below) |
 | `xtask` | tooling | Screenshots, next-version, release notes, MCP smoke test | implemented: `screenshots [--update]`, `run-shot`, `next-version`, `release-notes` and `mcp-smoke --url URL` (see "UI" and "Release pipeline" below) |
@@ -553,7 +558,8 @@ details, the theme tokens and the workflow are in
   all of it in memory), `open_main_window`, the `Backdrop` and
   `GlassRegion` types through which a platform learns where the glass parts
   are, and `kit_theme::apply`, the one place loctel's `Theme` is mapped onto
-  GPUI Kit's. Three entities read the store over time, all on GPUI's background
+  GPUI Kit's. Three entities read the store over time (a fourth, `RulesModel`, below,
+  reads it only for a preview), all on GPUI's background
   executor and never in a frame: `HomeModel` (`app::data`) every 500 ms, behind
   a `TimeRange`, the errors-only and slow-only toggles and the query bar (at
   most 1,000 rows), building the placed service map and the table's rows
@@ -565,7 +571,12 @@ details, the theme tokens and the workflow are in
   the list in pages of 500 (at most 20,000 rows), the live tail that joins the
   newest page every 500 ms without ever repeating a line (and stands still while
   the list is scrolled away from the top), the histogram every 2 s and the lines
-  around a log, reading only while the Logs screen shows. See
+  around a log, reading only while the Logs screen shows; and `RulesModel`
+  (`app::rules_data`, Milestone 4) for the Discard rules screen, which reads the
+  engine's rules and the share dropped once a second (in memory, not the store)
+  while its screen shows and the store only for the editor's five-minute preview,
+  and holds the editor's draft and the notice that the rules file changed behind
+  it. See
   [`areas/ui.md`](areas/ui.md) ("The main window", "Live data",
   "The trace view", "The Logs screen"), [`decisions/0024-gpui-kit.md`](decisions/0024-gpui-kit.md),
   [`decisions/0025-live-home-data.md`](decisions/0025-live-home-data.md) and
@@ -580,7 +591,10 @@ details, the theme tokens and the workflow are in
   `WaterfallView`, `InspectorView` and `SpanLogsView` (Milestone 3), and the
   Logs screen's `LogsView` with its `HistogramView` (Milestone 4: the LogQL bar,
   the level toggles, the volume bars and a variable-height list whose rows expand
-  where they stand), and the two windows of their own, `SettingsView` (the ports
+  where they stand), the Discard rules screen's `RulesView` with its
+  `RuleEditorView` (Milestone 4: the cards with their switches and counts, and the
+  editor with live validation and the five-minute preview), and the two windows of
+  their own, `SettingsView` (the ports
   and the login switch, opened by `app::open_settings_window`) and `PopoverView`
   (Milestone 4 Task 8: the menu bar popover, 336 wide, over a `PopoverActions`
   trait that is everything it asks of the app, so the platform crate decides what
@@ -596,8 +610,10 @@ details, the theme tokens and the workflow are in
   ```
   EngineHandle --(AppBackend: UiBackend)--> store() / status() / rules / settings / utc_offset()
         |
-  HomeModel, TraceModel   read the Store on the background executor, then on
-        |                 the foreground build the rows, the layout, the waterfall
+  HomeModel, TraceModel,  read the Store on the background executor, then on
+  LogsModel               the foreground build the rows, the layout, the waterfall,
+        |                 the log pages and the histogram (RulesModel reads the
+        |                 engine's rules in memory, and the Store only for a preview)
         v
   model::*   (pure: strings, rows, positions, colour indices; no GPUI)
         |
@@ -609,7 +625,8 @@ details, the theme tokens and the workflow are in
 
   The tests put a `FixedBackend` over a store loaded from meshgen on a
   `ManualClock` in place of the engine, so every screenshot is deterministic.
-  Adding a screen: [`areas/ui.md`](areas/ui.md) ("Adding a screen").
+  Adding a screen: the `add-screen` skill (`.claude/skills/add-screen/SKILL.md`) has
+  the steps, and [`areas/ui.md`](areas/ui.md) ("Adding a screen") the rules.
 - **Screenshot tests** (`crates/loctel-ui/tests/screenshots.rs`, and `screens.rs`
   for the main window through `testing::render_window_png` and `Driver`) render views
   through GPUI's headless renderer (software wgpu, no GPU or display) with a

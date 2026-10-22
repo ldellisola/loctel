@@ -100,9 +100,10 @@ that row of the status box says `Failed` in red with the OS error.
 
 ### The trace view in the real window
 
-The main window has two screens: the home screen above, and the trace view that
-a click on a row of the trace table opens (Esc goes back). To capture the trace
-view, click the first row before the capture. In a 1440 by 900 window the first
+The main window has four screens: the home screen above, the trace view that a
+click on a row of the trace table opens (Esc goes back), and Logs and Discard
+rules, which the next section reaches. To capture the trace view, click the first
+row before the capture. In a 1440 by 900 window the first
 row of the table is at x 432, y 640 (the window's logical pixels are the
 screen's), so add these two lines to `shot.sh` before the `import`:
 
@@ -123,6 +124,75 @@ inspector on the right, and `Receiving spans…` at the top right until the trac
 has been quiet for 10 seconds (then `Complete`). Only `xdotool` clicks reach
 the real window; the screenshot tests drive their window with `Driver` instead
 (`docs/areas/ui.md`).
+
+### Logs and Discard rules in the real window
+
+The sidebar lists three screens: `Map & traces` (⌘1), `Logs` (⌘2) and `Discard
+rules` (⌘3), and ⌘, opens the Settings window. In the Linux window GPUI's `cmd` is
+the Super key, so `xdotool key super+2` is ⌘2 (the screenshot tests send the same
+keystroke as `cmd-2`). There is no window manager under `xvfb-run` and the window
+fills the 1440 by 900 screen, so the pointer is always over it; the script still
+moves it there first, so the keys reach the window whatever the X server's focus is.
+A click on the sidebar works too: in the same window the three entries are at x 120
+and y 79, 115 and 151.
+
+The script gives the Discard rules screen a rule that has something to drop (a
+rules file written before loctel starts), and sends the failing checkout, the health
+checks and 300 log lines, so Logs has lines with and without a trace and the rule's
+card has a count:
+
+```bash
+cargo build -p loctel-app -p loctel-meshgen
+mkdir -p /tmp/screens
+cat > /tmp/screens.sh <<'SCRIPT'
+# Runs inside Xvfb, from the repo root. $1 = an existing output directory
+export XDG_RUNTIME_DIR=$(mktemp -d)
+work=$(mktemp -d)
+cat > "$work/rules.toml" <<'RULE'
+[[rule]]
+name = "Health checks"
+enabled = true
+language = "traceql"
+query = '{ span.url.path = "/health" }'
+RULE
+target/debug/loctel --grpc-port 14317 --http-port 14318 --mcp-port 14319 \
+  --settings "$work/settings.toml" --rules "$work/rules.toml" \
+  > /tmp/loctel-lines.txt 2>/dev/null &
+app=$!
+sleep 3                                  # window up, first frame drawn
+for scenario in checkout-failure health-checks; do
+  target/debug/meshgen --scenario "$scenario" --transport http-json \
+    --endpoint http://127.0.0.1:14318
+done
+target/debug/meshgen --scenario log-flood --size 300 --transport http-json \
+  --endpoint http://127.0.0.1:14318
+sleep 3                                  # the screens read the store every 500 ms
+xdotool mousemove 900 450                # the pointer over the window, the keys follow
+xdotool key super+2                      # ⌘2: Logs
+sleep 2
+import -window root "$1/logs.png"
+xdotool key super+3                      # ⌘3: Discard rules
+sleep 2
+import -window root "$1/rules.png"
+kill $app
+SCRIPT
+xvfb-run -a -s "-screen 0 1440x900x24" bash /tmp/screens.sh /tmp/screens
+```
+
+Open both PNGs with the Read tool. Expect, in `logs.png`, `Logs` lit in the sidebar
+and in the toolbar with the `Live tail` pill, the LogQL bar with its grey example,
+the four level toggles, `307 lines · newest first` (the checkout's 7 lines and the
+300 of the flood; the health checks' 100 lines went with their dropped traces),
+the histogram with a single bar at the right end (everything arrived in the last
+few seconds, the checkout's errors red at its foot) and the failing checkout's
+seven lines (three `ERR`, one `WRN`, a trace link in the last column) on top of the
+flood's `INF` and `DBG` lines. Expect, in `rules.png`, `Discard rules` lit,
+`38% of incoming data dropped`, and one card: the switch on, `Health checks` with
+its `TRACEQL` chip and `100 spans dropped in 100 traces`. For a screen that needs
+clicks (an expanded line, the rules editor), add `xdotool mousemove X Y click 1`
+lines as in the trace view above and take X and Y from a first capture (the
+window's logical pixels are the screen's). For exact positions and states, with no
+guessing, use a screenshot test and `Driver` (`docs/areas/ui.md`).
 
 ## Things that bite
 

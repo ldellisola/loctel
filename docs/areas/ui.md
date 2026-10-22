@@ -1962,7 +1962,12 @@ one.
 
 A screen is a `Screen` variant, a view in `src/views`, the model behind it in
 `src/model` (and, when it reads the store over time, an entity in `src/app`),
-and a pair of screenshots. In this order, which keeps the tests first:
+a sidebar entry with its shortcut when it is one of the main places, and a pair
+of screenshots. The repo skill `add-screen` (`.claude/skills/add-screen/SKILL.md`)
+is the step-by-step procedure, with what bites; this is the list it follows. `Logs`
+(reads the store over time) and `Rules` (edits, and takes a draft from another
+screen) are the two to copy from, `Trace` the one that is reached from another
+screen and is not a sidebar entry. In this order, which keeps the tests first:
 
 1. **The model, test first.** Put every rule that is not a pixel in
    `src/model/<name>.rs` (a plain function over the store's types: the strings,
@@ -1973,8 +1978,11 @@ and a pair of screenshots. In this order, which keeps the tests first:
    `HomeModel` or `TraceModel` (`src/app`): build it over `Rc<dyn UiBackend>`,
    read on `cx.background_executor()` and apply the result on the foreground,
    refresh on a timer that stops when the entity is dropped, notify only when
-   something changed. Test it in `tests/live.rs` with `testing::headless_app()`
-   and a store on a `ManualClock`, moving the clock to fire the timer.
+   something changed, and read **only while its screen shows** (`set_active`, which
+   `MainWindow::navigate` calls: `a_hidden_logs_screen_reads_nothing` is the test to
+   copy). Test it in `tests/live.rs` with `testing::headless_app()` (or, for an
+   entity that lives in the window, with `Driver` in the screen's own test file) and a
+   store on a `ManualClock`, moving the clock to fire the timer.
 3. **The view.** A GPUI view in `src/views/<name>.rs` that holds no rules: it
    reads the model, lays it out with GPUI Kit's components, and writes what the
    user does back into the model (or emits an event the shell turns into a
@@ -1994,10 +2002,13 @@ and a pair of screenshots. In this order, which keeps the tests first:
    Decide whether its views live for the window (like the home screen's) or are
    made on arrival and dropped on leaving (like the trace's), and say which in
    `ui.md`.
-5. **The screenshots, test first.** In `tests/screens.rs` (`interactions.rs`
-   when the state needs input, `live.rs` when time passes) render it with
-   `render_window_png` or `Driver` over a `FixedBackend`, in `Theme::dark()` and
-   `Theme::light()` at `WINDOW` (1440 by 900). Generate the references with
+5. **The screenshots, test first.** In a test file of the screen's own
+   (`tests/logs_screen.rs` and `rules_screen.rs` are the examples; `screens.rs` is
+   for the shell, `interactions.rs` for the home screen's input and `live.rs` for
+   time passing) render it with `render_window_png` or `Driver` over a
+   `FixedBackend`, in `Theme::dark()` and `Theme::light()` at `WINDOW` (1440 by 900),
+   and a dark one for each other state that matters (empty, an error, an open
+   editor). Generate the references with
    `cargo xtask screenshots --update` and **open every PNG** before committing
    it; the `update-screenshots` skill has the steps.
 6. **The docs, in the same change.** A section in this file (the view, its
@@ -2051,7 +2062,10 @@ wake-up bug of crates.io GPUI (§10.5); the script then nudges the window with
 `gpui-pre` the window was not black on its first try, so the nudge is a safety
 net. Open the PNG with the Read tool.
 
-The repo skill `run-and-screenshot` covers running with meshgen data.
+The repo skill `run-and-screenshot` covers running with meshgen data, and how to
+reach the other screens of the real window under Xvfb: `xdotool key super+2` is ⌘2
+(Logs) and `super+3` is ⌘3 (Discard rules), because GPUI's `cmd` is the Super key on
+Linux.
 
 ## Unverified
 
