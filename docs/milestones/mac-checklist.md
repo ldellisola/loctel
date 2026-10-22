@@ -149,7 +149,8 @@ on a Mac: the window opening from the menu bar, loctel in the Dock while it is
 open, Apple's Liquid Glass behind the sidebar and the toolbar, and the trackpad
 and the fast scrolling. Some things are not in this release, so do not report
 their absence: the sidebar has the one entry `Map & traces` (Logs and Discard
-rules come later), and the text is the bundled Inter font, not San Francisco
+rules come later), the span logs under the waterfall have no `Open in Logs`
+button yet (it comes with the Logs screen), and the text is the bundled Inter font, not San Francisco
 (say if it looks out of place). Items 4 to 8 need data: from a
 checkout of this repository, the commands in Milestone 1, item 3 send it, and
 each item says which scenario to use. Report what you see, and say which item

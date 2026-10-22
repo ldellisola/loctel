@@ -297,7 +297,14 @@ fn refresh_now_reads_in_the_background() {
 
 #[test]
 fn idle_refreshes_do_not_notify() {
-    let mut f = Fixture::new(BASE + SECOND);
+    // Rates divide by the time the data covers (decision 0034), so young
+    // data's rates really do change every second, and that redraws. This test
+    // is about refreshes that change nothing, so its data is 1,000 seconds old
+    // under the last hour: one request over 1,000 seconds reads `0.0 req/s`
+    // a second later too.
+    let mut f = Fixture::new(BASE + 1_000 * SECOND);
+    f.update(|home, cx| home.set_range(TimeRange::LastHour, cx));
+    f.settle();
     f.ingest(&generate(&Scenario::CheckoutFailure, SEED, BASE));
     let notified = Rc::new(Cell::new(0));
     let count = Rc::clone(&notified);
@@ -529,30 +536,48 @@ fn map_rates_are_counts_over_the_range() {
             .clone()
     };
 
-    assert_eq!(
-        subtitle(&f),
-        "0.1 req/s \u{b7} 0% err",
-        "100 over 15 minutes"
-    );
+    // The data covers 100 seconds, less than any range, so every range
+    // divides by those 100 seconds, not by its own length: a loctel that
+    // started a minute ago shows the real rate (decision 0034).
+    for range in [
+        TimeRange::Last15m,
+        TimeRange::Last5m,
+        TimeRange::LastHour,
+        TimeRange::Everything,
+    ] {
+        f.update(|home, cx| home.set_range(range, cx));
+        f.settle();
+        assert_eq!(
+            subtitle(&f),
+            "1.0 req/s \u{b7} 0% err",
+            "100 in 100 seconds under {range:?}"
+        );
+    }
+
+    // 250 seconds later the data covers 350 seconds. The last 5 minutes hold
+    // the 50 checks from BASE + 50 s on, over 300 seconds; the longer ranges
+    // hold all 100, over the 350 seconds covered.
+    f.clock.advance(Duration::from_secs(250));
     f.update(|home, cx| home.set_range(TimeRange::Last5m, cx));
     f.settle();
     assert_eq!(
         subtitle(&f),
-        "0.3 req/s \u{b7} 0% err",
-        "100 over 5 minutes"
+        "0.2 req/s \u{b7} 0% err",
+        "50 over 5 minutes"
     );
-    f.update(|home, cx| home.set_range(TimeRange::LastHour, cx));
-    f.settle();
-    assert_eq!(subtitle(&f), "0.0 req/s \u{b7} 0% err", "100 over an hour");
-    // Everything has no length of its own: the data covers 100 seconds, from
-    // the first trace in the store to now.
-    f.update(|home, cx| home.set_range(TimeRange::Everything, cx));
-    f.settle();
-    assert_eq!(
-        subtitle(&f),
-        "1.0 req/s \u{b7} 0% err",
-        "100 in 100 seconds"
-    );
+    for range in [
+        TimeRange::Last15m,
+        TimeRange::LastHour,
+        TimeRange::Everything,
+    ] {
+        f.update(|home, cx| home.set_range(range, cx));
+        f.settle();
+        assert_eq!(
+            subtitle(&f),
+            "0.3 req/s \u{b7} 0% err",
+            "100 in 350 seconds under {range:?}"
+        );
+    }
 }
 
 // --- the query bar ----------------------------------------------------------

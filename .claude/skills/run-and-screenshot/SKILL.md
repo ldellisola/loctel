@@ -111,6 +111,12 @@ xdotool mousemove 432 640 click 1
 sleep 2                                  # the trace screen reads the store, then draws
 ```
 
+External nodes such as `card-gateway` (and the red edge to it) appear on the
+map only once their trace is complete, 10 seconds after its last span
+(`docs/areas/store.md`, "Service map"). A shot taken 2 seconds after sending
+has no `card-gateway` node; the screenshot tests, whose `ManualClock` is past
+the quiet period, do. That difference is expected.
+
 Expect the trace's header (the red `Failed in payments-api · POST card-gateway
 +1` badge), the 15-row waterfall with the failed-in `POST` selected and the
 inspector on the right, and `Receiving spans…` at the top right until the trace

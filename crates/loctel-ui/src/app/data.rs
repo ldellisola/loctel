@@ -519,15 +519,60 @@ impl ReadPlan {
         }
     }
 
-    /// How long the map's counts cover: the range, or for `Everything` from the
-    /// oldest trace the store holds to now (at least a second, so one fresh
-    /// trace is not a rate of thousands). 0 for an empty store.
+    /// How long the map's counts cover. See [`rate_window_secs`].
     fn window_secs(&self, now: u64) -> f64 {
-        match self.range.seconds() {
-            Some(seconds) => seconds as f64,
-            None => self.store.oldest_start_unix_nano().map_or(0.0, |oldest| {
-                (now.saturating_sub(oldest) as f64 / NANOS_PER_SECOND as f64).max(1.0)
-            }),
-        }
+        rate_window_secs(self.range.seconds(), self.store.oldest_start_unix_nano(), now)
+    }
+}
+
+/// The seconds a map rate divides by: the part of the range the store
+/// actually holds data for. That is the time from the oldest trace held to
+/// now, capped at the range (`range_secs`, `None` for `Everything`), and at
+/// least a second so one fresh trace is not a rate of thousands. Dividing by
+/// the whole range instead would make a loctel that started a minute ago read
+/// a steady 2 req/s as `0.1 req/s` under `Last 15 minutes`. With no data it is
+/// the range (the counts are zero anyway), or 0 for `Everything`.
+fn rate_window_secs(range_secs: Option<u64>, oldest_unix_nano: Option<u64>, now: u64) -> f64 {
+    let covered = oldest_unix_nano
+        .map(|oldest| (now.saturating_sub(oldest) as f64 / NANOS_PER_SECOND as f64).max(1.0));
+    match (range_secs, covered) {
+        (Some(range), Some(covered)) => covered.min(range as f64),
+        (Some(range), None) => range as f64,
+        (None, Some(covered)) => covered,
+        (None, None) => 0.0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rate_window_secs;
+
+    const S: u64 = 1_000_000_000;
+
+    #[test]
+    fn young_data_divides_by_the_time_it_covers() {
+        assert_eq!(rate_window_secs(Some(900), Some(1_000 * S), 1_060 * S), 60.0);
+    }
+
+    #[test]
+    fn old_data_divides_by_the_range() {
+        assert_eq!(rate_window_secs(Some(300), Some(0), 1_000 * S), 300.0);
+    }
+
+    #[test]
+    fn at_least_a_second() {
+        assert_eq!(rate_window_secs(Some(900), Some(5 * S), 5 * S), 1.0);
+        assert_eq!(rate_window_secs(None, Some(5 * S), 5 * S), 1.0);
+    }
+
+    #[test]
+    fn everything_is_the_covered_time() {
+        assert_eq!(rate_window_secs(None, Some(0), 100 * S), 100.0);
+    }
+
+    #[test]
+    fn no_data() {
+        assert_eq!(rate_window_secs(Some(900), None, 100 * S), 900.0);
+        assert_eq!(rate_window_secs(None, None, 100 * S), 0.0);
     }
 }

@@ -660,10 +660,12 @@ like "no traces"): `data().query` is `Invalid { column, message }` at once, the
 view shows it under the input, and the table keeps reading with the last query
 that was good until the text parses again.
 
-**Rates on the map** are counts over the window: 300, 900 or 3,600 seconds for
-the three ranges, and for `Everything` from the oldest trace in the store
-(`Store::oldest_start_unix_nano`) to now, at least a second (zero rates for an
-empty store).
+**Rates on the map** are counts over the time the data covers: from the oldest
+trace in the store (`Store::oldest_start_unix_nano`) to now, capped at the
+range (300, 900 or 3,600 seconds; no cap for `Everything`) and at least a
+second. A loctel that started a minute ago divides by that minute, not by the
+whole 15 minutes, so a steady 2 req/s reads `2.0 req/s` from the start
+(decision 0034). An empty store has zero counts, so zero rates.
 
 **Colours.** The model owns the session's `ServiceColors` and the map's
 `LayoutMemory`. The rows are built before the map, so the first services of the
