@@ -4,6 +4,8 @@
 //! models of `src/model`.
 //!
 //! - [`UiBackend`]: the store, the engine's status and two actions.
+//! - [`HomeModel`]: the home screen's live data (the map, the table's rows) and
+//!   the settings that shape it (range, toggles, query, pause).
 //! - [`MainWindow`] is the root view; [`Screen`] says what it shows.
 //! - [`open_main_window`] opens it.
 //! - [`Backdrop`] and [`GlassRegion`]: how the shell tells a platform where its
@@ -13,6 +15,7 @@
 //! `docs/areas/ui.md` ("The main window") has the layout and the rules.
 
 mod backend;
+mod data;
 pub mod kit_theme;
 mod nav;
 mod shell;
@@ -28,6 +31,7 @@ use gpui::{
 use gpui_kit::base::Root;
 
 pub use backend::UiBackend;
+pub use data::{HOME_MAX_ROWS, HOME_REFRESH, HomeData, HomeModel, SLOW_TRACE, TimeRange};
 pub use nav::NavItem;
 pub use shell::{
     Backdrop, DEFAULT_SIZE, GlassRegion, INSET, MIN_SIZE, MainWindow, PANEL_RADIUS, SIDEBAR_WIDTH,

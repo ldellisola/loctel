@@ -15,6 +15,8 @@
 //!   always reports the light appearance, and Kit's scrollbar fade reads real
 //!   time otherwise). [`Driver`] keeps the window, so a test can click, scroll,
 //!   type, move the clock and capture.
+//! - [`headless_app`] is the same app with no window, for the models that live
+//!   in entities and are tested by moving the clock (`tests/live.rs`).
 //! - [`FixedBackend`] is the [`UiBackend`](crate::app::UiBackend) of tests, and
 //!   [`RecordingBackdrop`] the [`Backdrop`](crate::app::Backdrop) that writes
 //!   down what it is told.
@@ -106,6 +108,29 @@ pub fn render_png(
         })
 }
 
+/// A headless app with no window, for the models that live in entities (the
+/// home screen's data, Milestone 3 Task 5): GPUI's test platform with the
+/// bundled text system and Kit's icons, motion reduced, and everything the main
+/// window needs set up ([`app::init`]).
+///
+/// Time stands still on it until `advance_clock` moves it, so a timer of a model
+/// fires when the test says, and `run_until_parked` runs every task that can
+/// run: the foreground ones and the background executor's. Entities are made
+/// with `cx.new(...)` (`use gpui::AppContext as _`), read with `read_entity` and
+/// changed with `update_entity`.
+pub fn headless_app() -> HeadlessAppContext {
+    let mut cx = HeadlessAppContext::with_platform(
+        text_system(),
+        Arc::new(gpui_kit::assets::Assets),
+        gpui_platform::current_headless_renderer,
+    );
+    cx.update(|cx| {
+        app::init(cx);
+        cx.set_reduce_motion(true);
+    });
+    cx
+}
+
 /// Renders a view of the main window into a window of `size` logical pixels
 /// and returns the pixels (at scale 2, like [`render_png`]).
 ///
@@ -144,16 +169,7 @@ impl<V: Render + 'static> Driver<V> {
         theme: &Theme,
         build: impl FnOnce(&mut Window, &mut App) -> Entity<V>,
     ) -> Driver<V> {
-        let mut cx = HeadlessAppContext::with_platform(
-            text_system(),
-            Arc::new(gpui_kit::assets::Assets),
-            gpui_platform::current_headless_renderer,
-        );
-        cx.update(|cx| {
-            app::init(cx);
-            // Kit's scrollbars fade on real time unless motion is reduced.
-            cx.set_reduce_motion(true);
-        });
+        let mut cx = headless_app();
         let mut built = None;
         let window = cx
             .open_window(

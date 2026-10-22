@@ -16,7 +16,10 @@
 //! - [`app`] is the main window's shell (Milestone 3): the floating sidebar, the
 //!   toolbar and the content area, the [`UiBackend`](app::UiBackend) that gives
 //!   views the store and the engine's status, the bridge from [`Theme`] to GPUI
-//!   Kit's theme, and [`open_main_window`](app::open_main_window).
+//!   Kit's theme, [`open_main_window`](app::open_main_window), and
+//!   [`HomeModel`](app::HomeModel), the home screen's live data (the map and
+//!   the table's rows, read every 500 ms behind a time range, two toggles and
+//!   the query bar).
 //! - [`menu_text`] holds the exact strings for the status line, the discard
 //!   rules line and the rates, so the macOS menu and the view cannot drift apart.
 //! - [`Theme`] holds the colours; [`register_fonts`] the bundled typeface.

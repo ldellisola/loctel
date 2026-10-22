@@ -261,6 +261,34 @@ fn status_and_failed_in_types_are_declared() {
     let _failed_in: Option<FailedIn> = t.failed_in;
 }
 
+// --- the oldest start (the window of the UI's "Everything" rates) ---
+
+#[test]
+fn oldest_start_is_the_earliest_trace_start_held() {
+    let (store, _c) = store_with_manual_clock();
+    assert_eq!(store.oldest_start_unix_nano(), None, "an empty store");
+
+    // Traces 1 and 2 arrive in the order of their starts, then trace 3 arrives
+    // last but started first: the answer is a start time, not an arrival.
+    store.ingest_spans(vec![span(1, 1, None, "a", "x", 500, 10)]);
+    assert_eq!(store.oldest_start_unix_nano(), Some(500 * 1_000_000));
+    store.ingest_spans(vec![span(2, 1, None, "a", "x", 900, 10)]);
+    assert_eq!(store.oldest_start_unix_nano(), Some(500 * 1_000_000));
+    store.ingest_spans(vec![span(3, 1, None, "a", "x", 100, 10)]);
+    assert_eq!(store.oldest_start_unix_nano(), Some(100 * 1_000_000));
+
+    // A late span of trace 1 that starts earlier moves its start, and so the
+    // answer, only if it is now the earliest of all.
+    store.ingest_spans(vec![span(1, 2, Some(1), "a", "child", 50, 10)]);
+    assert_eq!(store.oldest_start_unix_nano(), Some(50 * 1_000_000));
+
+    // Removing the trace that holds it moves the answer on; clearing empties it.
+    store.remove_trace(tid(1));
+    assert_eq!(store.oldest_start_unix_nano(), Some(100 * 1_000_000));
+    store.clear();
+    assert_eq!(store.oldest_start_unix_nano(), None);
+}
+
 // --- eviction ---
 
 fn two_trace_store() -> (Store, std::sync::Arc<loctel_store::ManualClock>) {

@@ -55,7 +55,8 @@ snapshot after the view and the theme (`status_view_dark`).
 
 A screen of the main window: put it in `crates/loctel-ui/tests/screens.rs`
 (`interactions.rs` when it clicks, types or scrolls first, `live.rs` when time
-passes). Build a `FixedBackend` over a store loaded from meshgen on a
+passes; a model with no window, like `HomeModel`, is tested there with
+`testing::headless_app()`). Build a `FixedBackend` over a store loaded from meshgen on a
 `ManualClock`, and render with `render_window_png((1440, 900), &Theme::dark(),
 |window, cx| ...)`, or keep the window with `Driver::new(...)` to click,
 scroll, type, `advance` the clock and `capture()`. Every screen gets a dark and

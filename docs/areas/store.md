@@ -35,6 +35,7 @@ let lines = store.logs_for_span(trace_id, span_id); // Vec<LogRecord>, oldest fi
 let map = store.service_map(TimeWindow { since_unix_nano }); // ServiceMap
 let services = store.services(TimeWindow { since_unix_nano }); // Vec<ServiceStats>
 let stats = store.stats();               // StoreStats
+let oldest = store.oldest_start_unix_nano(); // Option<u64>, the earliest trace start held
 let now = store.now_unix_nano();         // the store's clock, for markers
 let removed = store.remove_trace(trace_id);               // Removed { spans, logs }
 let removed = store.remove_spans(trace_id, &[span_id]);   // Removed { spans, logs }
@@ -52,6 +53,11 @@ store.clear();
   `SystemClock` is the wall clock. `ManualClock::new(start)` only moves when
   told: `advance(Duration)` (saturating) and `set(u64)` (either direction).
   Tests drive completeness with it instead of sleeping.
+- `Store::oldest_start_unix_nano()` is the earliest start of any trace held
+  (`None` for an empty store): a start, not an arrival, so a trace that arrived
+  late can hold it. A pass over the traces that touches no span, under the read
+  lock. The main window uses it for the length of the window "Everything" covers
+  (the rates of the service map).
 - `Store::now_unix_nano()` is the current time on that same clock. The MCP
   `get_marker` tool hands it to agents as the `since` mark, so the marker and
   completeness agree on "now", and a test that drives the store with a

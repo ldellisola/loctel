@@ -7,9 +7,9 @@ feel), §10.3 (screenshot tests) and §10.5 (gotchas from the spike).
 Status: Milestones 1 and 2 have one view, the **status view**, and the Linux
 window that shows it. Milestone 2 added the discard rules line to it and to the
 macOS menu; the rules screen is Milestone 4. The main window (Map & traces, Trace view) is Milestone 3
-(in progress: the pure models in `src/model` and the window's shell in
-`src/app` are done, the screens are not; see "Models" and "The main window"
-below), the remaining screens and the popover Milestone 4. The macOS menu bar
+(in progress: the pure models in `src/model`, the window's shell in
+`src/app` and the home screen's live data are done, the screens are not; see
+"Models", "The main window" and "Live data" below), the remaining screens and the popover Milestone 4. The macOS menu bar
 item is in `loctel-macos`; it only borrows the strings from `menu_text`.
 
 GPUI comes as the weekly `gpui-pre` snapshot, `gpui-pre`, `gpui-pre-platform`
@@ -30,11 +30,11 @@ are what shows you what moved (the `upgrade-gpui` skill has the steps; decision
 | `menu_text::rules_line(&StatusModel)` | the discard rules in one line, the first that applies: `Discard rules file has an error`; `1 discard rule on · 1 has an error` (for more than one, `3 discard rules on · 2 have errors`); `No discard rules on`; `1 discard rule on · 31% dropped` or `3 discard rules on · 0% dropped`. The percentage is the share the rules dropped of what arrived since launch, rounded to a whole number; a value that is not a number reads `0%` and one outside 0 to 1 is cut to it. A file error wins over a rule error, a rule error over "no rules on" |
 | `menu_text::format_rate(f64)` | `412` is `412`, `1234` is `1.2k`, `0.4` is `0`. One decimal under ten thousand, none above, never `.0` (`1k`, `10k`, `1.3M`); NaN, infinity and negatives read `0` |
 | `model` | the pure models of the main window: `format`, `colors`, `trace_table`, `query_bar`, `map_layout`, `waterfall`, `inspector` (see "Models" below) |
-| `app` | the main window's shell (see "The main window"): `MainWindow`, `Screen`, `UiBackend`, `open_main_window`, `Backdrop`/`GlassRegion`, `kit_theme` |
+| `app` | the main window's shell (see "The main window"): `MainWindow`, `Screen`, `UiBackend`, `open_main_window`, `Backdrop`/`GlassRegion`, `kit_theme`; and the home screen's live data (see "Live data"): `HomeModel`, `HomeData`, `TimeRange` |
 | `Theme` | the colours below. `Theme::dark()`, `Theme::light()` and `Theme::for_appearance(WindowAppearance)`. It is also a GPUI global once `kit_theme::apply` has run |
 | `KitAssets` | GPUI Kit's bundled icons, to register with `Application::with_assets` |
 | `register_fonts(cx)`, `FONT_FAMILY` | the bundled typeface (below) |
-| `testing` (feature `screenshot`) | `render_png` and `assert_snapshot`; for the main window `render_window_png`, `Driver`, `FixedBackend`, `RecordingBackdrop` (see "Screenshot tests") |
+| `testing` (feature `screenshot`) | `render_png` and `assert_snapshot`; for the main window `render_window_png`, `Driver`, `headless_app`, `FixedBackend`, `RecordingBackdrop` (see "Screenshot tests") |
 
 The strings in `menu_text` are the contract: the macOS menu header and the
 status view's pill both use `status_line`, the macOS menu's rules header and the
@@ -370,6 +370,85 @@ in which the pair changed, never otherwise (`RecordingBackdrop` in tests;
 is called inside GPUI's frame, so an implementation only stores the regions
 and applies them later (Task 10).
 
+## Live data
+
+`app::HomeModel` (`src/app/data.rs`, Milestone 3 Task 5) is what the home screen
+reads: the service map and the trace table's rows, kept fresh from the store.
+Decision 0025 has the choices and the reasons. It is an entity the views
+observe; `tests/live.rs` pins every rule below in a headless app with no window
+(`testing::headless_app()`), moving its clock to fire the timer, over a store on
+its own `ManualClock`.
+
+```rust
+let home = cx.new(|cx| HomeModel::new(backend, cx));   // reads at once, then every 500 ms
+home.update(cx, |home, cx| home.set_errors_only(true, cx));
+let rows = &home.read(cx).data().rows;
+```
+
+**`HomeData`** (`home.data()`) is the result of the latest read:
+
+| Field | Content |
+|---|---|
+| `map` | the service map over the time range, placed (`map_layout::layout`), with the colours of the session |
+| `rows` | the trace table: the newest matching traces, newest first, at most `HOME_MAX_ROWS` (1,000) |
+| `truncated` | more than 1,000 traces matched (exactly 1,000 is not more): the footnote `Showing the newest 1,000` |
+| `query` | the query bar's `QueryState` for the text as typed now |
+| `status` | the status box's `StatusModel`, read with the data |
+| `refreshed_at` | the store's clock at the read, in nanoseconds; 0 until the first read is back |
+
+**The settings** (each takes the entity's context, and does nothing when set to
+the value it has):
+
+| Call | Effect |
+|---|---|
+| `set_range(TimeRange)` | `Last5m`, `Last15m` (the default), `LastHour` or `Everything`; `label()` is `Last 5 minutes`, `Last 15 minutes`, `Last hour`, `Everything`. `since(now)` is the earliest start kept: `now` minus the length (0 if the clock is smaller), `None` for `Everything`; a trace that started exactly then is kept |
+| `set_errors_only(bool)` | only failed traces and traces with errors inside |
+| `set_slow_only(bool)` | only traces of `SLOW_TRACE` (1 s) or longer, 1 s included |
+| `set_query(text)` | validates at once (`data().query` is new when the call returns) and reads when the text is empty or parses |
+| `select_service(Some(name))` | writes `service_filter(name)` into the query and remembers the selection (`selected_service()`) |
+| `select_service(None)` | clears the selection: the query goes back to empty, but only while it is still that service's filter; a query the user typed is left alone |
+| `set_paused(bool)` | freezes the timer (below); un-pausing reads at once |
+| `refresh_now()` | reads now, whatever pause says |
+
+The table's filter is the range, errors only, slow only and the valid query
+together, all of which must hold, with a limit of 1,000. **The map is filtered
+by the range alone**: it is the picture of everything in the window, and the
+table is the list of what was asked for. Reading accessors for the controls:
+`query_text()` (as typed), `selected_service()`, `range()`, `errors_only()`,
+`slow_only()`, `paused()`.
+
+**Refreshing.** A timer reads every `HOME_REFRESH` (500 ms) until the model is
+dropped (the window closed), unless paused or a read is still running.
+Every read runs on `cx.background_executor()`, on a copy of its inputs (a
+`Store` clone and the filter), so a search never blocks a frame; its result
+comes back to the foreground, where the rows and the layout are built (they
+need the session's colours and the map's memory, which the model owns). A read
+that a newer one replaced is dropped when it arrives, so the controls and the
+rows never disagree. Something the user does always reads, even over a running
+read. The views are told only when the map, the rows, the flag or the status
+changed, so an idle store costs no frames.
+
+**Pause** freezes the view while ingest goes on: the timer reads nothing. It
+stops the timer, not the user: a query, a toggle, a range or a click on a
+service changed while paused still reads, and so does `refresh_now`.
+
+**An invalid query** keeps the previous rows (never an empty table that looks
+like "no traces"): `data().query` is `Invalid { column, message }` at once, the
+view shows it under the input, and the table keeps reading with the last query
+that was good until the text parses again.
+
+**Rates on the map** are counts over the window: 300, 900 or 3,600 seconds for
+the three ranges, and for `Everything` from the oldest trace in the store
+(`Store::oldest_start_unix_nano`) to now, at least a second (zero rates for an
+empty store).
+
+**Colours.** The model owns the session's `ServiceColors` and the map's
+`LayoutMemory`. The rows are built before the map, so the first services of the
+newest traces get the first colours. `home.colors()` returns the shared
+`Rc<RefCell<ServiceColors>>`: a view that colours services (the trace view's
+waterfall, the logs) takes it from there, so a service has one colour
+everywhere for the run.
+
 ## Theme tokens
 
 The dark tokens come from the accepted mockups; a test pins them. The light
@@ -479,6 +558,11 @@ assert_snapshot("shell_dark", &image);   // 2880 by 1800, about 150 KB
   through `Window::dispatch_event`, the path a real event takes, so hit testing,
   hover and focus behave as they do for a user. Each call runs what is pending
   and draws a frame.
+- **`headless_app()`** is the same app with no window (Kit initialised, motion
+  reduced): `cx.new(..)` an entity, `update_entity` and `read_entity` it,
+  `advance_clock(..)` and `run_until_parked()`. It is for the models that live
+  in entities and are tested by moving the clock (`tests/live.rs`); it returns
+  the `HeadlessAppContext` itself.
 - **`FixedBackend`** (a `UiBackend` over a store you load, with
   `listening_status()` and UTC), and **`RecordingBackdrop`** (every
   `set_regions` call, `calls()`).
