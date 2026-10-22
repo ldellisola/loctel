@@ -4,17 +4,19 @@ The GPUI layer, kept thin on purpose: views draw what the engine reports and
 hold no logic of their own. Design references: §9.2 (screens), §9.3 (look and
 feel), §10.3 (screenshot tests) and §10.5 (gotchas from the spike).
 
-Status: Milestones 1 and 2 have one view, the **status view**, and the Linux
-window that shows it. Milestone 2 added the discard rules line to it and to the
-macOS menu; the rules screen is Milestone 4. The main window (Map & traces, Trace view) is Milestone 3
-(in progress: the pure models in `src/model`, the window's shell in
-`src/app`, the home screen's live data, the service map view, the trace
-table and the trace view in `src/views` are done, and so is the window's
-lifecycle (Linux opens it, macOS opens it from the menu bar item: see "The
-real window" below and [`macos.md`](macos.md); the look of the glass parts is done and tested, Apple's glass behind them is `loctel-macos`'s
-and unverified); see "Models", "The main window", "Live
-data", "The service map", "The trace table" and "The trace view" below), the remaining screens and the popover Milestone 4. The macOS menu bar
-item is in `loctel-macos`; it only borrows the strings from `menu_text`.
+Status: Milestone 3 is the main window. It has two screens (the home screen,
+the service map above the trace table, and the trace view) in a shell with a
+glass sidebar and toolbar, all in `src/app` and `src/views` over the pure models
+in `src/model`; "Screens and views at a glance" below is the map of them, and
+the sections after it say how each one works. The window opens from the Linux
+`loctel` and from the macOS menu bar item's `Open loctel` (see "The real window"
+below and [`macos.md`](macos.md)); the look of the glass parts is done and
+tested here, and Apple's glass behind them is `loctel-macos`'s and unverified.
+Milestones 1 and 2 had one view, the **status view**, which stays as a
+standalone view with its own screenshot tests (Milestone 2 added the discard
+rules line to it and to the macOS menu). The remaining screens (Logs, Discard
+rules, Settings) and the popover are Milestone 4. The macOS menu bar item is in
+`loctel-macos`; it only borrows the strings from `menu_text`.
 
 GPUI comes as the weekly `gpui-pre` snapshot, `gpui-pre`, `gpui-pre-platform`
 and `gpui-pre-wgpu`, all pinned to exactly `=0.3.9` (zed@93d7456), and GPUI Kit
@@ -45,6 +47,98 @@ The strings in `menu_text` are the contract: the macOS menu header and the
 status view's pill both use `status_line`, the macOS menu's rules header and the
 view's rules row both use `rules_line`, and `crates/loctel-ui/tests/menu_text.rs`
 pins them.
+
+## Screens and views at a glance
+
+The map of the main window: which screens there are, how a user gets from one
+to the next, and which view and which model stand behind every part. Each part
+has its own section further down, which is where the rules are.
+
+### The screen map
+
+`MainWindow` shows one `Screen` in its content area. The sidebar (with the
+status box) and the toolbar are on every screen.
+
+```
+ sidebar:  Map & traces  (the one entry; Logs and Discard rules are Milestone 4)
+              |
+              v
+ Screen::Home ---------------------------------------------------------------.
+   MapView        (top panel)     click a service  -> its filter in the query bar
+   TraceTableView (bottom panel)  and the table; click it again, or empty space,
+              |                   to take it off
+              | click a row (TraceTableEvent::Open)
+              v
+ Screen::Trace(id)
+   header         back button, root name, failure badge, indicator
+   WaterfallView + SpanLogsView   (left)
+   InspectorView                  (right)
+              |
+              | Esc, the `Traces` button, or the sidebar entry  -> Screen::Home
+              | `Traces through this span name` -> Screen::Home with
+              |   { name = "..." } written into the query bar
+              '--------------------------------------------------------------'
+```
+
+| From | The user does | To |
+|---|---|---|
+| any | clicks `Map & traces` in the sidebar | `Home` |
+| `Home` | clicks a row of the table | `Trace(id)` |
+| `Trace` | Esc, or `Traces` | `Home`, as it was left (query, toggles, rows, the map's camera) |
+| `Trace` | `Traces through this span name` | `Home`, with `span_name_filter(name)` in the bar |
+
+The home screen's views and its `HomeModel` live as long as the window, so the
+map keeps its camera and the table its query, toggles and rows while a trace is
+open. The trace
+screen is made the first time it is drawn and dropped when the window leaves it,
+which also stops its refresh (it starts again from the initial selection on the
+next visit).
+
+**Not in the window yet.** Design §9.2 puts a Live indicator, the time range,
+Pause and Clear all in the home screen's toolbar. The Milestone 3 plan has no
+task that draws them, so the toolbar shows only its title. The models are done
+and tested (`HomeModel::set_range`, `set_paused` and `UiBackend::clear_all`, see
+"Live data"), but nothing in the window calls them: it always shows `Last 15
+minutes` and refreshes every 500 ms. Whoever adds the controls writes them over
+those calls, with a screenshot of the toolbar in both themes (decision 0031 has
+this and the other two gaps of Milestone 3).
+
+### Views and the models behind them
+
+| View | File (`src/`) | Reads | Pure model | Section |
+|---|---|---|---|---|
+| `MainWindow`, sidebar, toolbar | `app/{shell,sidebar,toolbar,nav}.rs` | `UiBackend::status()` once a second | `StatusModel`, `menu_text`, `NavItem`, `toolbar_title` | "The main window" |
+| `MapView` | `views/map_view.rs` | `HomeModel`: the placed map | `model::map_layout` (with `colors`, `format`) | "The service map" |
+| `TraceTableView` | `views/trace_table_view.rs` | `HomeModel`: rows, query state, toggles | `model::trace_table`, `query_bar` (with `format`) | "The trace table" |
+| `TraceView` | `views/trace_view.rs` | `TraceModel`: header, load state | `model::trace_view` (`header`, `find_status`) | "The trace view" |
+| `WaterfallView` | `views/waterfall_view.rs` | `TraceModel`: the `Waterfall` | `model::waterfall` | "The trace view" |
+| `InspectorView` | `views/inspector_view.rs` | `TraceModel`: the span's details | `model::inspector` | "The trace view" |
+| `SpanLogsView` | `views/span_logs_view.rs` | `TraceModel`: the span's logs | `model::trace_view` (`log_lines`) | "The trace view" |
+| `StatusView` | `status_view.rs` | `StatusModel` | `menu_text` | "What is in the crate" |
+
+`HomeModel` (`app/data.rs`) and `TraceModel` (`app/trace_data.rs`) are the two
+entities that read the store: one for the home screen, one for the open trace.
+
+### The data flow
+
+```
+ Engine (EngineHandle) --- impl UiBackend ---> store() / status() / clear_all() / utc_offset()
+                                                   |
+        HomeModel / TraceModel   read the Store on GPUI's background executor
+        (every 500 ms; the trace every 2 s once complete), then on the foreground:
+                                                   |
+        model::*   pure: strings, rows, positions, colour indices (no GPUI)
+                                                   |
+        views::*   lay out what the models give them (Theme tokens for colour)
+                                                   |
+                          pixels (a window, or the headless renderer)
+```
+
+Views never name the engine: tests put a `FixedBackend` over a store loaded
+from meshgen on a `ManualClock` in its place, which is what makes the screenshots
+deterministic. What the user does goes back the same way, as a call on a model
+(`set_query`, `select_service`, `select`, `toggle`), and the views redraw from
+the model's new state.
 
 ## Models
 
@@ -369,8 +463,9 @@ screens of Tasks 6 to 8 go into its content area. Decision 0024 has the choices.
   - To its right, the **toolbar** (`TOOLBAR_HEIGHT` 48) over the **content
     panel**. The toolbar's contents depend on the screen: its title is
     `toolbar_title(&Screen)`: `Map & traces`, or
-    `Map & traces › 4bf92f35…0e0e4736` on a trace. The Live indicator, the
-    time range, Pause and Clear all arrive with the home screen.
+    `Map & traces › 4bf92f35…0e0e4736` on a trace. Nothing else is in it yet:
+    the Live indicator, the time range, Pause and Clear all of design §9.2 have
+    no control (see "Screens and views at a glance").
 
 **Screens.** `Screen` is `Home` or `Trace(TraceId)`; `MainWindow::screen()` and
 `navigate(screen, cx)` read and change it, and clicking the navigation entry
@@ -873,8 +968,15 @@ Why bundle: a pixel-exact test must not depend on which fonts a machine
 happens to have. On Linux the harness builds its text system with
 `CosmicTextSystem::new_without_system_fonts`, so the bundled font is the only
 one it can see, and a reference made in one container holds on CI. The design
-says the product uses the system font (SF) on macOS; that switch belongs to the
-Milestone 3 window, not to this view. See
+(§9.3) says the product uses the system font (SF) and the system monospace on
+macOS. The Milestone 3 plan has no task for that switch, so the main window, GPUI
+Kit's components (`kit_theme::apply` sets their font family) and the status view
+all use Inter on every platform; the few monospace parts (the query input, the
+`Started` column, trace IDs, stack traces) ask for the theme's `mono_font_family`,
+which GPUI Kit sets and which the Linux harness cannot find, so the references
+show them in Inter (see "The trace table"). Switching a Mac build to SF is a
+later change (decision 0031); it would change no Linux reference, because the
+harness never sees the system fonts. See
 [`decisions/0008-ui-and-screenshot-choices.md`](../decisions/0008-ui-and-screenshot-choices.md).
 
 ## Screenshot tests
@@ -919,7 +1021,7 @@ The main window's views need GPUI Kit, the forced theme and input, which a bare
 let image = render_window_png((1440, 900), &Theme::dark(), |window, cx| {
     cx.new(|cx| MainWindow::new(backend, None, window, cx))
 });
-assert_snapshot("shell_dark", &image);   // 2880 by 1800, about 150 KB
+assert_snapshot("shell_dark", &image);   // 2880 by 1800, about 220 KB
 ```
 
 - **`render_window_png(size, &theme, build)`** is `Driver::new` and one
@@ -982,6 +1084,91 @@ and the same change must carry it. **View every new PNG before you commit it**
 (the Read tool shows images) and check it shows what you meant, legibly. The
 repo skill `update-screenshots` has the steps, and how to read a CI failure.
 
+### The references
+
+Every reference of `crates/loctel-ui/tests/snapshots/`, with the test that
+owns it, the data it is drawn from and what it shows. All of them were opened
+and checked when Milestone 3 was finished: legible text, the forced theme, and
+nothing clipped other than the table and the lists that scroll. The main
+window's are 1440 by 900 logical pixels (2880 by 1800, 220 to 740 KB each, all
+under the 1.5 MB the plan allows, so the capture stays at 2x). "Home store" is
+`common::home_store()`: the failing checkout, the successful one 5 s later and
+one health check of each service, on a store clock 70 s later, so every trace is
+complete; "empty store" has nothing in it.
+
+| Reference | Test | Data | Shows |
+|---|---|---|---|
+| `status_view_dark` | `screenshots.rs` | a fixed `StatusModel`: `otlp-http` failed, 412 spans/s, 2 rules, 31% dropped | the standalone status view (900 by 600): the red `Port problem` pill, the four numbers, the rules line, the three endpoints with the failure in words |
+| `status_view_light` | `screenshots.rs` | the same model, paused, no failed listener, one rule with an error | the same view in the light theme, with the pill `Paused` and the red rules line. It is not the dark picture re-coloured: it covers the other readings of the pill and the rules row |
+| `shell_dark`, `shell_light` | `screens.rs` | empty store, healthy engine status | the window shell and the home screen with nothing in it: the sidebar with the entry lit and the status box, the toolbar title, `Waiting for telemetry` over the map and `No traces yet` in the table (`0 traces · newest first`) |
+| `shell_glass_dark`, `shell_glass_light` | `screens.rs` | the same, with a `RecordingBackdrop`, over a flat stand-in for the desktop | the glass look: the sidebar and the toolbar clear (the stand-in colour shows through, with a hairline and a highlight ring), the panels solid. On a Mac the stand-in is Apple's glass |
+| `home_dark`, `home_light` | `screens.rs` | home store | the whole home screen: the checkout's nine nodes in four columns with `web-bff`, `orders-api` and `payments-api` and the edges between them in red, `card-gateway` dashed, the `Fit` button, the TraceQL bar, the seven traces newest first with the failed one's `Failed in payments-api · POST card-gateway +1`, the service dots and the duration bars |
+| `home_payments_selected_dark` | `interactions.rs` | home store, a click on `payments-api` | the 3 px accent ring on the node, `{ resource.service.name = "payments-api" }` in the bar (with its clear button), and the table filtered to three traces |
+| `home_errors_only_dark` | `interactions.rs` | home store, `Errors only` clicked | the toggle lit with the accent, one row (the failed checkout), `1 trace · newest first` |
+| `home_query_error_dark` | `interactions.rs` | home store, `{ status = ` typed | the focused input, `at column 12: expected a value` in red under it, and the seven rows kept (the table runs on under the panel's edge, as a scrolling table does) |
+| `home_no_match_dark` | `interactions.rs` | home store, a query for a service that does not exist | no error line, an empty table with `No traces match` and the `Clear filters` button, `0 traces · newest first` |
+| `trace_dark`, `trace_light` | `screens.rs` | home store, the failing checkout opened | the trace view: the `Traces` button, the root name, the red `Failed in` badge, `Complete`, `1.84 s · 15 spans · 5 services · 08:00:00.000`, the ruler, 15 waterfall rows in tree order with the failed-in `POST` to `card-gateway` (236 ms) selected, the inspector with its attributes and resource, and `No logs from this span` |
+| `trace_charges_selected_dark` | `screens.rs` | the same, a click on `POST /charges` | the inspector's exception card (type, message, stack trace, `Copy`) and the span's four logs with their `INF`, `WRN` and `ERR` badges |
+| `trace_errors_path_only_dark` | `screens.rs` | the same, `Errors path only` on | the toggle lit and the seven erroring spans only, the selection kept |
+| `huge_trace_middle_dark` | `screens.rs` | meshgen `HugeTrace`, 100,000 spans, scrolled to row 50,000 | `36 ms · 100,000 spans · 4 services`, rows `work item 56102` and on at the middle of the list with the Kit scrollbar there, and no blank rows |
+| `long_values_dark` | `screens.rs` | one trace with a 300-character span name, a 20 KB attribute, a 600-character token and a long exception | the name cut with an ellipsis in the header, the badge, the row and the logs title; wrapped in the inspector; every long value cut; the layout unchanged (inspector 340 wide at the panel's edge) |
+| `long_values_shown_whole_dark` | `screens.rs` | the same, the inspector scrolled and `… (show all)` pressed on the 20 KB payload | the pane scrolled and the value shown in full, the pane longer and never wider |
+
+`shell_light`, `shell_glass_light`, `home_light` and `trace_light` are the same
+picture as their dark twins with the light `Theme`: the same data and the same
+layout, so a difference other than colour between a pair is a bug (the
+status view's pair differs on purpose, see above). A new screen needs a pair of
+its own (a dark and a light one) and, for each other state that matters, a dark
+one.
+
+## Adding a screen
+
+A screen is a `Screen` variant, a view in `src/views`, the model behind it in
+`src/model` (and, when it reads the store over time, an entity in `src/app`),
+and a pair of screenshots. In this order, which keeps the tests first:
+
+1. **The model, test first.** Put every rule that is not a pixel in
+   `src/model/<name>.rs` (a plain function over the store's types: the strings,
+   the rows, the numbers; colours as indices into `Theme::service_palette`), add
+   it to `model/mod.rs`, and pin it with plain assertions in
+   `tests/model_<name>.rs`. Use `model::format` for every number and time.
+2. **The data entity, if the screen reads the store over time.** Follow
+   `HomeModel` or `TraceModel` (`src/app`): build it over `Rc<dyn UiBackend>`,
+   read on `cx.background_executor()` and apply the result on the foreground,
+   refresh on a timer that stops when the entity is dropped, notify only when
+   something changed. Test it in `tests/live.rs` with `testing::headless_app()`
+   and a store on a `ManualClock`, moving the clock to fire the timer.
+3. **The view.** A GPUI view in `src/views/<name>.rs` that holds no rules: it
+   reads the model, lays it out with GPUI Kit's components, and writes what the
+   user does back into the model (or emits an event the shell turns into a
+   `navigate`). Colours come from `cx.global::<Theme>()` and nothing else. Cut
+   long text with `format::truncate_*` and make no layout depend on content
+   width. Give it `for tests` accessors (`bounds_of`, `center_of`) in the style
+   of the existing views, so a test can click it without guessing pixels.
+4. **The shell.** Add the `Screen` variant (`app/shell.rs`), draw it in
+   `MainWindow::render`, give it a `toolbar_title` (`app/toolbar.rs`), and, when
+   it is a sidebar entry, a `NavItem` (`app/nav.rs`: `ALL`, `label`, `screen`,
+   `is_active`). A screen reached from another one (as a trace is from the
+   table) is not an entry: it stays lit under its parent through `is_active`.
+   Decide whether its views live for the window (like the home screen's) or are
+   made on arrival and dropped on leaving (like the trace's), and say which in
+   `ui.md`.
+5. **The screenshots, test first.** In `tests/screens.rs` (`interactions.rs`
+   when the state needs input, `live.rs` when time passes) render it with
+   `render_window_png` or `Driver` over a `FixedBackend`, in `Theme::dark()` and
+   `Theme::light()` at `WINDOW` (1440 by 900). Generate the references with
+   `cargo xtask screenshots --update` and **open every PNG** before committing
+   it; the `update-screenshots` skill has the steps.
+6. **The docs, in the same change.** A section in this file (the view, its
+   model, the screenshots, what is unverified on a Mac), a row in "Screens and
+   views at a glance" and in "The references", the screen map there, the file
+   map of the milestone plan if one is open, and a decision in `docs/decisions/`
+   for any choice a later agent could undo by mistake. A change that adds a
+   crate also updates `docs/architecture.md`.
+7. **Run it for real.** `cargo xtask run-shot` (the `run-and-screenshot` skill)
+   and look at `target/run-shot.png`: the headless harness and the real window
+   share the code, but only the second one has a real event loop.
+
 ## The real window
 
 `loctel` without `--headless` on Linux opens the **main window**
@@ -1035,6 +1222,11 @@ The repo skill `run-and-screenshot` covers running with meshgen data.
   and a fast flick (the test scrolls by an offset and by wheel events, the
   M3 check does it by hand), the ⌘F shortcut (the tests send `cmd-f`), and the
   look of GPUI Kit's scroll area, split handle and tooltips there.
+- The trace table while traces arrive: the table keeps its scroll position in
+  pixels and does not hold the user's place against rows arriving above it, so
+  a table scrolled down while traffic flows drifts. Nothing anchors it (the
+  tests only check the table at the top). Milestone 3, item 4 of the Mac
+  checklist asks whether that is tolerable.
 - The service map's input on a Mac: that a pinch, a two-finger drag and a
   cmd-scroll reach the map as `PinchEvent` and wheel events with the amounts
   the code assumes (a trackpad sends pixel deltas, a mouse wheel lines), and
@@ -1054,6 +1246,10 @@ The repo skill `run-and-screenshot` covers running with meshgen data.
   while it is open, the Accessory policy after it closes, a reopen from the
   Dock) is listed in [`macos.md`](macos.md) under "Unverified until the M3 Mac
   check".
+- The font on a Mac: the window draws in Inter, not in SF, and its monospace
+  parts in whatever face Kit's `mono_font_family` finds there (see "The font").
+  Whether that looks right next to a Mac's own windows is for the M3 check to
+  say.
 - Everything here was checked on Linux with software rendering. How the status
   view looks and behaves on macOS (fonts, scale, window chrome) is unverified
   until a milestone check on a real Mac.

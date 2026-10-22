@@ -38,7 +38,8 @@ All from the repository root. The sections below say what each one is for.
 | run the quality gate | `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` |
 | run loctel with no window | `cargo run -p loctel-app -- --headless --grpc-port 0 --http-port 0 --mcp-port 0 --settings /tmp/loctel-settings.toml --rules /tmp/loctel-rules.toml` |
 | send it fake traffic (meshgen) | `cargo run -p loctel-meshgen -- --scenario checkout-failure --transport http-json --endpoint http://127.0.0.1:4318` |
-| see the real window | `cargo xtask run-shot`, then open `target/run-shot.png` |
+| see the main window, with a failing checkout in it | `cargo xtask run-shot`, then open `target/run-shot.png` |
+| run the main window on a virtual display (to drive it yourself) | `xvfb-run -a -s "-screen 0 1440x900x24" cargo run -p loctel-app -- --grpc-port 0 --http-port 0 --mcp-port 0 --settings /tmp/loctel-settings.toml --rules /tmp/loctel-rules.toml` |
 | rewrite the screenshot references | `cargo xtask screenshots --update` (view every changed PNG) |
 | check the macOS code from Linux | `bash script/check-macos.sh --all-targets` |
 | run only the end-to-end tests | `cargo test -p loctel-e2e` |
@@ -119,6 +120,17 @@ their reference PNGs, which you must view before committing (the repo skills
 cargo xtask run-shot
 cargo xtask screenshots --update
 ```
+
+To drive the main window yourself (another scenario, a steady stream, a
+capture at a moment you choose), start it on a virtual display with the
+command in the table. It prints the listener lines like headless mode, so the
+ports are in them, and it runs until SIGTERM (or until the window closes). Send
+meshgen to the OTLP HTTP address, wait about 2 seconds (the window reads the
+store every 500 ms) and capture the screen with `import -window root out.png`;
+the `run-and-screenshot` skill has the whole script. The main window has two
+screens: the home screen (the service map over the trace table) and the trace
+view, which a click on a table row opens. [`docs/areas/ui.md`](docs/areas/ui.md)
+has the map of them, and how to add a screen.
 
 The macOS code (`crates/loctel-macos`, and the macOS half of `crates/loctel-app`)
 is compiled out of the Linux build, so the gate never sees it. Type-check and

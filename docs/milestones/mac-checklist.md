@@ -1,9 +1,13 @@
 Each section below is one milestone whose Mac side nobody has confirmed yet;
-a section leaves this list once you have. Do Milestone 1 first: Milestone 2
-builds on a loctel that is installed and that Claude Code is connected to
-(Milestone 1, items 1 and 5). This release is Milestone 2's, so its menu has
-two more rows than Milestone 1, item 2 lists (the rules row and **Edit discard
-rules…**, see Milestone 2, item 1): that is not a difference to report.
+a section leaves this list once you have. Do Milestone 1 first: Milestones 2
+and 3 build on a loctel that is installed (Milestone 1, item 1), and Milestone 2
+on one that Claude Code is connected to (Milestone 1, items 1 and 5). This
+release is Milestone 3's, so its menu has more rows than Milestone 1, item 2 and
+Milestone 2, item 1 list: besides the rules row and **Edit discard rules…** it
+has **Open loctel** (Milestone 3, item 1 gives the current order), and loctel
+shows in the Dock and in ⌘-Tab for as long as its window is open (with no window
+open it still has no Dock icon, as Milestone 1, item 1 says). Those are not
+differences to report.
 
 ### Milestone 1
 
@@ -136,3 +140,100 @@ item it is.
    are your service's errors and nothing else. (With the fake checkout:
    `{service_name="payments-api"} | level = "error"` gives two logs, the card
    gateway timeout and the charge failure.)
+
+### Milestone 3
+
+This is Milestone 3: the main window. The window, its screens and its colours
+are tested on Linux with software rendering; what nobody has seen is any of it
+on a Mac: the window opening from the menu bar, loctel in the Dock while it is
+open, Apple's Liquid Glass behind the sidebar and the toolbar, and the trackpad
+and the fast scrolling. Some things are not in this release, so do not report
+their absence: the toolbar shows only its title (no Live indicator, time range,
+Pause or Clear all yet), the sidebar has the one entry `Map & traces` (Logs and
+Discard rules come later), and the text is the bundled Inter font, not San
+Francisco (say if it looks out of place). Items 4 to 7 need data: from a
+checkout of this repository, the commands in Milestone 1, item 3 send it, and
+each item says which scenario to use. Report what you see, and say which item
+it is.
+
+1. **Open loctel.** Click the menu bar icon and choose **Open loctel**. It is
+   the first row after the two greyed-out header rows, followed by a line, and
+   the order is: status row, rules row, `Open loctel`, a line,
+   `Copy MCP address`, `Pause receiving`, `Edit discard rules…`, a line,
+   `Start at login`, a line, `Quit loctel`.
+   *Right:* the window appears in under half a second, and loctel now shows in
+   the Dock and in the ⌘-Tab switcher. Choose `Open loctel` again with the window
+   open: the same window comes to the front, not a second one. Close the window
+   (the red button): the Dock icon and the ⌘-Tab entry go, and loctel keeps
+   running in the menu bar (the menu still answers and the endpoints still
+   listen). Open it again, then click the Dock icon while the window is open:
+   it comes to the front; minimise the window and click the Dock icon: it comes
+   back. Open and close the window ten times in a row: one window each time and
+   no stray Dock icon. (⌘O brings the window to the front too, but only while
+   a loctel window has the keyboard: the menu shows no shortcut and does not
+   answer ⌘O, which is expected and not a difference to report.)
+2. **Glass.** Look at the sidebar (left) and the toolbar (the strip across the
+   top of the content), and drag the window over different backgrounds, such as
+   a photo desktop and a white window.
+   *Right:* the sidebar and the toolbar show what is behind them through
+   Apple's glass (blurred and refracted, changing as you move the window over
+   different backgrounds). The content areas (the map, the table, the trace
+   view) are solid, and so are the gaps between the panels. Report whether the
+   glass looks like Liquid Glass or like plain blur; plain blur is the fallback
+   loctel uses when it cannot attach the glass, and it prints one line about it
+   to stderr when started from a terminal. Also say if you see a seam where the
+   glass meets the panel's rounded corners, or if the window ever hangs while
+   you resize it quickly.
+3. **Light and dark.** With the window open, switch the appearance in System
+   Settings, Appearance.
+   *Right:* the window follows within a second, with no restart: dark panels
+   and light text on the dark look, white panels and dark text on the light
+   one, and the text stays readable on the glass in both.
+4. **A live map and table.** Send the failing checkout on repeat: `cargo run
+   -p loctel-meshgen -- --scenario checkout-failure --transport http-json
+   --endpoint http://127.0.0.1:4318 --repeat 120 --interval-ms 500` (a minute
+   of traffic). Look at the home screen.
+   *Right:* the map shows `web-bff` to `orders-api` to `payments-api` (and the
+   other services of the checkout) with `payments-api` red, and the lines leading
+   to it (the services above it, which see the error come back, are red too),
+   and a request rate on each node. In the table below, new rows appear at
+   the top about twice a second, each with `payments-api · POST card-gateway +1`
+   in red under `Failed in`, without the scroll jumping: the table does not
+   shake or flicker as rows arrive. The status box at the bottom of the sidebar
+   shows non-zero rates. Then scroll the table down a little while the traffic
+   goes on and say what the rows you were looking at do: loctel keeps the scroll
+   position and does not hold your place against rows arriving above it, so they
+   drift down, and it is worth knowing whether that is tolerable.
+5. **Filtering.** Click `payments-api` on the map.
+   *Right:* the node gets a blue ring, the query bar fills in with
+   `{ resource.service.name = "payments-api" }` and the table shows only traces
+   that went through it. Click it again (or empty space on the map): the ring
+   and the filter go. Then click in the query bar and type a broken query such
+   as `{ status = `: *right:* a red line appears under the bar saying
+   `at column 12: expected a value`, and the rows stay (the table does not go
+   empty). Fix the query (`{ status = error }`) and the line goes and the table
+   shows the traces that have an erroring span. Try the `Errors only` and
+   `Slower than 1 s` toggles too.
+6. **The trace view, and the map with a trackpad.** Click a failed checkout in
+   the table.
+   *Right:* the trace opens with a red badge `Failed in payments-api · POST
+   card-gateway +1`, the waterfall of 15 spans with the failed-in span (a
+   `POST` from `payments-api` to `card-gateway`, 236 ms in) selected, and the
+   inspector on the right showing it with `Error · timeout`. Click the row
+   `POST /charges` above it: the inspector shows an exception card with
+   `Payments.Api.Gateway.CardGatewayTimeoutException` and its stack trace, and
+   the four logs of the span appear under the waterfall. Press Esc: you are back
+   on the home screen with your query and rows as you left them. Now use the
+   trackpad on the map: pinch to zoom, two-finger drag to pan (and
+   ⌘-scroll to zoom, a drag with the pointer to pan, `Fit` in the top right to go
+   back). *Right:* the map zooms around the fingers and pans smoothly, with no
+   jump when you let go.
+7. **A big trace.** Send the 100,000-span trace: `cargo run -p loctel-meshgen
+   -- --scenario huge-trace --transport http-json --endpoint
+   http://127.0.0.1:4318`. Wait a few seconds for it to arrive, find the row
+   `POST /api/bulk` in the table (it has 100,000 spans) and open it, then scroll
+   the waterfall fast from top to bottom with the trackpad (and drag the scroll
+   bar).
+   *Right:* it stays smooth, with no blank rows while you flick and no beachball.
+   Report any stutter, how long the trace takes to open, and whether the window
+   stayed responsive.

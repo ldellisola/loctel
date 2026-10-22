@@ -98,6 +98,26 @@ a port before loctel starts (`python3 -m http.server 14318 --bind 127.0.0.1 &`,
 then `sleep 1`): the status box reads `Port problem: otlp-http (address in use)` and
 that row of the status box says `Failed` in red with the OS error.
 
+### The trace view in the real window
+
+The main window has two screens: the home screen above, and the trace view that
+a click on a row of the trace table opens (Esc goes back). To capture the trace
+view, click the first row before the capture. In a 1440 by 900 window the first
+row of the table is at x 432, y 640 (the window's logical pixels are the
+screen's), so add these two lines to `shot.sh` before the `import`:
+
+```bash
+xdotool mousemove 432 640 click 1
+sleep 2                                  # the trace screen reads the store, then draws
+```
+
+Expect the trace's header (the red `Failed in payments-api · POST card-gateway
++1` badge), the 15-row waterfall with the failed-in `POST` selected and the
+inspector on the right, and `Receiving spans…` at the top right until the trace
+has been quiet for 10 seconds (then `Complete`). Only `xdotool` clicks reach
+the real window; the screenshot tests drive their window with `Driver` instead
+(`docs/areas/ui.md`).
+
 ## Things that bite
 
 - **No display** (`DISPLAY` and `WAYLAND_DISPLAY` unset): `loctel` without
