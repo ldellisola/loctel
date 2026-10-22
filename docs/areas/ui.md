@@ -35,7 +35,7 @@ are what shows you what moved (the `upgrade-gpui` skill has the steps; decision
 | `menu_text::status_line(&StatusModel)` | the one-line status: `Receiving · 412 spans/s · 1.2k logs/s`, `Paused` or `Port problem: otlp-http (address in use)`. A failed listener wins over paused, paused over receiving. The reason is `address in use` when the OS error contains "in use", otherwise the raw error cut to 40 characters. The first failed listener is the one named |
 | `menu_text::rules_line(&StatusModel)` | the discard rules in one line, the first that applies: `Discard rules file has an error`; `1 discard rule on · 1 has an error` (for more than one, `3 discard rules on · 2 have errors`); `No discard rules on`; `1 discard rule on · 31% dropped` or `3 discard rules on · 0% dropped`. The percentage is the share the rules dropped of what arrived since launch, rounded to a whole number; a value that is not a number reads `0%` and one outside 0 to 1 is cut to it. A file error wins over a rule error, a rule error over "no rules on" |
 | `menu_text::format_rate(f64)` | `412` is `412`, `1234` is `1.2k`, `0.4` is `0`. One decimal under ten thousand, none above, never `.0` (`1k`, `10k`, `1.3M`); NaN, infinity and negatives read `0` |
-| `model` | the pure models of the main window: `format`, `colors`, `trace_table`, `query_bar`, `map_layout`, `waterfall`, `inspector`, `trace_view` (see "Models" below) |
+| `model` | the pure models of the main window: `format`, `colors`, `trace_table`, `query_bar`, `map_layout`, `waterfall`, `inspector`, `trace_view`, and (Milestone 4) `logs`, `histogram`, `rules`, `settings`, `popover` (see "Models" below) |
 | `app` | the main window's shell (see "The main window"): `MainWindow`, `Screen`, `UiBackend`, `open_main_window`, `Backdrop`/`GlassRegion`, `kit_theme`; the home screen's live data (see "Live data"): `HomeModel`, `HomeData`, `TimeRange`; and the open trace's (see "The trace view"): `TraceModel` |
 | `views` | the views of the main window's screens (see "The service map", "The trace table" and "The trace view"): `MapView`, with its `Camera`, `TraceTableView`, and `TraceView` with its `WaterfallView`, `InspectorView` and `SpanLogsView` |
 | `Theme` | the colours below. `Theme::dark()`, `Theme::light()` and `Theme::for_appearance(WindowAppearance)`. It is also a GPUI global once `kit_theme::apply` has run |
@@ -146,8 +146,26 @@ and the TraceQL parser, with no GPUI in them: a colour is an index into
 `Theme::service_palette`, and a view only lays out the strings and numbers it
 is given. The rules of the design (the formats, the failure display of §9.4,
 the colours of §9.3) are therefore tested with plain `assert_eq!`s, in
-`tests/model_format.rs`, `tests/model_table.rs`, `tests/model_map.rs` and
-`tests/model_waterfall.rs`.
+`tests/model_format.rs`, `tests/model_table.rs`, `tests/model_map.rs`,
+`tests/model_waterfall.rs`, `tests/model_trace_view.rs` and, for the Milestone 4
+screens, `tests/model_logs.rs`, `tests/model_rules.rs` and `tests/model_misc.rs`
+(the Settings form and the popover).
+
+| Model | What it is for | Entry points | Test file |
+|---|---|---|---|
+| `format` | durations, clock times, rates, error shares, cut-off text | `duration`, `clock`, `rate`, `error_pct`, `truncate_*` | `model_format.rs` |
+| `colors` | the colour a service keeps for the run | `ServiceColors::index` | `model_table.rs` |
+| `trace_table` | the trace table's rows and `Failed in` text | `rows`, `failed_in_text`, `count_line` | `model_table.rs` |
+| `query_bar` | the TraceQL bar's state and the queries a click writes | `validate`, `service_filter`, `span_name_filter` | `model_table.rs` |
+| `map_layout` | where each node and edge of the service map goes | `layout` | `model_map.rs` |
+| `waterfall` | the trace view's rows, folding, find, errors path | `Waterfall` | `model_waterfall.rs` |
+| `inspector` | the selected span's panel and what its buttons copy | `span_details`, `span_json` | `model_trace_view.rs` |
+| `trace_view` | the trace header, the find count, a span's log lines | `header`, `find_status`, `log_lines` | `model_trace_view.rs` |
+| `logs` | the Logs list's rows, an expanded line's details, the LogQL bar, `Open in Logs` | `rows`, `details`, `validate`, `span_logs_query` | `model_logs.rs` |
+| `histogram` | the log volume bars and their four time labels | `bars` | `model_logs.rs` |
+| `rules` | the rule cards and their counts, the total dropped, the editor's draft, the log suggestion | `rows`, `dropped_line`, `Draft`, `suggest_from_log` | `model_rules.rs` |
+| `settings` | the Settings form's port validation | `Form::from`, `Form::validate` | `model_misc.rs` |
+| `popover` | the menu bar popover's pill, stats, endpoints and rows | `from_status` | `model_misc.rs` |
 
 ### Formats (`model::format`)
 
@@ -443,6 +461,108 @@ strings pinned in `tests/model_trace_view.rs`:
   colours the badge) and `message` (the body on one line: a line break becomes a
   space). `logs_title(name)` is `Logs from POST /charges` and `logs_count(n)`
   `4 logs`.
+
+### Logs screen models (`model::logs`, `model::histogram`)
+
+Pinned in `tests/model_logs.rs`, over the fixed fake mesh's seven checkout logs.
+
+- `rows(&[(LogId, LogRecord)], &mut ServiceColors, utc_offset)` are the list's
+  rows in the order given (the store gives newest first). A `LogRow` holds `id`
+  (the store's `LogId`), `time` (`format::clock` of the log's time, or of its
+  observed time when it has none), `level` (a `LevelBadge`: `Err`, `Wrn`, `Inf` or
+  `Dbg`, with `label()` `ERR`, `WRN`, `INF`, `DBG`), `service` and its colour
+  index `color`, `message`, `trace_short` (the first 8 hex digits of the trace ID),
+  `trace_id` and `span_id` (the last three are `None` for a log outside a trace).
+- The badge groups the severities as the level toggles do: `ERR` is error and
+  fatal, `WRN` warn, `INF` info and unspecified, `DBG` debug and trace.
+- `message` is the body on one line: every line break (`\n`, `\r\n`, a lone `\r`)
+  becomes ` ⏎ ` and breaks at the very end are dropped. The plan says "the first
+  line only, newlines become ` ⏎ `"; the two cannot both hold, and the test
+  "a multi-line body shown on one line" settles it: the whole body, flattened, so
+  the mark has something to separate. The view cuts it to the width it has.
+- `details(&LogRecord)` is the expanded line's grid: `("body", <the whole body>)`
+  first, then `loctel_query::logql::labels` (sorted by name: the attributes with
+  Loki's label names, `service_name`, `level`, `scope_name`, `trace_id`,
+  `span_id`).
+- `validate(text)` is a `LogQueryState`: `Empty` for blanks, `Valid(Arc<LogQuery>)`
+  or `Invalid { column, message }` (the column counts from 1 in characters as
+  typed, like the TraceQL bar's).
+- `span_logs_query(service, span)` is `{service_name="payments-api"} | span_id =
+  "00f067aa0ba902b7"`, what the trace view's `Open in Logs` writes into the bar;
+  `"` and `\` in the service name are escaped.
+- `histogram::bars(&[HistogramBucket], since, until, utc_offset)` is `Bars`:
+  `bars` holds `(total, errors)` per bucket as fractions of the tallest bar's
+  total (so the error stack is on the same scale, and never above its bar; all 0
+  when no bucket has a log), and `labels` are the clock times at the start, a
+  third, two thirds and the end of the range (cut to a millisecond, not rounded).
+
+### Rules models (`model::rules`)
+
+Pinned in `tests/model_rules.rs`.
+
+- `rows(&[RuleStatus])` are the cards, in the file's order. A `RuleRow` holds
+  `id`, `enabled`, `name`, `chip` (`TRACEQL` or `LOGQL`), `query`, `counts` and
+  `error`. `counts` is the text on the right of the card, the first that applies:
+
+  | Case | `counts` | `error` |
+  |---|---|---|
+  | switched off | `Off` | `None` |
+  | on, query does not parse | `Error: <message>` (in `error_text`) | `Some(message)` |
+  | trace rule | `48,210 spans dropped` | `None` |
+  | trace rule, scope trace, whole traces dropped | `48,210 spans dropped in 602 traces` | `None` |
+  | log rule | `96,433 lines dropped` | `None` |
+
+  Counts have a thousands separator, are singular for one (`1 span dropped in 1
+  trace`, `1 line dropped`) and plural for none (`0 spans dropped`). A rule that is
+  off reads `Off` even with a bad query (as in the menu's rules line, an error only
+  counts for a rule that is on), so `error` is set exactly when `counts` shows it.
+  A span-scope rule never names traces.
+- `dropped_line(fraction)` is `31% of incoming data dropped` (a whole percent,
+  cut to 100), `Nothing dropped yet` for 0 (and for NaN, infinity and negatives,
+  as `menu_text::rules_line` reads them) and `<1% of incoming data dropped` for a
+  share that rounds to 0% but is more than nothing.
+- `Draft` is the editor's fields (`name`, `language`, `query`, `scope`,
+  `enabled`). `from_spec` and `to_spec` round-trip exactly (nothing is trimmed, so
+  saving an unchanged rule keeps its identity). `validate()` is a `DraftCheck`:
+  `name_ok` (the name has something in it) and `query` (`Ok(())`, or `Err((column,
+  message))` from the draft's language's parser, the column counted from 1; an
+  empty query is an error, as the rules engine says). `can_save()` is `name_ok`:
+  a query that does not parse can be saved, per M2.
+- `suggest_from_log(&LogRecord)` is the rule `Discard lines like this…` opens
+  unsaved: name `Lines like "<first 40 characters of the body>…"` (no `…` when the
+  body fits), LogQL, query `{service_name="<service>"} |= "<body text>"` where the
+  body text is the first 60 characters cut back to the last whitespace if the cut
+  falls inside a word (a single longer word is cut at 60), `"` and `\` escaped
+  (also in the service name), and on. The body is its first line with any text,
+  so a stack trace after the message does not end up in a filter no other line
+  matches; a body with no text gives the selector alone. Lengths count characters.
+
+### Settings form and popover (`model::settings`, `model::popover`)
+
+Pinned in `tests/model_misc.rs`.
+
+- `settings::Form` holds the text of the three port fields (`grpc`, `http`,
+  `mcp`) and `start_at_login: Option<bool>`. `Form::from(&Settings, login)` fills
+  the ports from the saved settings and the switch from what the system says
+  (`login`, `None` where there is no login item: the settings file's own
+  `start_at_login` is never read).
+- `Form::validate()` gives the `Ports` or the problems per `Field` (`Grpc`,
+  `Http`, `Mcp`, in that order). A field is digits only, 1 to 65535, blanks around
+  it ignored, else `Enter a port from 1 to 65535`. Fields that are ports and share
+  a number (as numbers: `4318` and `04318` are the same) each get `Each endpoint
+  needs its own port`.
+- `popover::from_status(&EngineStatus, login)` is the `Popover`. `pill` is the
+  first that applies, as in the status line: a failed listener `Port problem`
+  (`Tone::Error`), paused `Paused` (`Tone::Warn`), else `Receiving` (`Tone::Ok`).
+  `stats` are `(value, label)` for `spans per second` and `log lines per second`
+  (`menu_text::format_rate`: `413`, `1.2k`) and `traces held` and `log lines held`
+  (thousands separator: `1,200,000`). `endpoints` are `(name, address, ok)` for
+  `OTLP gRPC` and `OTLP HTTP` (`127.0.0.1:4317`) and `MCP` (the URL
+  `http://127.0.0.1:4319/mcp`, which the Copy button copies); a failed listener
+  shows the address it was asked for with `ok` false. `rules_line` is
+  `menu_text::rules_line`. `paused` and `start_at_login` pass through.
+
+Decision 0036 has the choices these models make where the plan is silent.
 
 ## The main window
 

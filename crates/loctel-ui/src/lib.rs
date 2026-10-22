@@ -13,8 +13,10 @@
 //!   service keeps, the trace table's rows, the query bar's state, the
 //!   place of every node of the service map, the rows of a trace's waterfall,
 //!   the text of the span inspector and of the trace header, the find count
-//!   and a span's logs. No GPUI in them, so plain tests pin every string and
-//!   every place.
+//!   and a span's logs; and (Milestone 4) the Logs screen's rows, histogram and
+//!   LogQL bar, the Discard rules screen's cards and draft, the Settings form
+//!   and the menu bar popover's content. No GPUI in them, so plain tests pin
+//!   every string and every place.
 //! - [`app`] is the main window's shell (Milestone 3): the floating sidebar, the
 //!   toolbar and the content area, the [`UiBackend`](app::UiBackend) that gives
 //!   views the store and the engine's status, the bridge from [`Theme`] to GPUI

@@ -17,14 +17,27 @@
 //! - [`inspector`]: the text of the selected span's inspector panel.
 //! - [`trace_view`]: the trace view's header, the find box's count and the
 //!   lines of the selected span's logs.
+//! - [`logs`]: the Logs screen's rows, the expanded line's details, the LogQL
+//!   bar's state and the query `Open in Logs` writes.
+//! - [`histogram`]: the Logs screen's volume bars and their four time labels.
+//! - [`rules`]: the Discard rules screen's cards and count texts, the total
+//!   dropped, the editor's draft and its validation, and the rule
+//!   `Discard lines like this…` suggests.
+//! - [`settings`]: the Settings window's form and its port validation.
+//! - [`popover`]: the menu bar popover's pill, stats, endpoints and rows.
 //!
 //! `docs/areas/ui.md` ("Models") has the formats table.
 
 pub mod colors;
 pub mod format;
+pub mod histogram;
 pub mod inspector;
+pub mod logs;
 pub mod map_layout;
+pub mod popover;
 pub mod query_bar;
+pub mod rules;
+pub mod settings;
 pub mod trace_table;
 pub mod trace_view;
 pub mod waterfall;

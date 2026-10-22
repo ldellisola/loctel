@@ -530,10 +530,17 @@ details, the theme tokens and the workflow are in
   find and the errors path, kept by span ID as the trace fills in),
   `inspector` (`SpanDetails`, `span_details`: the text of the selected span's
   panel) and `trace_view` (the trace screen's header, the find box's count and
-  the span logs' lines). It has no GPUI types, so `tests/model_format.rs`,
-  `tests/model_table.rs`, `tests/model_map.rs`, `tests/model_waterfall.rs` and
-  `tests/model_trace_view.rs` pin every string and every place with plain
-  assertions. The formats, the layout and the waterfall rules are in
+  the span logs' lines). Milestone 4 adds `logs` (`LogRow`, `rows`, `details`,
+  `validate`, `span_logs_query`: the Logs list, an expanded line and the LogQL
+  bar), `histogram` (`bars`: the log volume bars and their labels), `rules`
+  (`RuleRow`, `rows`, `dropped_line`, `Draft`, `suggest_from_log`: the Discard
+  rules cards, the editor's draft and the rule a log suggests), `settings`
+  (`Form`: the Settings window's port validation) and `popover` (`from_status`:
+  the menu bar popover's pill, stats and endpoints). It has no GPUI types, so
+  `tests/model_format.rs`, `tests/model_table.rs`, `tests/model_map.rs`,
+  `tests/model_waterfall.rs`, `tests/model_trace_view.rs`, `tests/model_logs.rs`,
+  `tests/model_rules.rs` and `tests/model_misc.rs` pin every string and every
+  place with plain assertions. The formats, the layout and the waterfall rules are in
   [`areas/ui.md`](areas/ui.md) ("Models").
 - **The `app` module** (`crates/loctel-ui/src/app/`, Milestone 3) is the main
   window's shell and its data: `MainWindow` (the floating sidebar with its
