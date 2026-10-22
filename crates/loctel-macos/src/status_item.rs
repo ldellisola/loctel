@@ -58,15 +58,16 @@ impl Global for StatusItem {}
 /// and a 2 second refresh of the two lines. It opens no window: `Open loctel`
 /// does.
 ///
-/// `settings_path` is only for the first-launch step. If the status item
-/// cannot be created there is nothing to see or click, so loctel says why on
+/// `settings_path` is for the first-launch step, and for the main window's
+/// `AppBackend` (`Open loctel`), which reads and writes the settings there. If
+/// the status item cannot be created there is nothing to see or click, so loctel says why on
 /// stderr and quits instead of running unseen.
 pub fn install(cx: &mut App, engine: EngineHandle, settings_path: PathBuf) {
     for problem in first_launch(&settings_path, || login_item::set_enabled(true)) {
         eprintln!("loctel: {problem}");
     }
 
-    register_actions(cx, &engine);
+    register_actions(cx, &engine, &settings_path);
 
     // What the menu was last built from, so the refresh can tell when the
     // menu has gone stale and leave it alone otherwise.
@@ -167,7 +168,7 @@ fn menu_items(rows: &[Row]) -> Vec<MenuItem> {
         .collect()
 }
 
-fn register_actions(cx: &mut App, engine: &EngineHandle) {
+fn register_actions(cx: &mut App, engine: &EngineHandle, settings_path: &Path) {
     // The status item's menu cannot show or answer a shortcut (`gpui-tray`
     // builds its items with no key equivalent), so these bindings only work
     // while one of loctel's own windows has the keyboard, which is the main
@@ -179,7 +180,10 @@ fn register_actions(cx: &mut App, engine: &EngineHandle) {
 
     cx.on_action({
         let engine = engine.clone();
-        move |_: &OpenWindow, cx| window::open_or_focus(cx, engine.clone())
+        let settings_path = settings_path.to_owned();
+        move |_: &OpenWindow, cx| {
+            window::open_or_focus(cx, engine.clone(), settings_path.clone());
+        }
     });
 
     cx.on_action({

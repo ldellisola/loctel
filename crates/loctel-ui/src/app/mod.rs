@@ -3,7 +3,9 @@
 //! theme. The screens go in the content area, as views (`src/views`) over the
 //! models of `src/model`.
 //!
-//! - [`UiBackend`]: the store, the engine's status and two actions.
+//! - [`UiBackend`]: the store, the engine's status, the discard rules, the
+//!   settings, pause and the login item; [`AppBackend`] is the real one over
+//!   the engine.
 //! - [`HomeModel`]: the home screen's live data (the map, the table's rows) and
 //!   the settings that shape it (range, toggles, query, pause).
 //! - [`TraceModel`]: the trace screen's live data (the trace read from the store
@@ -19,6 +21,7 @@
 //!
 //! `docs/areas/ui.md` ("The main window") has the layout and the rules.
 
+mod app_backend;
 mod backend;
 mod data;
 pub mod kit_theme;
@@ -36,6 +39,7 @@ use gpui::{
 };
 use gpui_kit::base::Root;
 
+pub use app_backend::{AppBackend, LoginItem};
 pub use backend::UiBackend;
 pub use data::{HOME_MAX_ROWS, HOME_REFRESH, HomeData, HomeModel, SLOW_TRACE, TimeRange};
 pub use nav::NavItem;

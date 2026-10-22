@@ -303,8 +303,15 @@ rules_watch.rs}`). The reasons are in decision 0018.
   and nothing is written over the gap (an editor that saves by renaming leaves
   none for a moment); the next change through the handle writes the file again.
 - **The handle.** `rules()` (the same list as `status().rules`),
-  `rules_path()`, `set_rules(specs)`, `set_rule_enabled(id, enabled)` and
-  `preview_rule(&spec)`.
+  `rules_path()`, `rules_generation()`, `set_rules(specs)`,
+  `set_rule_enabled(id, enabled)` and `preview_rule(&spec)`.
+  - `rules_generation()` counts how many times the rules were replaced since
+    launch: every `set_rules`, every `set_rule_enabled` and every reload of an
+    edited file adds one; a file that could not be used replaces nothing and adds
+    nothing. It starts at 0 and goes up after the new rules are in force. The
+    rules editor (Milestone 4) reads it when it opens a rule and compares it
+    later, so a rule edited in the file while a draft is open is noticed
+    (`UiBackend::rules_generation`).
   - `set_rules` and `set_rule_enabled` save the file first (when there is a path)
     and then apply, so that a failed write is an `Err` that changes nothing. They
     clear a file error, since the file has just been written over. Invalid

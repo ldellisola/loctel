@@ -10,14 +10,17 @@
 //!
 //! - `install(cx, engine, settings_path)` puts loctel in the menu bar. It is
 //!   all `loctel-app` calls at launch.
-//! - `open_or_focus(cx, engine)` shows the main window, and the Dock icon with
-//!   it: the menu's `Open loctel` runs it, and `loctel-app` runs it on GPUI's
-//!   reopen event (a Dock click with no window open). Closing the window takes
-//!   the Dock icon away again; the app keeps running.
+//! - `open_or_focus(cx, engine, settings_path)` shows the main window, and the
+//!   Dock icon with it, over an `AppBackend` that has the system's login item
+//!   (`login_item::SystemLoginItem`): the menu's `Open loctel` runs it, and
+//!   `loctel-app` runs it on GPUI's reopen event (a Dock click with no window
+//!   open). Closing the window takes the Dock icon away again; the app keeps
+//!   running.
 //! - `glass::attach(window)` puts Liquid Glass (`NSGlassEffectView`) behind the
 //!   main window's sidebar and toolbar; `open_or_focus` passes it to the
 //!   window, and falls back to GPUI's blurred background without it.
-//! - `login_item` turns start at login on and off (`SMAppService`).
+//! - `login_item` turns start at login on and off (`SMAppService`);
+//!   `login_item::SystemLoginItem` is it as the window's `LoginItem`.
 //!
 //! All `objc2` and `unsafe` code in the project lives in this crate. See
 //! `docs/areas/macos.md`, and read its "Unverified until the M1 Mac check",

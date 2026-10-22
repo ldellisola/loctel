@@ -23,10 +23,11 @@ the Linux gate. All `objc2` and `unsafe` code in the project lives here.
 | Item | What it is |
 |---|---|
 | `install(cx, engine, settings_path)` | `loctel-app` calls this once, inside `Application::run`. Runs the first-launch step, registers the actions, builds the status item and starts the 2 s refresh. Opens no window. If the item cannot be created it prints why and quits |
-| `window::open_or_focus(cx, engine)` (also `loctel_macos::open_or_focus`) | shows the main window: brings the open one to the front, or opens it with the Dock icon on. The menu's `Open loctel` and GPUI's reopen event call it. See "The main window's lifecycle" below |
+| `window::open_or_focus(cx, engine, settings_path)` (also `loctel_macos::open_or_focus`) | shows the main window: brings the open one to the front, or opens it with the Dock icon on, over a `loctel_ui::app::AppBackend` (the engine, `settings_path` and `login_item::SystemLoginItem`). The menu's `Open loctel` and GPUI's reopen event call it. See "The main window's lifecycle" below |
 | `glass::attach(window)` | puts Liquid Glass behind the main window's sidebar and toolbar and returns the `Backdrop` the shell reports their places to; `None` without `NSGlassEffectView`. `open_or_focus` passes it to `open_main_window`. See "Liquid Glass" below |
 | `login_item::is_enabled()` | `SMAppService.mainAppService().status() == Enabled`. Asked every time; nothing is cached |
 | `login_item::set_enabled(on)` | `registerAndReturnError` or `unregisterAndReturnError`; the system's `NSError` becomes an `anyhow` error |
+| `login_item::SystemLoginItem` | the two above as `loctel_ui::app::LoginItem`, the hook `open_or_focus` gives the window's `AppBackend` (Milestone 4). It adds no behaviour of its own |
 | `menu::rows(&MenuState)` | the rows below, as values: tested on Linux |
 | `first_launch::first_launch(path, enable)` | the once-only step, against a real settings file: tested on Linux |
 | `icon::template_icon()` | the two PNGs as one template `NSImage` |
@@ -102,8 +103,9 @@ bundle's `.icns` (see [`release.md`](release.md)). Change the glyph in both.
 `window.rs` (Milestone 3, Task 9). The app opens no window at launch (as in
 Milestone 1); the menu's `Open loctel` is the way in.
 
-- **`open_or_focus(cx, engine)`**, which the `Open loctel` action and the
-  reopen handler call:
+- **`open_or_focus(cx, engine, settings_path)`**, which the `Open loctel` action and the
+  reopen handler call (`loctel-app` hands both the settings path; the window's
+  `AppBackend` reads and writes the settings there, Milestone 4):
   - If the main window exists (`MainWindowState`, a GPUI global holding its
     handle, checked against `cx.windows()`): `window.activate_window()` and
     `cx.activate(true)`. A second `Open loctel` never opens a second window.
@@ -326,6 +328,20 @@ it sees:
 - **The fallback** (only if you can force it, for instance on a Mac without
   `NSGlassEffectView`): the window gets the blurred background, the panels are
   opaque, and one line about it is printed to stderr.
+
+## Unverified until the M4 Mac check
+
+Milestone 4 Task 2 changed what the window is built over. Nobody has run it on a
+Mac. The Milestone 4 section of the Mac checklist should confirm, once it exists:
+
+- **The window still opens and works** from `Open loctel` and from the Dock icon
+  after the change of `open_or_focus` (it takes the settings path now and builds
+  an `AppBackend` with `login_item::SystemLoginItem`). Nothing a user sees
+  changed yet; the settings and the popover that use the backend come later in
+  the milestone.
+- **`SystemLoginItem`** asks `SMAppService` every time (`is_enabled`) and
+  registers or unregisters on `set_enabled`, exactly as the two functions it wraps
+  do: the "Start at login" item of the M1 list still stands.
 
 ## Tests
 

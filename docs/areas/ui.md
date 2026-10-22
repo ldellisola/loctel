@@ -120,7 +120,7 @@ entities that read the store: one for the home screen, one for the open trace.
 ### The data flow
 
 ```
- Engine (EngineHandle) --- impl UiBackend ---> store() / status() / clear_all() / utc_offset()
+ Engine (EngineHandle) --- AppBackend: UiBackend ---> store() / status() / clear_all() / utc_offset() / rules / settings
                                                    |
         HomeModel / TraceModel   read the Store on GPUI's background executor
         (every 500 ms; the trace every 2 s once complete), then on the foreground:
@@ -509,14 +509,45 @@ loctel` does (`loctel_macos::open_or_focus`), which also puts loctel in the Dock
 for as long as the window is open. See "The real window" below and
 [`macos.md`](macos.md).
 
-**The backend.** Views never name the engine: they hold an `Rc<dyn UiBackend>`
-with `store() -> Store`, `status() -> EngineStatus`, `clear_all()` and
-`utc_offset() -> i32` (the system zone's offset in seconds for the clock times;
-tests use 0). `impl UiBackend for EngineHandle` is the real one.
-`testing::FixedBackend { store, status, utc_offset }` is the test one;
-`FixedBackend::new(store)` gives the status of a healthy engine
-(`testing::listening_status()`: three listening endpoints, nothing received, no
-rules). Store reads that take time go through `store()` clones onto the
+**The backend.** Views never name the engine: they hold an `Rc<dyn UiBackend>`.
+Its methods:
+
+| Method | What it is |
+|---|---|
+| `store() -> Store` | the store the receivers fill (a clone is the same store) |
+| `status() -> EngineStatus` | pause, endpoints, rates, what is held and the rules |
+| `clear_all()` | empties the store |
+| `utc_offset() -> i32` | the system zone's offset in seconds for the clock times; tests use 0 |
+| `rules() -> Vec<RuleStatus>` | the discard rules in file order, with errors and counts |
+| `set_rules(Vec<RuleSpec>)`, `set_rule_enabled(RuleId, bool)` | replace or switch, saved to `rules.toml`; an invalid query is allowed and shows as that rule's error |
+| `preview_rule(&RuleSpec) -> Result<Preview, QueryError>` | what the rule would have dropped of the last 5 minutes |
+| `rules_generation() -> u64` | how many times the rules were replaced (a save, a switch or a reload of an edited file); the rules editor compares it to notice a change made behind its back |
+| `settings() -> Settings` | the saved `settings.toml` (defaults when there is none) |
+| `apply_settings(Settings) -> Result<Vec<ListenerStatus>>` | saves, then rebinds the listeners (`EngineHandle::rebind`); a port that cannot be bound is saved and shows `Failed` in the statuses that come back, an `Err` is a file that could not be written (and then nothing moved) |
+| `login_item() -> Option<Rc<dyn LoginItem>>` | start at login: `Some` on macOS, `None` on Linux (no switch in Settings) |
+| `set_paused(bool)`, `mcp_url() -> Option<String>` | pause and resume; where agents reach MCP |
+
+`AppBackend::new(engine, settings_path, login)` is the real one (the old
+`impl UiBackend for EngineHandle` is gone: every caller uses it). `loctel-app`
+builds it for the Linux window with no login item, and `loctel-macos`
+(`window::open_or_focus`) with `login_item::SystemLoginItem`. Its `settings()`
+reads `settings.toml`, not the engine's own settings: a command-line port flag
+(`--http-port 0`) changes what the engine listens on, not the file.
+
+`testing::FixedBackend` is the test one; `FixedBackend::new(store)` gives the
+status of a healthy engine (`testing::listening_status()`: three listening
+endpoints, nothing received, no rules). Everything the window can change is
+kept in memory: the rules in a `RuleSet` (so IDs, query errors and
+`rules_generation` behave as in the engine, and `preview_rule` runs
+`loctel_rules::preview` over its store), the settings (`apply_settings` makes up
+three listening listeners at the ports it is given and binds nothing), the pause,
+and `pub login` for a test that wants the Start at login switch. `status()` is
+its `status` field with the rules, the pause and the listeners of those calls
+laid over it. `tests/app_backend.rs` pins both (`AppBackend` over a real engine
+on port 0: saving settings and rebinding, a busy port, a file that cannot be
+written, the rules calls, pause and the login item; `FixedBackend` in memory),
+and `crates/loctel-engine/tests/rebind.rs` pins `rebind` and `rules_generation`
+underneath. Store reads that take time go through `store()` clones onto the
 background executor, never on the frame.
 
 **Opening it.** `open_main_window(backend, cx, attach_backdrop)` calls
@@ -1109,7 +1140,8 @@ assert_snapshot("shell_dark", &image);   // 2880 by 1800, about 220 KB
   in entities and are tested by moving the clock (`tests/live.rs`); it returns
   the `HeadlessAppContext` itself.
 - **`FixedBackend`** (a `UiBackend` over a store you load, with
-  `listening_status()` and UTC), and **`RecordingBackdrop`** (every
+  `listening_status()` and UTC, and the rules, settings, pause and login item
+  in memory), and **`RecordingBackdrop`** (every
   `set_regions` call, `calls()`).
 - The clock is the test dispatcher's, not the store's: a `ManualClock` store
   moves only when the test advances that clock too.

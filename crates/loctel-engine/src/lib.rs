@@ -5,10 +5,11 @@
 //! server on a runtime of its own, and returns an [`EngineHandle`]: the one
 //! object the menu bar, the window and the headless binary hold. Through it
 //! they read the store, ask for a status snapshot, pause and resume receiving,
-//! find the MCP address, read and change the discard rules and shut everything
-//! down. [`Settings`] is the `settings.toml` the ports and the disk cap come
-//! from; `rules.toml` holds the discard rules, which every batch the receivers
-//! accept goes through on its way to the store (design §7).
+//! find the MCP address, move the listeners to other ports
+//! ([`EngineHandle::rebind`]), read and change the discard rules and shut
+//! everything down. [`Settings`] is the `settings.toml` the ports and the disk
+//! cap come from; `rules.toml` holds the discard rules, which every batch the
+//! receivers accept goes through on its way to the store (design §7).
 //!
 //! The engine has no UI or graphics dependency, and its `start` needs no async
 //! `main`: it owns its threads. See `docs/architecture.md` ("Engine" and
@@ -19,14 +20,15 @@ mod rules_watch;
 mod settings;
 mod sink;
 
+use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::time::Duration;
 
 use anyhow::{Context as _, bail};
-use loctel_ingest::{DEFAULT_MAX_MESSAGE_BYTES, IngestConfig, IngestServers};
+use loctel_ingest::{DEFAULT_MAX_MESSAGE_BYTES, ReceiverShutdown, Sink};
 use loctel_mcp::{
     ListenerDto, McpShutdown, RuleDto, RuleLanguageDto, RuleScopeDto, StatusDto, StatusSource,
 };
@@ -49,6 +51,34 @@ use sink::EngineSink;
 /// How long [`EngineHandle::shutdown`] waits for the engine's threads to
 /// finish (from a thread that may block).
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+
+/// How long [`EngineHandle::rebind`] keeps trying to bind a port that another
+/// listener of the engine has only just been told to leave. A server lets go of
+/// its socket a moment after it is stopped, not at the instant.
+const RELEASE_WAIT: Duration = Duration::from_secs(1);
+
+/// How often [`EngineHandle::rebind`] tries again in that time.
+const RELEASE_POLL: Duration = Duration::from_millis(20);
+
+/// The three ports the engine listens on: what [`EngineHandle::rebind`] moves
+/// the listeners to. Port 0 asks the system for a free one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Ports {
+    pub otlp_grpc: u16,
+    pub otlp_http: u16,
+    pub mcp: u16,
+}
+
+impl From<&Settings> for Ports {
+    /// The ports `settings` names.
+    fn from(settings: &Settings) -> Ports {
+        Ports {
+            otlp_grpc: settings.otlp_grpc_port,
+            otlp_http: settings.otlp_http_port,
+            mcp: settings.mcp_port,
+        }
+    }
+}
 
 /// What [`Engine::start`] needs.
 #[derive(Clone, Debug)]
@@ -154,7 +184,7 @@ impl Engine {
         // error here: the engine runs without rules.
         let rules = Arc::new(Rules::open(rules_path, Arc::clone(&clock)));
 
-        let sink = Arc::new(EngineSink {
+        let sink: Arc<dyn Sink> = Arc::new(EngineSink {
             store: store.clone(),
             paused: Arc::clone(&paused),
             clock: Arc::clone(&clock),
@@ -164,12 +194,13 @@ impl Engine {
             accepted: Arc::clone(&accepted),
             apply: parking_lot::Mutex::new(()),
         });
-        let ingest_config = IngestConfig {
-            grpc_addr: SocketAddr::new(bind_ip, settings.otlp_grpc_port),
-            http_addr: SocketAddr::new(bind_ip, settings.otlp_http_port),
+        let bind = Arc::new(Bind {
+            ip: bind_ip,
+            sink,
             max_message_bytes: DEFAULT_MAX_MESSAGE_BYTES,
-        };
-        let ingest = runtime.block_on(loctel_ingest::start(ingest_config, sink));
+        });
+        let (grpc, grpc_stop) = runtime.block_on(bind.grpc(settings.otlp_grpc_port));
+        let (http, http_stop) = runtime.block_on(bind.http(settings.otlp_http_port));
 
         // The MCP server reads the engine's status, so it is started with the
         // state it reads. The state learns the MCP listener's own status once
@@ -183,17 +214,18 @@ impl Engine {
             log_rate,
             rules: Arc::clone(&rules),
             accepted,
-            otlp: [ingest.grpc.clone(), ingest.http.clone()],
-            mcp: OnceLock::new(),
+            listeners: parking_lot::Mutex::new(Listeners {
+                grpc,
+                http,
+                mcp: None,
+            }),
         });
-        let mcp_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), settings.mcp_port);
-        let status_source: Arc<dyn StatusSource> = state.clone();
-        let (mcp, mcp_shutdown) =
-            runtime.block_on(loctel_mcp::serve(mcp_addr, store, status_source));
-        state
-            .mcp
-            .set(mcp)
-            .expect("the MCP status is set once, here");
+        let (mcp, mcp_stop) = runtime.block_on(bind.mcp(
+            settings.mcp_port,
+            store,
+            state.clone() as Arc<dyn StatusSource>,
+        ));
+        state.listeners.lock().mcp = Some(mcp);
 
         // Edits to the rules file are picked up for as long as the engine runs.
         if rules.path().is_some() {
@@ -203,10 +235,12 @@ impl Engine {
         Ok(EngineHandle {
             shared: Arc::new(Shared {
                 state,
+                bind,
                 running: Mutex::new(Some(Running {
                     runtime,
-                    ingest,
-                    mcp: mcp_shutdown,
+                    grpc: Some(grpc_stop),
+                    http: Some(http_stop),
+                    mcp: Some(mcp_stop),
                 })),
             }),
         })
@@ -223,15 +257,72 @@ pub struct EngineHandle {
 
 struct Shared {
     state: Arc<State>,
-    /// `None` once stopped.
+    /// What starting a listener again needs.
+    bind: Arc<Bind>,
+    /// `None` once stopped. Held for the whole of a rebind, so that two rebinds
+    /// (or a rebind and the shutdown) never interleave.
     running: Mutex<Option<Running>>,
 }
 
-/// What stopping the engine has to take down.
+/// What stopping the engine has to take down: the runtime, and a handle on
+/// each listener's server. A handle is `None` only while a rebind is moving that
+/// listener.
 struct Running {
     runtime: Runtime,
-    ingest: IngestServers,
-    mcp: McpShutdown,
+    grpc: Option<ReceiverShutdown>,
+    http: Option<ReceiverShutdown>,
+    mcp: Option<McpShutdown>,
+}
+
+/// What it takes to start a listener, at launch and again when its port moves.
+struct Bind {
+    /// Where the OTLP receivers bind. MCP is loopback whatever this says.
+    ip: IpAddr,
+    sink: Arc<dyn Sink>,
+    max_message_bytes: usize,
+}
+
+impl Bind {
+    async fn grpc(&self, port: u16) -> (ListenerStatus, ReceiverShutdown) {
+        let addr = SocketAddr::new(self.ip, port);
+        loctel_ingest::start_grpc(addr, Arc::clone(&self.sink), self.max_message_bytes).await
+    }
+
+    async fn http(&self, port: u16) -> (ListenerStatus, ReceiverShutdown) {
+        let addr = SocketAddr::new(self.ip, port);
+        loctel_ingest::start_http(addr, Arc::clone(&self.sink), self.max_message_bytes).await
+    }
+
+    async fn mcp(
+        &self,
+        port: u16,
+        store: Store,
+        status: Arc<dyn StatusSource>,
+    ) -> (ListenerStatus, McpShutdown) {
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+        loctel_mcp::serve(addr, store, status).await
+    }
+}
+
+/// Where each listener is, or why it is not. MCP is `None` only in the instant
+/// between the engine's start and the MCP server's bind (the server reads the
+/// status, so the status exists first).
+#[derive(Clone)]
+struct Listeners {
+    grpc: ListenerStatus,
+    http: ListenerStatus,
+    mcp: Option<ListenerStatus>,
+}
+
+impl Listeners {
+    /// The statuses in the usual order: `otlp-grpc`, `otlp-http`, `mcp`.
+    fn all(&self) -> Vec<ListenerStatus> {
+        [&self.grpc, &self.http]
+            .into_iter()
+            .chain(&self.mcp)
+            .cloned()
+            .collect()
+    }
 }
 
 /// What the engine knows about itself: the one place a status is read from,
@@ -247,10 +338,8 @@ struct State {
     rules: Arc<Rules>,
     /// Spans and logs the sink accepted (after the rules) since launch.
     accepted: Arc<AtomicU64>,
-    /// `otlp-grpc` and `otlp-http`.
-    otlp: [ListenerStatus; 2],
-    /// Set once, right after the MCP server has bound.
-    mcp: OnceLock<ListenerStatus>,
+    /// The listeners, which [`EngineHandle::rebind`] moves.
+    listeners: parking_lot::Mutex<Listeners>,
 }
 
 impl State {
@@ -259,7 +348,7 @@ impl State {
         let dropped = self.rules.set().totals();
         EngineStatus {
             paused: self.paused.load(Ordering::Acquire),
-            listeners: self.otlp.iter().chain(self.mcp.get()).cloned().collect(),
+            listeners: self.listeners.lock().all(),
             spans_per_sec: self.span_rate.per_sec(now),
             logs_per_sec: self.log_rate.per_sec(now),
             stats: self.store.stats(),
@@ -276,7 +365,7 @@ impl State {
 
     /// Where the MCP server listens, if it could bind.
     fn mcp_address(&self) -> Option<SocketAddr> {
-        match &self.mcp.get()?.state {
+        match &self.listeners.lock().mcp.as_ref()?.state {
             ListenerState::Listening(address) => Some(*address),
             ListenerState::Failed(_) => None,
         }
@@ -390,6 +479,17 @@ impl EngineHandle {
         self.shared.state.rules.path()
     }
 
+    /// How many times the rules have been replaced since launch: every
+    /// [`set_rules`](Self::set_rules), every
+    /// [`set_rule_enabled`](Self::set_rule_enabled) and every reload of an edited
+    /// `rules.toml` adds one (a file that cannot be used replaces nothing, so
+    /// adds nothing). Starts at 0. An editor reads it when it opens a rule
+    /// and compares it later: a different number means the rules changed behind
+    /// its back.
+    pub fn rules_generation(&self) -> u64 {
+        self.shared.state.rules.generation()
+    }
+
     /// Makes `specs` the rules, in that order, and saves `rules.toml` when
     /// there is a path. A rule that is unchanged (same name, language, query and
     /// scope) keeps its [`RuleId`] and its counters. A query that does not
@@ -434,6 +534,113 @@ impl EngineHandle {
             .map(|address| format!("http://127.0.0.1:{}/mcp", address.port()))
     }
 
+    /// Moves the listeners to `ports`. A listener whose port is the one it was
+    /// asked for already (the port it was started or last moved with; 0 counts
+    /// as a port) is left alone, and keeps serving. Each of the others is
+    /// stopped and then bound again at its new port. A bind that fails (the port
+    /// is in use, say) leaves that listener as [`ListenerState::Failed`], with
+    /// the system's reason, and never touches the other two, which are
+    /// not stopped to make room. A failed listener is bound again only when
+    /// asked to move to a different port.
+    ///
+    /// Returns the statuses afterwards, in the usual order (`otlp-grpc`,
+    /// `otlp-http`, `mcp`); [`status`](Self::status) says the same from then on.
+    /// It blocks until the binds are done, which is quick (a port that another
+    /// of these listeners has just left, such as in a swap, is retried for up to
+    /// a second while its server lets go of it). Once the engine has been shut
+    /// down it changes nothing and returns the statuses as they were.
+    ///
+    /// Callable from any thread, including one that is running a tokio
+    /// runtime.
+    pub fn rebind(&self, ports: Ports) -> Vec<ListenerStatus> {
+        let shared = &self.shared;
+        let mut guard = shared
+            .running
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let before = shared.state.listeners.lock().clone();
+        let Some(running) = guard.as_mut() else {
+            return before.all();
+        };
+
+        let wanted = [ports.otlp_grpc, ports.otlp_http, ports.mcp];
+        let moving = [
+            wanted[0] != before.grpc.requested.port(),
+            wanted[1] != before.http.requested.port(),
+            before
+                .mcp
+                .as_ref()
+                .is_none_or(|mcp| wanted[2] != mcp.requested.port()),
+        ];
+        if !moving.contains(&true) {
+            return before.all();
+        }
+
+        // The ports the moving listeners hold now: free again once their
+        // servers notice they were stopped, which a bind of one of them has to
+        // allow for.
+        let released: Vec<u16> = [Some(&before.grpc), Some(&before.http), before.mcp.as_ref()]
+            .into_iter()
+            .zip(moving)
+            .filter(|(_, moving)| *moving)
+            .filter_map(|(status, _)| match &status?.state {
+                ListenerState::Listening(address) => Some(address.port()),
+                ListenerState::Failed(_) => None,
+            })
+            .collect();
+
+        // Stop first, bind after: nothing is left listening on a port the
+        // user has moved away from.
+        if moving[0]
+            && let Some(stop) = running.grpc.take()
+        {
+            stop.shutdown();
+        }
+        if moving[1]
+            && let Some(stop) = running.http.take()
+        {
+            stop.shutdown();
+        }
+        if moving[2]
+            && let Some(stop) = running.mcp.take()
+        {
+            stop.shutdown();
+        }
+
+        // The binds are async, and this may be called from inside a runtime
+        // (where `block_on` would panic): they run on the engine's runtime and
+        // the answer comes back over a channel.
+        let (done, answer) = mpsc::channel();
+        let task = Rebind {
+            bind: Arc::clone(&shared.bind),
+            store: shared.state.store.clone(),
+            status: Arc::clone(&shared.state) as Arc<dyn StatusSource>,
+            wanted,
+            moving,
+            released,
+        };
+        running.runtime.spawn(task.run(done));
+        let Ok(bound) = answer.recv() else {
+            // The runtime dropped the task: the engine is going down.
+            return before.all();
+        };
+
+        let mut listeners = shared.state.listeners.lock();
+        if let Some((status, stop)) = bound.grpc {
+            listeners.grpc = status;
+            running.grpc = Some(stop);
+        }
+        if let Some((status, stop)) = bound.http {
+            listeners.http = status;
+            running.http = Some(stop);
+        }
+        if let Some((status, stop)) = bound.mcp {
+            listeners.mcp = Some(status);
+            running.mcp = Some(stop);
+        }
+        listeners.all()
+    }
+
     /// Stops the receivers and the engine's threads. Safe to call again, from
     /// any clone, and from inside a tokio runtime (where it does not wait for
     /// the threads, since blocking there would panic). Requests in flight
@@ -454,18 +661,97 @@ impl Shared {
             .take();
         let Some(Running {
             runtime,
-            ingest,
+            grpc,
+            http,
             mcp,
         }) = running
         else {
             return;
         };
-        ingest.shutdown();
-        mcp.shutdown();
+        if let Some(stop) = grpc {
+            stop.shutdown();
+        }
+        if let Some(stop) = http {
+            stop.shutdown();
+        }
+        if let Some(stop) = mcp {
+            stop.shutdown();
+        }
         if wait {
             runtime.shutdown_timeout(SHUTDOWN_GRACE);
         } else {
             runtime.shutdown_background();
+        }
+    }
+}
+
+/// The binds of one [`EngineHandle::rebind`], run on the engine's runtime.
+struct Rebind {
+    bind: Arc<Bind>,
+    store: Store,
+    status: Arc<dyn StatusSource>,
+    /// The ports asked for, in the order gRPC, HTTP, MCP.
+    wanted: [u16; 3],
+    /// Which of them move.
+    moving: [bool; 3],
+    /// The ports the moving listeners were holding.
+    released: Vec<u16>,
+}
+
+/// What a rebind started: `Some` for each listener that moved.
+struct Rebound {
+    grpc: Option<(ListenerStatus, ReceiverShutdown)>,
+    http: Option<(ListenerStatus, ReceiverShutdown)>,
+    mcp: Option<(ListenerStatus, McpShutdown)>,
+}
+
+impl Rebind {
+    async fn run(self, done: mpsc::Sender<Rebound>) {
+        // The receiver is gone only if the caller was; nobody to tell then.
+        let _ = done.send(self.start().await);
+    }
+
+    async fn start(&self) -> Rebound {
+        let [grpc, http, mcp] = self.wanted;
+        Rebound {
+            grpc: if self.moving[0] {
+                Some(self.patient(grpc, || self.bind.grpc(grpc)).await)
+            } else {
+                None
+            },
+            http: if self.moving[1] {
+                Some(self.patient(http, || self.bind.http(http)).await)
+            } else {
+                None
+            },
+            mcp: if self.moving[2] {
+                let attempt = || {
+                    self.bind
+                        .mcp(mcp, self.store.clone(), Arc::clone(&self.status))
+                };
+                Some(self.patient(mcp, attempt).await)
+            } else {
+                None
+            },
+        }
+    }
+
+    /// Binds `port` with `attempt`. If that port is one a listener has just
+    /// been stopped on, a failure is tried again for up to [`RELEASE_WAIT`],
+    /// since the old server may not have let go yet; any other failure stands.
+    async fn patient<T, F>(&self, port: u16, attempt: impl Fn() -> F) -> (ListenerStatus, T)
+    where
+        F: Future<Output = (ListenerStatus, T)>,
+    {
+        let patient = port != 0 && self.released.contains(&port);
+        let deadline = tokio::time::Instant::now() + RELEASE_WAIT;
+        loop {
+            let (status, stop) = attempt().await;
+            let failed = matches!(status.state, ListenerState::Failed(_));
+            if !(failed && patient) || tokio::time::Instant::now() >= deadline {
+                return (status, stop);
+            }
+            tokio::time::sleep(RELEASE_POLL).await;
         }
     }
 }

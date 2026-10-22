@@ -100,9 +100,10 @@ and type-checked but has never run:
 ```
 
 Readers (MCP, UI) read the store directly; the engine is not in the read path.
-The UI gets the `EngineHandle` (as a `UiBackend`: the store, the status and a
-few actions) and the views read the store through it; the UI's own data flow is
-under "UI" below. The MCP server gets
+The UI gets the `EngineHandle` (wrapped in an `AppBackend`, as a `UiBackend`:
+the store, the status, the discard rules, the settings, pause and the login
+item) and the views read the store through it; the UI's own data flow is under
+"UI" below. The MCP server gets
 the store and a `StatusSource` that the engine implements, so `get_status` and
 `EngineHandle::status()` read the same state.
 
@@ -319,7 +320,9 @@ other crates rely on:
   transports, requests up to 64 MiB (the libraries default to 4 MiB and 2 MB).
   Metrics are accepted and dropped.
 - **Lifetime.** The servers run on the runtime that called `start`. Dropping
-  `IngestServers`, or `shutdown(self)`, stops them gracefully.
+  `IngestServers`, or `shutdown(self)`, stops them gracefully. `start_grpc` and
+  `start_http` start one receiver each, with a handle (`ReceiverShutdown`) that
+  stops only it: how the engine moves one port at a time.
 
 ## MCP
 
@@ -387,14 +390,27 @@ and, for the rules,
 - **Ports.** A port that cannot be bound is a `ListenerState::Failed` in
   `EngineStatus::listeners` and does not stop the other endpoints (design §4).
   Port 0 picks a free one, and the listener status carries the real address.
+- **Rebinding** (Milestone 4). `EngineHandle::rebind(Ports { otlp_grpc,
+  otlp_http, mcp })` moves the listeners to new ports while the engine runs. A
+  listener whose port is the one it was asked for already is left alone; each of
+  the others is stopped and then bound at its new port, on the engine's runtime
+  (so it works from any thread, even inside a runtime), and the call returns the
+  three statuses in the usual order. A bind that fails leaves that listener
+  `Failed` with the system's reason and never touches the other two. The engine
+  holds one stop handle per listener (`loctel_ingest::start_grpc` and
+  `start_http`, and the MCP server's own), and the listener statuses live behind
+  a lock that `status()` and the MCP `get_status` both read. A port that another
+  of the three has just been told to leave (a swap) is retried for up to a second,
+  because a stopped server lets go of its socket a moment later. The reasons are
+  in [`decisions/0035-live-port-rebinding.md`](decisions/0035-live-port-rebinding.md).
 - **The handle.** `EngineHandle` is `Clone`, and every clone is the same
   engine: `store()`, `status()`, `set_paused`, `is_paused`, `mcp_url()`
   (`http://127.0.0.1:{port}/mcp` with the port really bound, `None` when the MCP
-  port could not be bound), the rules calls (`rules()`, `rules_path()`,
-  `set_rules`, `set_rule_enabled`, `preview_rule`; see "Discard rules" below) and
-  `shutdown()`. `shutdown` is idempotent and safe
-  from any thread, including inside a runtime (where it does not wait). The
-  engine also stops when the last handle is dropped.
+  port could not be bound), `rebind(Ports)`, the rules calls (`rules()`,
+  `rules_path()`, `rules_generation()`, `set_rules`, `set_rule_enabled`,
+  `preview_rule`; see "Discard rules" below) and `shutdown()`. `shutdown` is
+  idempotent and safe from any thread, including inside a runtime (where it
+  does not wait). The engine also stops when the last handle is dropped.
 - **Pause.** `EngineSink` is the receivers' `Sink`. While paused it drops
   every batch before it reaches the rules, the store or the rate meters, and the
   receivers keep answering success, so exporters neither buffer nor retry
@@ -524,8 +540,10 @@ details, the theme tokens and the workflow are in
   status box, the toolbar (with `HomeControls`: Live, the time range, Pause and
   Clear all over the `HomeModel`) and the content panel, which show a `Screen`:
   `Home` or `Trace(id)`), the `UiBackend` trait that gives views the `Store` and the
-  `EngineStatus` (`EngineHandle` implements it; tests use
-  `testing::FixedBackend`), `open_main_window`, the `Backdrop` and
+  `EngineStatus`, the discard rules, the settings, pause and the login item
+  (`AppBackend`, over an `EngineHandle`, the settings path and an optional
+  `LoginItem`, implements it; tests use `testing::FixedBackend`, which keeps
+  all of it in memory), `open_main_window`, the `Backdrop` and
   `GlassRegion` types through which a platform learns where the glass parts
   are, and `kit_theme::apply`, the one place loctel's `Theme` is mapped onto
   GPUI Kit's. Two entities read the store over time, both on GPUI's background
@@ -553,7 +571,7 @@ details, the theme tokens and the workflow are in
   actions coming back the same way:
 
   ```
-  EngineHandle --(impl UiBackend)--> store() / status() / utc_offset()
+  EngineHandle --(AppBackend: UiBackend)--> store() / status() / rules / settings / utc_offset()
         |
   HomeModel, TraceModel   read the Store on the background executor, then on
         |                 the foreground build the rows, the layout, the waterfall
