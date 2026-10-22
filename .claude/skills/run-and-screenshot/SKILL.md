@@ -1,6 +1,6 @@
 ---
 name: run-and-screenshot
-description: "Run loctel on Linux and look at it: headless with meshgen data, or the real status window under Xvfb with a PNG you can open. Use whenever you need to see the app work, check that a UI change shows up in the real window (not only in the screenshot tests), or send fake traces and logs to a running loctel."
+description: "Run loctel on Linux and look at it: headless with meshgen data, or the real main window under Xvfb with a PNG you can open. Use whenever you need to see the app work, check that a UI change shows up in the real window (not only in the screenshot tests), or send fake traces and logs to a running loctel."
 ---
 
 # Run loctel and take a screenshot
@@ -51,20 +51,26 @@ is the `mcp` line; `docs/areas/mcp.md` has the tools.
 cargo xtask run-shot
 ```
 
-It builds `loctel`, runs it under `xvfb-run` (a 1280 by 800 virtual screen) with
-every port 0 and a scratch settings file, waits for the window, captures the
-screen and writes `target/run-shot.png`. **Open the PNG with the Read tool.**
-The status window sits in the black screen at about (192, 100), 900 by 600:
-a green dot and `Receiving · 0 spans/s · 0 logs/s`, four zeroed cards and the
-three endpoints, each `Listening`. If the window is missing or black, the
-script nudges it once and then fails with a message; do not paper over that.
+It builds `loctel` and `meshgen`, runs `loctel` under `xvfb-run` (a 1440 by 900
+virtual screen, the window's default size, so the window fills it) with every
+port 0 and a scratch settings file, waits for the window and two seconds for
+its first frame, sends it the failing checkout trace (`meshgen --scenario
+checkout-failure`, to the OTLP HTTP address from the listener lines), waits two
+more seconds for the window to read it, captures the screen and writes
+`target/run-shot.png`. **Open the PNG with the Read tool.** Expect the main
+window (light theme: Xvfb reports the light appearance): the sidebar with the
+status box at the bottom, `Map & traces` in the toolbar, the service map with
+the failing services outlined in red above the trace table with one failed
+`POST /api/checkout` (1.84 s, 15 spans). If the window is missing or black,
+the script nudges it once and then fails with a message; do not paper over that.
 
-## 3. The real window with meshgen data (or a taken port)
+## 3. The real window with other data (or a taken port)
 
-`run-shot` shows an empty loctel. To see data, ports must be fixed so meshgen
-can find them, and the shot must be taken after the data arrived. The window
-refreshes once a second and the rates average the last five seconds, so wait
-2 seconds after sending.
+`run-shot` sends one scenario, `checkout-failure`, once. For another scenario,
+a steady stream or a taken port, fix the ports so meshgen can find them, and
+take the shot after the data arrived. The window reads the store every 500 ms
+(the status box once a second, and the rates average the last five seconds), so
+wait 2 seconds after sending.
 
 ```bash
 cargo build -p loctel-app -p loctel-meshgen
@@ -82,14 +88,41 @@ sleep 2                                  # one refresh with the new numbers
 import -window root "$1"
 kill $app
 SCRIPT
-xvfb-run -a -s "-screen 0 1280x800x24" bash /tmp/shot.sh /tmp/mesh-shot.png
+xvfb-run -a -s "-screen 0 1440x900x24" bash /tmp/shot.sh /tmp/mesh-shot.png
 ```
 
-Open `/tmp/mesh-shot.png` with the Read tool. After the `checkout-failure`
-scenario expect 3 spans/s, 1 trace and 7 logs held. To see a port problem, hold
+Open `/tmp/mesh-shot.png` with the Read tool (the screen is the window's default
+size, 1440 by 900, so a smaller one would cut the window). After the `checkout-failure` scenario expect 3 spans/s in the
+status box and one failed trace in the table. To see a port problem, hold
 a port before loctel starts (`python3 -m http.server 14318 --bind 127.0.0.1 &`,
-then `sleep 1`): the pill reads `Port problem: otlp-http (address in use)` and
-that row says `Failed` in red with the OS error.
+then `sleep 1`): the status box reads `Port problem: otlp-http (address in use)` and
+that row of the status box says `Failed` in red with the OS error.
+
+### The trace view in the real window
+
+The main window has two screens: the home screen above, and the trace view that
+a click on a row of the trace table opens (Esc goes back). To capture the trace
+view, click the first row before the capture. In a 1440 by 900 window the first
+row of the table is at x 432, y 640 (the window's logical pixels are the
+screen's), so add these two lines to `shot.sh` before the `import`:
+
+```bash
+xdotool mousemove 432 640 click 1
+sleep 2                                  # the trace screen reads the store, then draws
+```
+
+External nodes such as `card-gateway` (and the red edge to it) appear on the
+map only once their trace is complete, 10 seconds after its last span
+(`docs/areas/store.md`, "Service map"). A shot taken 2 seconds after sending
+has no `card-gateway` node; the screenshot tests, whose `ManualClock` is past
+the quiet period, do. That difference is expected.
+
+Expect the trace's header (the red `Failed in payments-api · POST card-gateway
++1` badge), the 15-row waterfall with the failed-in `POST` selected and the
+inspector on the right, and `Receiving spans…` at the top right until the trace
+has been quiet for 10 seconds (then `Complete`). Only `xdotool` clicks reach
+the real window; the screenshot tests drive their window with `Driver` instead
+(`docs/areas/ui.md`).
 
 ## Things that bite
 
@@ -98,11 +131,13 @@ that row says `Failed` in red with the OS error.
 - `libEGL warning: DRI3 ...` on stderr under Xvfb is noise: software rendering
   works. If rendering fails with "No usable headless GPU adapter found", Vulkan
   or EGL is missing: run `script/setup-linux.sh`.
-- **Closing the window quits loctel.** `kill` (SIGTERM) also ends it, abruptly;
-  only `--headless` shuts the engine down on a signal.
+- **Closing the window quits loctel**, and so do SIGINT and SIGTERM: either way
+  the engine is shut down and the exit status is 0 (as with `--headless`).
 - The first frame takes about two seconds, so never capture sooner than that
   after the window appears.
-- This is the Linux development window, not the product. The macOS menu bar
-  item is unverified until a milestone check on a real Mac.
+- This is the Linux development window, not the product. On a Mac the app is a
+  menu bar item whose `Open loctel` opens the same window (and shows loctel in
+  the Dock while it is open): all of that is unverified until a milestone check
+  on a real Mac.
 - To compare pixels in a test instead of looking, write a screenshot test: see
   `docs/areas/ui.md` and the `update-screenshots` skill.

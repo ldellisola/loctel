@@ -28,8 +28,9 @@ launch:
 xattr -dr com.apple.quarantine /Applications/loctel.app
 ```
 
-loctel needs macOS 26 on Apple Silicon. It has no Dock icon: look for its icon
-in the menu bar.
+loctel needs macOS 26 on Apple Silicon. Look for its icon in the menu bar: it
+has a Dock icon only while its window is open (menu bar icon, then **Open
+loctel**).
 ";
 
 /// The notes of a release.

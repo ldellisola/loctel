@@ -139,9 +139,10 @@ impl StatusView {
     }
 }
 
-/// Opens the status window on `cx` (the Linux development window): the dark
-/// theme, refreshed every second from `engine`. Fails when the platform has
-/// no display to open a window on.
+/// Opens the status window on `cx`: the dark theme, refreshed every second
+/// from `engine`. The app no longer opens it (it opens the main window, see
+/// [`crate::app::open_main_window`]); it is a standalone view. Fails when the
+/// platform has no display to open a window on.
 pub fn open_status_window(
     engine: EngineHandle,
     cx: &mut App,

@@ -5,7 +5,7 @@
 //! each click the crate rebuilds the menu, which is how "Pause receiving"
 //! turns into "Resume receiving" at once. What the menu says is
 //! [`crate::menu::rows`]; this file maps it to GPUI items and runs the
-//! commands.
+//! commands (`Open loctel` is [`crate::window::open_or_focus`]).
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -26,10 +26,12 @@ use crate::first_launch::first_launch;
 use crate::icon;
 use crate::login_item;
 use crate::menu::{Command, MenuState, Row, rows};
+use crate::window;
 
 actions!(
     loctel_macos,
     [
+        OpenWindow,
         CopyMcpAddress,
         TogglePause,
         EditRules,
@@ -51,9 +53,10 @@ struct StatusItem {
 impl Global for StatusItem {}
 
 /// Puts loctel in the menu bar: the first-launch step, the icon and its menu
-/// (status line, discard rules line, Copy MCP address, Pause or Resume, Edit
-/// discard rules, Start at login, Quit), the actions behind them, and a 2
-/// second refresh of the two lines. It opens no window.
+/// (status line, discard rules line, Open loctel, Copy MCP address, Pause or
+/// Resume, Edit discard rules, Start at login, Quit), the actions behind them,
+/// and a 2 second refresh of the two lines. It opens no window: `Open loctel`
+/// does.
 ///
 /// `settings_path` is only for the first-launch step. If the status item
 /// cannot be created there is nothing to see or click, so loctel says why on
@@ -151,6 +154,7 @@ fn menu_items(rows: &[Row]) -> Vec<MenuItem> {
                 enabled,
             } => {
                 let item = match command {
+                    Command::OpenWindow => MenuItem::action(*label, OpenWindow),
                     Command::CopyMcpAddress => MenuItem::action(*label, CopyMcpAddress),
                     Command::TogglePause => MenuItem::action(*label, TogglePause),
                     Command::EditRules => MenuItem::action(*label, EditRules),
@@ -165,10 +169,18 @@ fn menu_items(rows: &[Row]) -> Vec<MenuItem> {
 
 fn register_actions(cx: &mut App, engine: &EngineHandle) {
     // The status item's menu cannot show or answer a shortcut (`gpui-tray`
-    // builds its items with no key equivalent), so this binding only works
-    // while one of loctel's own windows has the keyboard, which is from the
-    // main window in Milestone 3 on.
-    cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
+    // builds its items with no key equivalent), so these bindings only work
+    // while one of loctel's own windows has the keyboard, which is the main
+    // window. Cmd-O there brings it to the front.
+    cx.bind_keys([
+        KeyBinding::new("cmd-q", Quit, None),
+        KeyBinding::new("cmd-o", OpenWindow, None),
+    ]);
+
+    cx.on_action({
+        let engine = engine.clone();
+        move |_: &OpenWindow, cx| window::open_or_focus(cx, engine.clone())
+    });
 
     cx.on_action({
         let engine = engine.clone();

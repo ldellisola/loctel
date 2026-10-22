@@ -7,6 +7,8 @@
 /// What choosing a menu item does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Command {
+    /// Show the main window: open it, or bring the open one to the front.
+    OpenWindow,
     /// Put the MCP address on the clipboard.
     CopyMcpAddress,
     /// Pause receiving, or resume it.
@@ -56,13 +58,20 @@ pub(crate) struct MenuState {
     pub has_rules_file: bool,
 }
 
-/// The menu, top to bottom: the status line, the discard rules line, copy the
-/// MCP address, pause or resume, edit the discard rules, a separator, start at
-/// login, a separator, quit.
+/// The menu, top to bottom: the status line, the discard rules line, open
+/// loctel, a separator, copy the MCP address, pause or resume, edit the discard
+/// rules, a separator, start at login, a separator, quit.
 pub(crate) fn rows(state: &MenuState) -> Vec<Row> {
     vec![
         Row::Header(state.header.clone()),
         Row::Header(state.rules.clone()),
+        Row::Item {
+            command: Command::OpenWindow,
+            label: "Open loctel",
+            checked: false,
+            enabled: true,
+        },
+        Row::Separator,
         Row::Item {
             command: Command::CopyMcpAddress,
             label: "Copy MCP address",
@@ -133,6 +142,8 @@ mod tests {
             vec![
                 Row::Header("Receiving \u{b7} 412 spans/s \u{b7} 1.2k logs/s".to_owned()),
                 Row::Header("1 discard rule on \u{b7} 31% dropped".to_owned()),
+                item(Command::OpenWindow, "Open loctel", false, true),
+                Row::Separator,
                 item(Command::CopyMcpAddress, "Copy MCP address", false, true),
                 item(Command::TogglePause, "Pause receiving", false, true),
                 item(
@@ -153,9 +164,9 @@ mod tests {
     fn rows_include_rules_header_and_edit_item() {
         let rows = rows(&state());
 
-        // The exact order: status header, rules header, Copy MCP address,
-        // Pause, Edit discard rules, separator, Start at login, separator,
-        // Quit.
+        // The exact order: status header, rules header, Open loctel,
+        // separator, Copy MCP address, Pause, Edit discard rules, separator,
+        // Start at login, separator, Quit.
         let order: Vec<&str> = rows
             .iter()
             .map(|row| match row {
@@ -169,6 +180,8 @@ mod tests {
             [
                 "Receiving \u{b7} 412 spans/s \u{b7} 1.2k logs/s",
                 "1 discard rule on \u{b7} 31% dropped",
+                "Open loctel",
+                "---",
                 "Copy MCP address",
                 "Pause receiving",
                 "Edit discard rules\u{2026}",
@@ -184,13 +197,54 @@ mod tests {
         assert!(matches!(&rows[1], Row::Header(_)));
         // The edit item is a plain action, with no checkmark.
         assert_eq!(
-            rows[4],
+            rows[6],
             item(
                 Command::EditRules,
                 "Edit discard rules\u{2026}",
                 false,
                 true
             )
+        );
+    }
+
+    #[test]
+    fn rows_have_open_first_after_headers() {
+        let rows = rows(&state());
+
+        // The two header rows, then `Open loctel`, then a separator.
+        assert!(matches!(&rows[0], Row::Header(_)));
+        assert!(matches!(&rows[1], Row::Header(_)));
+        assert_eq!(
+            rows[2],
+            item(Command::OpenWindow, "Open loctel", false, true)
+        );
+        assert_eq!(rows[3], Row::Separator);
+
+        // It is the only way to open the window, so it is there exactly once,
+        // and always choosable: the window needs nothing from the engine that
+        // can be missing (the Copy and Edit items depend on an address and a
+        // file; this one does not).
+        let opens = rows
+            .iter()
+            .filter(|row| {
+                matches!(
+                    row,
+                    Row::Item {
+                        command: Command::OpenWindow,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(opens, 1);
+
+        let mut bare = state();
+        bare.has_mcp_address = false;
+        bare.has_rules_file = false;
+        bare.paused = true;
+        assert_eq!(
+            super::rows(&bare)[2],
+            item(Command::OpenWindow, "Open loctel", false, true)
         );
     }
 

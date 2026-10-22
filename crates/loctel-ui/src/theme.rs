@@ -4,7 +4,7 @@
 
 use std::borrow::Cow;
 
-use gpui::{App, Rgba, rgb};
+use gpui::{App, Global, Rgba, WindowAppearance, rgb};
 
 /// The family every view asks for. It is the bundled Inter (see
 /// `assets/fonts/LICENSE.txt`), registered by [`register_fonts`].
@@ -29,8 +29,16 @@ pub fn register_fonts(cx: &mut App) {
 }
 
 /// Every colour a view uses. Views read these and never write a hex literal.
+///
+/// The main window keeps the current one as a GPUI global (set by
+/// [`kit_theme::apply`](crate::app::kit_theme::apply), which also maps it onto
+/// GPUI Kit's theme): a view reads it with `cx.global::<Theme>()` while it
+/// renders, so it follows the system appearance without being told.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Theme {
+    /// Whether this is the dark look. GPUI Kit's theme has a mode of its own
+    /// (its defaults, scrollbars and shadows follow it), and this says which.
+    pub dark: bool,
     /// The window background.
     pub bg: Rgba,
     /// Raised surfaces: cards and lists.
@@ -57,6 +65,7 @@ impl Theme {
     /// The mocked-up look.
     pub fn dark() -> Theme {
         Theme {
+            dark: true,
             bg: rgb(0x15161a),
             panel: rgb(0x1a1b20),
             border: rgb(0x2a2b32),
@@ -83,6 +92,7 @@ impl Theme {
     /// builder's reading of it.
     pub fn light() -> Theme {
         Theme {
+            dark: false,
             bg: rgb(0xf4f4f6),
             panel: rgb(0xffffff),
             border: rgb(0xdcdce2),
@@ -104,6 +114,48 @@ impl Theme {
         }
     }
 }
+
+impl Theme {
+    /// The hairline round a glass part of the window (the sidebar and the
+    /// toolbar, when a platform backdrop sits behind them). It is translucent,
+    /// so the glass shows through it: the text colour at a low alpha, a light
+    /// line on the dark look and a dark one on the light look.
+    pub fn glass_hairline(&self) -> Rgba {
+        Rgba {
+            a: if self.dark { 0.16 } else { 0.14 },
+            ..self.text
+        }
+    }
+
+    /// The highlight just inside a glass part's hairline: the soft light edge
+    /// of a lit pane. Always a light line, so the panel colour at a low alpha
+    /// on the dark look (where the text colour is the light one) and
+    /// the near-white panel fill on the light look.
+    pub fn glass_highlight(&self) -> Rgba {
+        if self.dark {
+            Rgba {
+                a: 0.08,
+                ..self.text
+            }
+        } else {
+            Rgba {
+                a: 0.60,
+                ..self.panel
+            }
+        }
+    }
+
+    /// The look that goes with a window's appearance: the dark theme for
+    /// `Dark` and `VibrantDark`, the light one for the other two.
+    pub fn for_appearance(appearance: WindowAppearance) -> Theme {
+        match appearance {
+            WindowAppearance::Dark | WindowAppearance::VibrantDark => Theme::dark(),
+            WindowAppearance::Light | WindowAppearance::VibrantLight => Theme::light(),
+        }
+    }
+}
+
+impl Global for Theme {}
 
 #[cfg(test)]
 mod tests {
@@ -166,6 +218,26 @@ mod tests {
                 assert!(contrast(text, theme.panel) >= 3.0, "{text:?} on the panel");
             }
         }
+    }
+
+    #[test]
+    fn glass_lines_are_translucent_and_come_from_the_tokens() {
+        for theme in [Theme::dark(), Theme::light()] {
+            for line in [theme.glass_hairline(), theme.glass_highlight()] {
+                assert!(line.a > 0.0 && line.a < 1.0, "{line:?} must let glass show");
+            }
+            assert_ne!(theme.glass_hairline(), theme.glass_highlight());
+            // The hairline is the text colour: light on dark, dark on light.
+            assert_eq!(
+                (theme.glass_hairline().r, theme.glass_hairline().g),
+                (theme.text.r, theme.text.g)
+            );
+        }
+        // The highlight is a light line on both looks: the (light) text
+        // colour on the dark one and the white panel on the light one.
+        assert_eq!(Theme::dark().glass_highlight().b, Theme::dark().text.b);
+        assert_eq!(Theme::light().glass_highlight().b, Theme::light().panel.b);
+        assert!(luminance(Theme::light().glass_highlight()) > 0.9);
     }
 
     #[test]

@@ -7,7 +7,8 @@ description: "Change, add or review the reference screenshots of loctel-ui (crat
 
 The screenshot tests render each view headlessly and compare it pixel for pixel
 with a PNG in `crates/loctel-ui/tests/snapshots/`. `docs/areas/ui.md` explains
-the harness (`render_png`, `assert_snapshot`); this is the procedure.
+the harness (`render_png`, `render_window_png`, `Driver`, `assert_snapshot`);
+this is the procedure.
 
 ## When a reference may change
 
@@ -22,7 +23,7 @@ comparison (no tolerance, no skipping the test).
 
 1. **Run the tests and read the failure.**
    `cargo test -p loctel-ui` (the `screenshot` feature is on in tests
-   automatically). A mismatch says how many pixels differ, the first one's
+   automatically; add `--test screens` for the main window's, or a test name). A mismatch says how many pixels differ, the first one's
    place, and writes `target/screenshot-diffs/{name}.actual.png` and
    `{name}.diff.png` (red where pixels differ). Open both with the Read tool.
    If the diff is not the change you made, fix the code, not the reference.
@@ -36,7 +37,10 @@ comparison (no tolerance, no skipping the test).
    it shows what you meant and that the text is legible: the listener lines,
    the numbers, the error text. A reference nobody looked at is worthless,
    and the plan requires this. The images are 2x (a 900 by 600 window is 1800
-   by 1200 pixels).
+   by 1200 pixels, the main window's 1440 by 900 is 2880 by 1800). Check the
+   colours too (the theme you forced, not the other one), and that nothing is
+   clipped or overlapping; a PNG over about 1.5 MB means the capture should be
+   1x (record it in a decision).
 4. **Run them again** without `UPDATE_SNAPSHOTS` (twice if you like): they
    must pass, and `render_is_deterministic` guards against flaky output.
 5. **Commit** the PNGs with the code, and mention the visual change in the
@@ -44,13 +48,34 @@ comparison (no tolerance, no skipping the test).
 
 ## Adding a screenshot test
 
-Put it in `crates/loctel-ui/tests/screenshots.rs` (or a new file next to it):
+A bare view (the status view): put it in `crates/loctel-ui/tests/screenshots.rs`,
 build a fixed model (no clocks, no random data; meshgen scenarios are fine
 because `generate` is deterministic), render with `render_png`, name the
-snapshot after the view and the theme (`status_view_dark`), generate the
-reference with step 2, and view it (step 3). Keep the count reasonable: each
-render starts a fresh headless context (about two seconds for the first frame
-in a process, then about 100 ms).
+snapshot after the view and the theme (`status_view_dark`).
+
+A screen of the main window: put it in `crates/loctel-ui/tests/screens.rs`
+(`interactions.rs` when it clicks, types or scrolls first, `live.rs` when time
+passes; a model with no window, like `HomeModel`, is tested there with
+`testing::headless_app()`). Build a `FixedBackend` over a store loaded from meshgen on a
+`ManualClock`, and render with `render_window_png((1440, 900), &Theme::dark(),
+|window, cx| ...)`, or keep the window with `Driver::new(...)` to click,
+drag, scroll (`scroll_with` for ctrl or cmd), pinch, type, `advance` the clock and
+`capture()`. Every screen gets a dark and
+a light reference at 1440 by 900 (`home_dark.png`, `home_light.png`). The
+harness forces the theme and reduces motion; do not try to get them from the
+window (the test platform is always light). Then generate the reference with
+step 2 and view it (step 3).
+
+A trace screen is opened with `common::open_trace(&mut driver, trace_id)` (it
+navigates and draws until the trace is read: the window makes the screen on its
+first frame and the store read comes back by the next), and found with the
+helpers of `tests/common/mod.rs` (`row_named`, `part_center`, `selected_details`).
+The references of the trace screen are `trace_dark.png`, `trace_light.png` and
+the `trace_*`, `huge_trace_middle_dark.png` and `long_values_*` ones; the 100,000
+span one takes a few seconds to build in a debug build.
+
+Keep the count reasonable: each render starts a fresh headless context (about
+two seconds for the first frame in a process, then about 100 ms).
 
 ## A failure in CI
 

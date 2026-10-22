@@ -335,6 +335,18 @@ impl Store {
         self.shared.clock.now_unix_nano()
     }
 
+    /// The earliest start of any trace held (the earliest span start of the
+    /// trace that began first), or `None` when the store holds no trace. A
+    /// start, not an arrival: a trace that arrived late can hold it.
+    ///
+    /// It is a pass over the traces that touches no span, cheap beside a
+    /// search or the service map, and it takes the read lock like them. The
+    /// window uses it to say how long the data it shows covers.
+    pub fn oldest_start_unix_nano(&self) -> Option<u64> {
+        let inner = self.shared.inner.read();
+        inner.traces.values().map(TraceEntry::start_unix_nano).min()
+    }
+
     pub fn stats(&self) -> StoreStats {
         let inner = self.shared.inner.read();
         StoreStats {

@@ -1,6 +1,6 @@
 [package]
 name = "loctel-app"
-description = "The loctel binary: headless mode, the status window on Linux and the menu bar app on macOS"
+description = "The loctel binary: headless mode, the main window on Linux and the menu bar app (with the main window) on macOS"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -19,14 +19,17 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["signal"] }
 tracing-subscriber.workspace = true
 
-# The development window (Linux).
+# The main window (Linux): `loctel-ui` is the window and its assets.
 [target.'cfg(target_os = "linux")'.dependencies]
 loctel-ui.workspace = true
 gpui-pre-platform.workspace = true
 
-# The menu bar app (macOS).
+# The menu bar app (macOS). `loctel-ui` is here for GPUI Kit's assets, which
+# the main window needs registered at `Application` level; the window itself
+# is `loctel-macos`'s.
 [target.'cfg(target_os = "macos")'.dependencies]
 loctel-macos.workspace = true
+loctel-ui.workspace = true
 gpui-pre.workspace = true
 gpui-pre-platform.workspace = true
 
