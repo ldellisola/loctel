@@ -21,8 +21,11 @@
 //! which is what the discard rules are built on.
 //!
 //! Everything goes through [`Store`]; the internals are free to change (the
-//! design replaces them with a spill-to-disk segment store later) as long as
-//! that API holds.
+//! design replaces them with a spill-to-disk segment store, Milestone 5) as long
+//! as that API holds. The building blocks of that store are the [`segment`]
+//! files (append-only files of checksummed, compressed records) and the
+//! [`run_dir`] that holds one run's segments; both are public, and hidden from
+//! the docs, only so that tests can reach them.
 //!
 //! Time comes from a [`Clock`], so tests drive completeness with a
 //! [`ManualClock`] instead of sleeping.
@@ -32,6 +35,10 @@ mod config;
 mod failure;
 mod logs;
 mod page;
+#[doc(hidden)]
+pub mod run_dir;
+#[doc(hidden)]
+pub mod segment;
 mod service_map;
 mod store;
 mod summary;

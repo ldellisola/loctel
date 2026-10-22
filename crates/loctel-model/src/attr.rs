@@ -1,7 +1,10 @@
 //! Attribute values and lookup.
 
+use std::fmt;
+
+use serde::de::{Deserializer, MapAccess, SeqAccess, Visitor};
 use serde::ser::{SerializeMap, SerializeSeq};
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Serialize, Serializer};
 
 use crate::ids::hex_string;
 
@@ -60,10 +63,24 @@ impl AttrValue {
     }
 }
 
-/// Plain JSON shapes: strings, numbers, booleans, hex strings for bytes,
-/// arrays, and objects for maps (no enum tags).
+/// The most entries a collection reserves room for up front. The sizes a
+/// binary format reports come from the data, so a damaged length must not be
+/// able to ask for gigabytes before the first entry is read.
+const RESERVE_MAX: usize = 1024;
+
+/// Two shapes, by [`Serializer::is_human_readable`].
+///
+/// - **Human readable (JSON):** plain JSON shapes: strings, numbers, booleans,
+///   hex strings for bytes, arrays, and objects for maps (no enum tags).
+/// - **Binary (postcard, the segment files of the store):** the tagged
+///   variants of [`Tagged`]. A binary format cannot be asked "what comes
+///   next", and the plain shapes would also lose the difference between bytes
+///   and a string.
 impl Serialize for AttrValue {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if !serializer.is_human_readable() {
+            return Tagged::serialize(self, serializer);
+        }
         match self {
             AttrValue::Str(text) => serializer.serialize_str(text),
             AttrValue::Bool(value) => serializer.serialize_bool(*value),
@@ -82,6 +99,104 @@ impl Serialize for AttrValue {
     }
 }
 
+/// Reads back what [`Serialize`] wrote, in either shape.
+///
+/// A binary format comes back exactly. JSON reads each value by its shape,
+/// which cannot be exact in three places, all of them gaps in JSON itself:
+///
+/// - a byte value was written as a hex string and reads back as
+///   [`AttrValue::Str`];
+/// - `null`, which is what JSON makes of NaN and the infinities, reads back as
+///   a NaN [`AttrValue::Double`];
+/// - an integer above `i64::MAX` (not something this crate writes) reads as a
+///   double.
+impl<'de> Deserialize<'de> for AttrValue {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        if deserializer.is_human_readable() {
+            deserializer.deserialize_any(ValueVisitor)
+        } else {
+            Tagged::deserialize(deserializer)
+        }
+    }
+}
+
+/// The binary shape of [`AttrValue`]: a derived, tagged enum that serde's
+/// `remote` support applies to the real one.
+#[derive(Serialize, Deserialize)]
+#[serde(remote = "AttrValue")]
+enum Tagged {
+    Str(String),
+    Bool(bool),
+    Int(i64),
+    Double(f64),
+    Bytes(Vec<u8>),
+    Array(Vec<AttrValue>),
+    Map(Vec<(String, AttrValue)>),
+}
+
+/// Reads one JSON-shaped value.
+struct ValueVisitor;
+
+impl<'de> Visitor<'de> for ValueVisitor {
+    type Value = AttrValue;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("an attribute value: a string, number, boolean, array or object")
+    }
+
+    fn visit_bool<E>(self, value: bool) -> Result<AttrValue, E> {
+        Ok(AttrValue::Bool(value))
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<AttrValue, E> {
+        Ok(AttrValue::Int(value))
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<AttrValue, E> {
+        Ok(match i64::try_from(value) {
+            Ok(value) => AttrValue::Int(value),
+            Err(_) => AttrValue::Double(value as f64),
+        })
+    }
+
+    fn visit_f64<E>(self, value: f64) -> Result<AttrValue, E> {
+        Ok(AttrValue::Double(value))
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<AttrValue, E> {
+        Ok(AttrValue::Str(value.to_string()))
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<AttrValue, E> {
+        Ok(AttrValue::Str(value))
+    }
+
+    fn visit_unit<E>(self) -> Result<AttrValue, E> {
+        Ok(AttrValue::Double(f64::NAN))
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<AttrValue, A::Error> {
+        let mut items = Vec::with_capacity(seq.size_hint().unwrap_or(0).min(RESERVE_MAX));
+        while let Some(item) = seq.next_element()? {
+            items.push(item);
+        }
+        Ok(AttrValue::Array(items))
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<AttrValue, A::Error> {
+        collect_pairs(map).map(AttrValue::Map)
+    }
+}
+
+/// Every entry of a map, in order, repeated keys included.
+fn collect_pairs<'de, A: MapAccess<'de>>(mut map: A) -> Result<Vec<(String, AttrValue)>, A::Error> {
+    let mut pairs = Vec::with_capacity(map.size_hint().unwrap_or(0).min(RESERVE_MAX));
+    while let Some(pair) = map.next_entry()? {
+        pairs.push(pair);
+    }
+    Ok(pairs)
+}
+
 /// `serialize_with` helper: attributes as a JSON object (in order) instead of
 /// an array of pairs.
 pub(crate) fn serialize_attributes<S: Serializer>(
@@ -93,4 +208,26 @@ pub(crate) fn serialize_attributes<S: Serializer>(
         map.serialize_entry(key, value)?;
     }
     map.end()
+}
+
+/// `deserialize_with` helper, the other half of [`serialize_attributes`]: the
+/// entries of the map in order, a repeated key kept as often as it appears.
+pub(crate) fn deserialize_attributes<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Attributes, D::Error> {
+    struct PairsVisitor;
+
+    impl<'de> Visitor<'de> for PairsVisitor {
+        type Value = Attributes;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a map of attribute names to values")
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Attributes, A::Error> {
+            collect_pairs(map)
+        }
+    }
+
+    deserializer.deserialize_map(PairsVisitor)
 }

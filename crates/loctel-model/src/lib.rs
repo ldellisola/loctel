@@ -4,7 +4,12 @@
 //! protocol messages into these types, and everything downstream (store, MCP,
 //! engine, UI) speaks them. All of them implement `serde::Serialize` as plain
 //! JSON: IDs and byte values as lowercase hex strings, attributes as JSON
-//! objects, enums as `snake_case` strings.
+//! objects, enums as `snake_case` strings. All of them also implement
+//! `serde::Deserialize` and read back what they wrote: exactly in a binary
+//! format such as postcard (which the store's segment files use, where IDs are
+//! raw bytes and attribute values are tagged), and in JSON except where JSON
+//! cannot tell two things apart (a byte value reads back as the hex string,
+//! see [`AttrValue`]).
 
 mod attr;
 mod exception;

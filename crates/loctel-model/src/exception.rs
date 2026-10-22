@@ -1,11 +1,11 @@
 //! Exceptions, as semantic conventions carry them (`exception.*`).
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::attr::{AttrValue, Attributes, attr};
 
 /// An exception reported on a span event or a log record.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ExceptionInfo {
     /// `exception.type`, or empty when absent.
     pub type_name: String,

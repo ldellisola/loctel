@@ -273,6 +273,13 @@ this whenever you touch `crates/loctel-macos/` or the macOS parts of
 `objc2`, `gpui-pre` and `gpui-tray` APIs and lints the result; it does not link
 or run anything. A cold run takes about 50 s. Why it needs a wrapper script:
 [`decisions/0009-macos-check-from-linux.md`](../decisions/0009-macos-check-from-linux.md).
+Since Milestone 5 it also hands cc-rs a stand-in C compiler for the Mac target
+(`script/stub-cc.sh`, which writes empty object files): `zstd-sys`, under the
+store's segment files, compiles C, and a Linux machine has no Apple SDK for it
+([`decisions/0044-segment-file-format.md`](../decisions/0044-segment-file-format.md)).
+A new dependency whose build script compiles C is covered the same way; one that
+needs more than a C compiler from the SDK (a header search, a linker probe) is
+not, and the check will say so.
 
 The Linux gate does run the tests of the plain-Rust modules (`cargo test -p
 loctel-macos`): the popover's anchoring, the first-launch rules and the icon files.

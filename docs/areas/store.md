@@ -19,7 +19,10 @@ services list are implemented. So are (Milestone 2) the TraceQL and LogQL query
 filters, matched spans, removal and the scans (see "Query filters", "Removal"
 and "Scans" below), and (Milestone 4) the log IDs, the level and window filters,
 the log histogram and the lines around a log, which the Logs screen is built on
-(see "Log IDs, levels, histogram and lines around" below).
+(see "Log IDs, levels, histogram and lines around" below). Milestone 5 is under
+way: the segment files and the run directory it spills into exist (see "Segment
+files" below), and the store does not use them yet, so everything is still held
+in memory.
 
 ## API
 
@@ -682,6 +685,110 @@ listed with 0 requests. Dependencies are not services and are not listed. A
 service with no span in the window is not listed. It is computed from the same
 counts as the map (a test holds the two equal) but skips the dependency work.
 
+## Segment files
+
+Milestone 5 moves completed traces and sealed log chunks out of memory into
+temporary files, and keeps the disk use under a cap (design §5). The building
+blocks are two modules of this crate, `segment` and `run_dir`. Both are `pub`
+and hidden from the generated docs (`#[doc(hidden)]`) only so that tests can
+reach them; nothing outside the crate uses them, and `Store` is still the only
+entry point. **Status:** the modules and their tests exist, and `Store` does not
+call them yet (the trace index, spill and rehydration come next, then log
+chunks, then the disk cap). The decision and its reasons are
+[`decisions/0044-segment-file-format.md`](../decisions/0044-segment-file-format.md).
+
+### The record
+
+A segment is an append-only file of records, with no header or footer:
+
+```text
+[u32 len][u32 crc32 of the compressed bytes][zstd(postcard(payload))]
+```
+
+Both numbers are little-endian, `len` is the length of the compressed bytes,
+and zstd runs at level 1. Record 0 starts at byte 0 and the next record starts
+where the last one ended, so the size of the file is the sum of its records
+(`Writer::bytes`, and what the disk cap will count). A `Location { seq, offset,
+len }` finds a record again: the segment's number, the byte its header starts
+at, and the length from its header (`Location::disk_bytes` adds the 8 header
+bytes). Files are `traces-{seq:06}.seg` and `logs-{seq:06}.seg`; a number is
+used once (`Writer::create` refuses an existing file).
+
+- `Writer::create(dir, kind, seq)`, `append(&payload) -> Location`, `bytes()`,
+  `seal()`. Each append is one write of a whole record, at the end of the file
+  (`pwrite`), so a `Reader` opened at any moment sees whole records. A write that
+  fails is taken back by cutting the file to the last good record, so the next
+  append lands where its `Location` says; if even that fails the writer refuses
+  more appends. Nothing is synced: segments do not outlive the run.
+- `Reader::open(path)` maps the file (`memmap2`) and learns what it holds from
+  its name. `read(location)` returns one payload; `iter()` walks the file in
+  order and gives `(Location, payload)`. Open a segment that is sealed: the map
+  covers the file as it was at `open`. An empty file opens and has no records.
+
+### Damage
+
+Every record is checked, and a record that fails is an error **value**, never a
+panic (Review Focus 2 of the M5 plan):
+
+| `SegmentError` | meaning | what `iter` does next |
+|---|---|---|
+| `Truncated` | the file ends inside the record's header or body (a crash mid-write), or a header promises more bytes than the file has | yields the error and stops: nothing can follow |
+| `Checksum` | the body does not match its CRC32 (or the stored CRC itself is wrong) | yields the error and goes on with the next record |
+| `Decode` | the checksum holds but the bytes are not zstd, not a blob, or `read` was given a `Location` whose length is not the record's | yields the error and goes on |
+
+The first problem a `Reader` meets is printed once on stderr
+(`loctel: <file>: the record at byte N: ...`), then only counted
+(`Reader::problems`). Callers skip the record: loading and search treat it as
+not there, and eviction still deletes the file whole.
+
+### Blobs
+
+`encode_trace(&[Span]) -> Vec<u8>` and `decode_trace(&[u8])`, and `encode_logs(&[LogRecordWithId])` and
+`decode_logs`, make the payloads: a postcard struct of a **table of resources**
+followed by the spans (or log records), each pointing at its resource by index.
+So a service's resource is written once per blob, not once per span; a 15-span
+checkout trace holds each of its services' resources once. Resources are the same
+when they are equal by value, not only when they are the same `Arc`, because the
+spans of a service arrive in many batches with a fresh `Arc` each. Decoding gives
+the spans of one resource a shared `Arc` again. Everything else round-trips
+equal, in the order given. A `LogRecordWithId` is a `LogRecord` with the `LogId`
+it is held under (time and arrival number, written out as they are, not worked
+out again). A blob that is cut short, or has bytes after it, is
+`SegmentError::Decode`.
+
+The shapes of the model types in postcard are the binary ones described in
+[`architecture.md`](../architecture.md) ("Domain model"): IDs are their raw
+bytes, and an attribute value is a tagged variant, so bytes and strings stay
+different things.
+
+### The run directory
+
+`RunDir::create(base)` makes `<base>/run-<pid>-<start_unix_secs>/`; the app will
+use `std::env::temp_dir()/loctel` as the base. It makes `base` when it is
+missing, with mode `0700` (the directories hold copies of traces and logs).
+Dropping the `RunDir` deletes the directory and everything in it.
+
+A run that is killed leaves its directory behind, so `create` first deletes
+every sibling directory named `run-<pid>-<anything>` whose pid is not a live
+process (`kill(pid, 0)`: success or `EPERM` means alive). It is careful:
+
+- only real directories with such a name go; a file, a symbolic link, another
+  name, a pid that is not a number, 0 or too big for a pid stays;
+- a directory that cannot be deleted is said on stderr and `create` goes on;
+- two `RunDir`s of one process in one second (tests) get different names, the
+  start time moving on by a second, and one run never deletes another's, since
+  they share a live pid.
+
+The known gaps are a pid that another process has taken over since (its
+directory stays until that process ends) and a program that is always the same
+pid, such as pid 1 in a container, which never finds its own old directory
+stale. Neither loses data; both leave a directory in the temp directory.
+
+Both modules are Unix only (`pwrite`, `kill`), like the rest of loctel (macOS and
+Linux). The macOS build compiles `zstd`'s C sources; `script/check-macos.sh` has
+no Apple SDK to do that with and compiles them with a stand-in
+(`script/stub-cc.sh`), see decision 0044.
+
 ## Tests
 
 `crates/loctel-store/tests/`:
@@ -719,6 +826,13 @@ counts as the map (a test holds the two equal) but skips the dependency work.
   (whole batches, late old logs, a zero cap, retries after eviction) and
   counting and clearing. `duplicate_log_is_ignored` (exporter retries) is the
   review-focus test this file owns for logs.
+- `segment.rs`: the segment files and the run directory (Milestone 5, Task 1):
+  appending and reading back, the file names, the trace and log blobs (each
+  service's resource written once, by value), a flipped bit
+  (`checksum_mismatch_is_reported`), a record that is not zstd, a file cut off
+  at every kind of place (`truncated_record_is_skipped` is the review-focus
+  test for a crash mid-write), an empty file, and the run directory deleting its
+  stale siblings (and only those) and itself.
 - `service_map.rs`: the plan's Task 5 map tests (`unknown_service_appears_in_map`
   is the review-focus test for a missing `service.name`), plus each rule's
   corners: error counting, messaging skip, consumer-only queues, external

@@ -150,12 +150,17 @@ rules) are written to disk.
   within a process only; never persist it.
 - **Serialization.** Every type implements `serde::Serialize` as plain JSON:
   IDs and byte values as lowercase hex strings, attributes as JSON objects (in
-  order), enums as `snake_case` strings.
+  order), enums as `snake_case` strings. Every type also implements
+  `serde::Deserialize` and reads back what it wrote. A binary format (postcard,
+  which the store's segment files use) gets compact shapes (IDs as raw bytes,
+  attribute values as tagged variants) and round-trips exactly; JSON round-trips
+  too, except that a byte value comes back as its hex string (decision 0044).
 
 ## Store
 
-`loctel-store` depends on `loctel-model`, `loctel-query`, `parking_lot` and
-`serde`. The details (API, rules and the reasons) are in
+`loctel-store` depends on `loctel-model`, `loctel-query`, `parking_lot`,
+`serde` and (Milestone 5, for the segment files) `postcard`, `zstd`, `memmap2`,
+`crc32fast` and `libc`. The details (API, rules and the reasons) are in
 [`areas/store.md`](areas/store.md). What other crates rely on:
 
 - **One entry point.** Everything goes through `Store` (`Clone + Send +
@@ -688,8 +693,10 @@ and, for the popover, [`decisions/0042-popover.md`](decisions/0042-popover.md).
   source of truth. The first launch turns it on once (`first_launch_done`).
 - **Checked from Linux.** `script/check-macos.sh` type-checks and lints the
   macOS code for `aarch64-apple-darwin`, with a rustc wrapper that stands in for
-  the one build step that only runs on a Mac; `ci.yml` runs it in the Linux
-  job. Nothing runs it: the macOS runner is only for releases.
+  the one build step that only runs on a Mac and a stand-in C compiler
+  (`script/stub-cc.sh`) for the build scripts that compile C (`zstd-sys`);
+  `ci.yml` runs it in the Linux job. Nothing runs it: the macOS runner is only
+  for releases.
 
 ## Test tooling
 
