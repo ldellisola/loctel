@@ -116,6 +116,35 @@ impl Theme {
 }
 
 impl Theme {
+    /// The hairline round a glass part of the window (the sidebar and the
+    /// toolbar, when a platform backdrop sits behind them). It is translucent,
+    /// so the glass shows through it: the text colour at a low alpha, a light
+    /// line on the dark look and a dark one on the light look.
+    pub fn glass_hairline(&self) -> Rgba {
+        Rgba {
+            a: if self.dark { 0.16 } else { 0.14 },
+            ..self.text
+        }
+    }
+
+    /// The highlight just inside a glass part's hairline: the soft light edge
+    /// of a lit pane. Always a light line, so the panel colour at a low alpha
+    /// on the dark look (where the text colour is the light one) and
+    /// the near-white panel fill on the light look.
+    pub fn glass_highlight(&self) -> Rgba {
+        if self.dark {
+            Rgba {
+                a: 0.08,
+                ..self.text
+            }
+        } else {
+            Rgba {
+                a: 0.60,
+                ..self.panel
+            }
+        }
+    }
+
     /// The look that goes with a window's appearance: the dark theme for
     /// `Dark` and `VibrantDark`, the light one for the other two.
     pub fn for_appearance(appearance: WindowAppearance) -> Theme {
@@ -189,6 +218,26 @@ mod tests {
                 assert!(contrast(text, theme.panel) >= 3.0, "{text:?} on the panel");
             }
         }
+    }
+
+    #[test]
+    fn glass_lines_are_translucent_and_come_from_the_tokens() {
+        for theme in [Theme::dark(), Theme::light()] {
+            for line in [theme.glass_hairline(), theme.glass_highlight()] {
+                assert!(line.a > 0.0 && line.a < 1.0, "{line:?} must let glass show");
+            }
+            assert_ne!(theme.glass_hairline(), theme.glass_highlight());
+            // The hairline is the text colour: light on dark, dark on light.
+            assert_eq!(
+                (theme.glass_hairline().r, theme.glass_hairline().g),
+                (theme.text.r, theme.text.g)
+            );
+        }
+        // The highlight is a light line on both looks: the (light) text
+        // colour on the dark one and the white panel on the light one.
+        assert_eq!(Theme::dark().glass_highlight().b, Theme::dark().text.b);
+        assert_eq!(Theme::light().glass_highlight().b, Theme::light().panel.b);
+        assert!(luminance(Theme::light().glass_highlight()) > 0.9);
     }
 
     #[test]

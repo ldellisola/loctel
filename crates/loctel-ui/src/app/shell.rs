@@ -2,16 +2,24 @@
 //! and the content panel. It owns which [`Screen`] is showing, follows the
 //! system appearance and reports where the sidebar and the toolbar are, so a
 //! platform backdrop (macOS's Liquid Glass) can sit behind them.
+//!
+//! With a backdrop attached the sidebar and the toolbar are the glass parts:
+//! they paint no fill, only a hairline and an inner highlight, and the window
+//! colour is painted round them instead of under them (see
+//! [`window_colour`]), so the backdrop shows through. Without one they have the
+//! panel fill.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, AppContext as _, Bounds, Context, Div, Entity, InteractiveElement as _,
-    IntoElement, ParentElement, Pixels, Render, Styled, Subscription, Window, WindowAppearance,
-    canvas, div, px, relative,
+    AnyElement, App, AppContext as _, Bounds, Context, Div, Entity, FillOptions, FillRule,
+    InteractiveElement as _, IntoElement, ParentElement, PathBuilder, PathStyle, Pixels, Point,
+    Render, Rgba, Styled, Subscription, Window, WindowAppearance, canvas, div, point, px, relative,
+    transparent_black,
 };
+use gpui_kit::base::Root;
 use loctel_model::TraceId;
 
 use super::backend::UiBackend;
@@ -71,7 +79,9 @@ pub struct GlassRegion {
 }
 
 /// What sits behind the window's glass parts. On macOS it is a native glass
-/// view per region; elsewhere there is none and the panels are opaque.
+/// view per region; elsewhere there is none and the panels are opaque. Passing
+/// one to [`MainWindow::new`] is also what makes the shell leave those parts
+/// see-through: the platform that attaches it has made the window transparent.
 ///
 /// The shell calls [`set_regions`](Backdrop::set_regions) from inside a GPUI
 /// frame, so an implementation must not call back into GPUI or AppKit's layout
@@ -150,6 +160,14 @@ impl MainWindow {
             }
         })
         .detach();
+
+        if backdrop.is_some() {
+            // Kit's `Root` paints the window colour over the whole window, which
+            // would hide the backdrop. The shell paints it itself, round the
+            // glass parts (`window_colour`), so the root's own is switched off.
+            // The root is made after this view, hence the deferral.
+            cx.defer_in(window, |_, window, cx| clear_root_background(window, cx));
+        }
 
         let status = StatusModel::from_status(&backend.status());
         let home = cx.new(|cx| HomeModel::new(Rc::clone(&backend), cx));
@@ -273,6 +291,7 @@ impl Render for MainWindow {
             self.open_trace(id, window, cx);
         }
         let regions = &self.regions;
+        let glass = regions.has_backdrop();
 
         let sidebar = glass_frame(&theme, Region::Sidebar, regions)
             .w(px(SIDEBAR_WIDTH))
@@ -297,7 +316,7 @@ impl Render for MainWindow {
             }
         };
 
-        div()
+        let root = div()
             .id("main-window")
             .size_full()
             .relative()
@@ -305,11 +324,17 @@ impl Render for MainWindow {
             .flex_row()
             .gap(px(INSET))
             .p(px(INSET))
-            .bg(theme.bg)
             .text_color(theme.text)
             .font_family(FONT_FAMILY)
-            .text_size(px(13.0))
-            .child(sidebar)
+            .text_size(px(13.0));
+        // The window colour: under everything, except where the backdrop's glass
+        // has to show.
+        let root = if glass {
+            root.child(window_colour(theme.bg, Rc::clone(regions)))
+        } else {
+            root.bg(theme.bg)
+        };
+        root.child(sidebar)
             .child(
                 div()
                     .flex_1()
@@ -325,6 +350,18 @@ impl Render for MainWindow {
             // have their bounds.
             .child(report_canvas(Rc::clone(regions)))
     }
+}
+
+/// Makes the window's Kit `Root` paint no background. A window that is not
+/// inside a `Root` has nothing to clear.
+fn clear_root_background(window: &Window, cx: &mut App) {
+    let Some(root) = window.root::<Root>().flatten() else {
+        return;
+    };
+    root.update(cx, |root, cx| {
+        root.style().background = Some(transparent_black().into());
+        cx.notify();
+    });
 }
 
 /// A floating content panel: rounded, with the panel fill and a hairline. The
@@ -373,30 +410,119 @@ enum Region {
     Toolbar,
 }
 
-/// A floating panel's frame: rounded, with a fill and a hairline, over a
-/// canvas that measures where it is laid out. The caller sets the size and
-/// adds the contents.
+/// A glass part's frame (the sidebar's or the toolbar's): rounded, over a canvas
+/// that measures where it is laid out. The caller sets the size and adds the
+/// contents.
+///
+/// - With a backdrop it has no fill, so the glass behind the window shows. It
+///   has a hairline round it and a highlight just inside, both translucent.
+/// - Without one it is a panel: the opaque fill and the panel hairline.
 fn glass_frame(theme: &Theme, region: Region, regions: &Rc<RegionReport>) -> gpui::Div {
-    let regions = Rc::clone(regions);
-    div()
-        .relative()
-        .rounded(px(PANEL_RADIUS))
-        .bg(theme.panel)
-        .border_1()
-        .border_color(theme.border)
-        .overflow_hidden()
-        .child(
-            // A border-box measurement: the frame's own bounds, border and all.
-            canvas(
-                move |bounds, _window, _cx| regions.measured(region, bounds),
-                |_, (), _, _| {},
-            )
-            .absolute()
-            .top(px(-1.0))
-            .left(px(-1.0))
-            .right(px(-1.0))
-            .bottom(px(-1.0)),
+    let measure = {
+        let regions = Rc::clone(regions);
+        // A border-box measurement: the frame's own bounds, border and all.
+        canvas(
+            move |bounds, _window, _cx| regions.measured(region, bounds),
+            |_, (), _, _| {},
         )
+        .absolute()
+        .top(px(-1.0))
+        .left(px(-1.0))
+        .right(px(-1.0))
+        .bottom(px(-1.0))
+    };
+    let frame = div().relative().rounded(px(PANEL_RADIUS)).overflow_hidden();
+    if regions.has_backdrop() {
+        frame
+            .border_1()
+            .border_color(theme.glass_hairline())
+            .child(measure)
+            .child(
+                // Inside the hairline, with the radius of its inner edge.
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .rounded(px(PANEL_RADIUS - 1.0))
+                    .border_1()
+                    .border_color(theme.glass_highlight()),
+            )
+    } else {
+        frame
+            .bg(theme.panel)
+            .border_1()
+            .border_color(theme.border)
+            .child(measure)
+    }
+}
+
+/// The window colour for a window with glass parts: painted behind everything,
+/// everywhere except inside the sidebar and the toolbar (their rounded border
+/// boxes, as measured in the same frame). The backdrop is under the whole of
+/// the window, so a plain background would hide it; this leaves exactly its
+/// parts clear, and keeps the colour in the gaps, the margin and the slivers
+/// outside the rounded corners.
+fn window_colour(color: Rgba, regions: Rc<RegionReport>) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds, (), window, _cx| {
+            // The regions were measured in this frame's prepaint, which is
+            // over before any paint.
+            let holes = regions.glass_bounds();
+            if let Some(path) = window_colour_path(bounds, &holes) {
+                window.paint_path(path, color);
+            }
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .right_0()
+    .bottom_0()
+}
+
+/// The window rectangle with a rounded hole for each of `holes`, as one path
+/// (filled with the even-odd rule, so each outline inside the rectangle is a
+/// hole). `None` if it cannot be built.
+fn window_colour_path(
+    window: Bounds<Pixels>,
+    holes: &[Bounds<Pixels>],
+) -> Option<gpui::Path<Pixels>> {
+    let mut path = PathBuilder::fill().with_style(PathStyle::Fill(
+        FillOptions::default().with_fill_rule(FillRule::EvenOdd),
+    ));
+    path.move_to(window.origin);
+    path.line_to(window.top_right());
+    path.line_to(window.bottom_right());
+    path.line_to(window.bottom_left());
+    path.close();
+    for hole in holes {
+        rounded_outline(&mut path, *hole, px(PANEL_RADIUS));
+    }
+    path.build().ok()
+}
+
+/// Adds the outline of `bounds` with corners of `radius` to `path`, as a closed
+/// sub-path.
+fn rounded_outline(path: &mut PathBuilder, bounds: Bounds<Pixels>, radius: Pixels) {
+    let radius = radius
+        .min(bounds.size.width / 2.0)
+        .min(bounds.size.height / 2.0);
+    let (left, top) = (bounds.left(), bounds.top());
+    let (right, bottom) = (bounds.right(), bounds.bottom());
+    let corner: Point<Pixels> = point(radius, radius);
+    path.move_to(point(left + radius, top));
+    path.line_to(point(right - radius, top));
+    path.arc_to(corner, px(0.0), false, true, point(right, top + radius));
+    path.line_to(point(right, bottom - radius));
+    path.arc_to(corner, px(0.0), false, true, point(right - radius, bottom));
+    path.line_to(point(left + radius, bottom));
+    path.arc_to(corner, px(0.0), false, true, point(left, bottom - radius));
+    path.line_to(point(left, top + radius));
+    path.arc_to(corner, px(0.0), false, true, point(left + radius, top));
+    path.close();
 }
 
 /// The canvas that, once both frames are measured, passes them on.
@@ -426,6 +552,20 @@ impl RegionReport {
             toolbar: Cell::new(None),
             reported: RefCell::new(Vec::new()),
         }
+    }
+
+    /// Whether a backdrop is attached: the sidebar and the toolbar are glass.
+    fn has_backdrop(&self) -> bool {
+        self.backdrop.is_some()
+    }
+
+    /// The border boxes of the sidebar and the toolbar as measured in the
+    /// latest frame (the ones that are known).
+    fn glass_bounds(&self) -> Vec<Bounds<Pixels>> {
+        [self.sidebar.get(), self.toolbar.get()]
+            .into_iter()
+            .flatten()
+            .collect()
     }
 
     fn measured(&self, region: Region, bounds: Bounds<Pixels>) {

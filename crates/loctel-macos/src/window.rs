@@ -9,13 +9,23 @@
 //! window does not end the app (the quit mode is explicit: only `Quit loctel`
 //! does); it only takes the Dock icon away again.
 //!
+//! The window's sidebar and toolbar get Liquid Glass from [`glass::attach`], or
+//! GPUI's blurred background when that is not possible.
+//!
 //! Nothing here has run on a Mac. See "Unverified until the M3 Mac check" in
 //! `docs/areas/macos.md`.
 
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use gpui::{ActivationPolicy, AnyWindowHandle, App, Global};
+use gpui::{ActivationPolicy, AnyWindowHandle, App, Global, Window, WindowBackgroundAppearance};
 use loctel_engine::EngineHandle;
+use loctel_ui::app::Backdrop;
+
+use crate::glass;
+
+/// Whether the fallback to the blurred background has been logged.
+static FALLBACK_LOGGED: AtomicBool = AtomicBool::new(false);
 
 /// What the app knows about its main window. It is a GPUI global so that the
 /// menu's action and the Dock's reopen event, which share nothing else, see the
@@ -34,7 +44,8 @@ impl Global for MainWindowState {}
 /// Shows the main window: brings the open one to the front, or opens it.
 ///
 /// Opening it is, in this order: the Dock icon on (`ActivationPolicy::Regular`),
-/// the window (`loctel_ui::app::open_main_window`) and then the app activated,
+/// the window (`loctel_ui::app::open_main_window`, with the glass attached to it
+/// by `attach_glass`) and then the app activated,
 /// as GPUI asks for after a switch to `Regular`. If the window cannot be opened
 /// the reason goes to stderr and the app goes back to `Accessory`, so a failed
 /// open leaves no Dock icon with nothing behind it.
@@ -52,10 +63,7 @@ pub fn open_or_focus(cx: &mut App, engine: EngineHandle) {
 
     watch_close(cx);
     cx.set_activation_policy(ActivationPolicy::Regular);
-    // The second argument of Task 10 goes here: `glass::attach` puts Liquid
-    // Glass behind the sidebar and the toolbar. Until then the panels are
-    // opaque, which `None` asks for.
-    match loctel_ui::app::open_main_window(Rc::new(engine), cx, |_window| None) {
+    match loctel_ui::app::open_main_window(Rc::new(engine), cx, attach_glass) {
         Ok(window) => {
             cx.default_global::<MainWindowState>().window = Some(window.into());
             cx.activate(true);
@@ -65,6 +73,24 @@ pub fn open_or_focus(cx: &mut App, engine: EngineHandle) {
             cx.set_activation_policy(ActivationPolicy::Accessory);
         }
     }
+}
+
+/// Puts Liquid Glass behind the new window's sidebar and toolbar
+/// ([`glass::attach`]). Without it (no `NSGlassEffectView`, or attaching failed)
+/// the window gets GPUI's `Blurred` background instead, which is the fallback,
+/// and the shell paints its opaque panels; that is logged once per run.
+fn attach_glass(window: &mut Window) -> Option<Box<dyn Backdrop>> {
+    let backdrop = glass::attach(window);
+    if backdrop.is_none() {
+        window.set_background_appearance(WindowBackgroundAppearance::Blurred);
+        if !FALLBACK_LOGGED.swap(true, Ordering::Relaxed) {
+            eprintln!(
+                "loctel: Liquid Glass is unavailable (it needs macOS 26 and an AppKit window), \
+                 so the window uses the blurred background instead"
+            );
+        }
+    }
+    backdrop
 }
 
 /// Puts the app back to `Accessory` when the main window closes (the Dock icon

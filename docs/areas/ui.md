@@ -11,7 +11,8 @@ macOS menu; the rules screen is Milestone 4. The main window (Map & traces, Trac
 `src/app`, the home screen's live data, the service map view, the trace
 table and the trace view in `src/views` are done, and so is the window's
 lifecycle (Linux opens it, macOS opens it from the menu bar item: see "The
-real window" below and [`macos.md`](macos.md)); the glass is not; see "Models", "The main window", "Live
+real window" below and [`macos.md`](macos.md); the look of the glass parts is done and tested, Apple's glass behind them is `loctel-macos`'s
+and unverified); see "Models", "The main window", "Live
 data", "The service map", "The trace table" and "The trace view" below), the remaining screens and the popover Milestone 4. The macOS menu bar
 item is in `loctel-macos`; it only borrows the strings from `menu_text`.
 
@@ -397,7 +398,7 @@ background executor, never on the frame.
 `app::init(cx)` (the bundled font and `gpui_kit::init`, once per app), opens
 the window with the options above and builds `MainWindow` inside GPUI Kit's
 `Root`. `attach_backdrop` runs inside the new window and returns the
-platform's `Backdrop` (macOS Liquid Glass, Task 10) or `None`. It leaves
+platform's `Backdrop` (macOS Liquid Glass, `loctel_macos::glass::attach`) or `None`. It leaves
 `reduce_motion` at the system's value. The app must register `KitAssets` with
 `Application::with_assets` for Kit's icons to draw.
 
@@ -428,7 +429,39 @@ prepaint callbacks over each panel's border box) and calls it once per frame
 in which the pair changed, never otherwise (`RecordingBackdrop` in tests;
 `shell_reports_glass_regions_once`, `glass_regions_follow_a_resize`). It
 is called inside GPUI's frame, so an implementation only stores the regions
-and applies them later (Task 10).
+and applies them later (macOS: `loctel_macos::glass`, from the main queue;
+decision 0030).
+
+**With a backdrop (the glass look).** Giving `MainWindow::new` a backdrop is
+what makes the sidebar and the toolbar glass parts. The platform that attaches
+one has made the window transparent, and the shell then leaves exactly those two
+parts clear:
+
+- The sidebar and the toolbar have **no fill**: a 1 px hairline
+  (`Theme::glass_hairline`) round them and, just inside it, a 1 px ring of
+  highlight (`Theme::glass_highlight`, concentric, radius 15). Both are
+  translucent, so the glass shows through them.
+- The **window colour** is painted by a canvas (`window_colour`) as one even-odd
+  path: the window rectangle with a rounded hole (`PANEL_RADIUS`) for each region
+  measured in that frame. So the gaps, the margin and the slivers outside the
+  rounded corners keep the colour, and nothing is painted over the glass. The
+  root `div` has no background of its own then.
+- Kit's `Root` paints `Theme::bg` over the whole window (its window state
+  plugin's style). `MainWindow::new` clears it, deferred one effect cycle (the
+  `Root` is made after the view); a window with no `Root` is left alone.
+
+Without a backdrop (Linux, or the macOS `Blurred` fallback) none of that
+applies: the panels have `Theme::panel` and `Theme::border`, the root has
+`Theme::bg`, and every pixel of the window is painted.
+
+The headless renderer cannot draw glass, and its capture is always opaque (it
+clears to black), so the tests put the window over a `Desktop` view that paints
+a flat stand-in colour (`desktop(theme)` in `tests/screens.rs`: dark blue on the
+dark look, pale blue on the light one) and read pixels:
+`glass_parts_show_what_is_behind_and_the_rest_does_not` (what is clear, what is
+solid, the hairline and the highlight), `without_a_backdrop_the_panels_have_their_fill`,
+and the references `shell_glass_dark.png` and `shell_glass_light.png`. Their
+glass areas show the stand-in colour; on a Mac they show Apple's glass.
 
 ## Live data
 
@@ -583,7 +616,11 @@ store clock moved 70 s after the traces so every trace is complete and
 the node and the service's filter in the query bar and the table), and
 `shell_dark.png` and `shell_light.png` (the home screen of an empty store: the
 empty map message and `No traces yet`). The trace table in them is "The trace
-table" below.
+table" below. `shell_glass_dark.png` and `shell_glass_light.png` are the same
+window with a backdrop attached, over a flat stand-in for the desktop (see "The
+main window", "With a backdrop"): the sidebar and the toolbar show the stand-in
+colour through them, with the hairline and the highlight round them, and
+everything else is as above.
 
 ## The trace table
 
@@ -812,6 +849,12 @@ literal.
 | `ok` | `#34c759` | `#1a7f37` | listening |
 | `service_palette` | `#4c9dff #3cc8b4 #f0a04b #b18cff #f07fb0` | `#0a62d6 #0f7f70 #b45f06 #6f42c1 #c2306f` | one per service, in order, wrapped |
 
+Two more are derived, with methods and not fields, for the glass parts of the
+window: `glass_hairline()` (the text colour at 16% on the dark look and 14% on
+the light) and `glass_highlight()` (the text colour at 8% on the dark look, the
+white panel colour at 60% on the light one). Both are translucent, so the glass
+shows through them.
+
 Errors are never marked by colour alone: a failed listener says `Failed` and
 the error in words, the pill says `Port problem`, and the rules row says
 `has an error` or `Discard rules file has an error`.
@@ -1002,6 +1045,11 @@ The repo skill `run-and-screenshot` covers running with meshgen data.
   and toggles with a real keyboard and IME, the tooltip of the dots, and that a
   click on a row opens the trace with a trackpad. The tests drive GPUI's own
   event path on Linux only.
+- The glass on a Mac: that Apple's glass really shows through the clear
+  sidebar and toolbar, and that there is no seam where AppKit's rounded glass
+  meets the hole in the window colour. The tests check the shell's side only,
+  over a flat colour ([`macos.md`](macos.md), "Unverified until the M3 Mac
+  check (Liquid Glass)").
 - The main window's lifecycle on macOS (`Open loctel`, the Dock and Cmd-Tab
   while it is open, the Accessory policy after it closes, a reopen from the
   Dock) is listed in [`macos.md`](macos.md) under "Unverified until the M3 Mac

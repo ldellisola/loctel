@@ -34,7 +34,7 @@ crate updates this table and the diagram below it.
 | `loctel-meshgen` | test tooling | Fake microservice mesh scenarios (library and `meshgen` binary) | implemented: six scenarios and a sender over gRPC, HTTP protobuf and HTTP JSON (see "Test tooling" below) |
 | `loctel-e2e` | test tooling | End-to-end tests through real OTLP and a real MCP client (`publish = false`) | implemented: a `Harness` over a real engine (with or without a rules file) and the tests of the transports, assembly, service map, agent flow, pause, release fixture, discard rules and queries (see "Test tooling" below) |
 | `loctel-ui` | UI | GPUI views, the pure view models and the headless screenshot harness | implemented: the status view (with the discard rules line, from Milestone 2), the shared menu text, the theme, the pure models of the main window (`model`: formats, service colours, trace table rows, query bar state, map layout, waterfall rows and inspector text), the main window's shell (`app`: sidebar, toolbar, `UiBackend`, the GPUI Kit theme bridge, and `HomeModel`, the home screen's live data; Milestone 3 in progress) and `testing::{render_png, render_window_png, Driver, headless_app, assert_snapshot}` behind the `screenshot` feature (see "UI" below) |
-| `loctel-macos` | macOS | Status item, activation policy, login item (`cfg(target_os = "macos")`) | implemented, never run: the menu bar item and its menu (with the discard rules line, Open loctel and Edit discard rules…), the main window's lifecycle (`window::open_or_focus`: the Dock while it is open, Accessory after it closes), the login item and the first-launch step; empty off macOS apart from three plain-Rust modules that the Linux tests cover (see "macOS shell" below) |
+| `loctel-macos` | macOS | Status item, activation policy, login item (`cfg(target_os = "macos")`) | implemented, never run: the menu bar item and its menu (with the discard rules line, Open loctel and Edit discard rules…), the main window's lifecycle (`window::open_or_focus`: the Dock while it is open, Accessory after it closes), Liquid Glass behind the main window's sidebar and toolbar (`glass::attach`), the login item and the first-launch step; empty off macOS apart from plain-Rust parts that the Linux tests cover (see "macOS shell" below) |
 | `loctel-app` | binary | The `loctel` binary: headless mode and GUI, bundle metadata | implemented: headless mode, on Linux the main window (it also quits cleanly on SIGINT and SIGTERM) and on macOS the menu bar app that opens the main window from its menu (see "Headless mode", "UI" and "macOS shell" below); `[package.metadata.bundle]` and `bundle/` hold what goes into `loctel.app` (see "Release pipeline" below) |
 | `xtask` | tooling | Screenshots, next-version, release notes, MCP smoke test | implemented: `screenshots [--update]`, `run-shot`, `next-version`, `release-notes` and `mcp-smoke --url URL` (see "UI" and "Release pipeline" below) |
 
@@ -540,11 +540,12 @@ details, the theme tokens and the workflow are in
 ## macOS shell
 
 `loctel-macos` is the only crate with `objc2` or `unsafe` code, and it is empty
-off macOS (its dependencies are macOS-only) apart from three plain-Rust modules
-that hold decisions and are compiled for tests everywhere: the menu's rows, the
-first-launch step and the icon files. It depends on the engine, `loctel-ui`
-(for `menu_text`), `gpui-pre`, `gpui-tray` (the `NSStatusItem`), `objc2` and
-`objc2-service-management`. The details, the menu and the list of what no one
+off macOS (its dependencies are macOS-only) apart from plain-Rust parts that
+hold decisions and are compiled for tests everywhere: the menu's rows, the
+first-launch step, the icon files and the y flip of the glass frames. It
+depends on the engine, `loctel-ui` (for `menu_text` and the main window),
+`gpui-pre`, `gpui-tray` (the `NSStatusItem`), `objc2`, `objc2-app-kit`,
+`objc2-service-management`, `raw-window-handle` and `dispatch2`. The details, the menu and the list of what no one
 has seen work yet are in [`areas/macos.md`](areas/macos.md); the choices and
 their reasons are in
 [`decisions/0009-macos-check-from-linux.md`](decisions/0009-macos-check-from-linux.md).
@@ -558,6 +559,13 @@ their reasons are in
   ⌘-Tab), opens `loctel_ui::app::open_main_window` and activates the app; when
   the window closes the policy goes back to `Accessory` and the app keeps
   running. See "The main window's lifecycle" in `areas/macos.md`.
+- **Liquid Glass** is `loctel_macos::glass::attach`, which `open_or_focus` passes
+  to `open_main_window`: native `NSGlassEffectView`s under GPUI's view, behind
+  the sidebar and the toolbar, in a transparent window. The shell (`loctel-ui`)
+  tells the `Backdrop` where those two parts are; the frames are applied from
+  the main queue, never inside a GPUI frame. Without glass the window is
+  `Blurred` and the panels are opaque. See "Liquid Glass" in `areas/macos.md`
+  and [`decisions/0030-liquid-glass.md`](decisions/0030-liquid-glass.md).
 - **The menu** is the status line and the discard rules line under it (both
   `menu_text`, the same functions the Linux window uses), Open loctel, Copy MCP address,
   Pause or Resume, Edit discard rules… (opens `engine.rules_path()` in the

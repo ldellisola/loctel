@@ -88,9 +88,15 @@ gpui-kit = "=0.8.0"
 # one copy of each.
 gpui-tray = { version = "0.2", default-features = false, features = ["gpui-kit", "menu-state"] }
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSBitmapImageRep", "NSImage", "NSImageRep", "NSWorkspace"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSBitmapImageRep", "NSColor", "NSGlassEffectView", "NSGraphics", "NSImage", "NSImageRep", "NSResponder", "NSView", "NSWorkspace", "objc2-core-foundation"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSError", "NSGeometry", "NSString", "NSURL"] }
 objc2-service-management = "0.3.2"
+# Liquid Glass (loctel-macos `glass.rs`): the window's AppKit view comes from
+# GPUI's raw window handle (the same 0.6 GPUI uses), and the glass frames are
+# applied from the main dispatch queue, never inside a GPUI frame. Both are
+# already in the lockfile through GPUI and objc2.
+raw-window-handle = "0.6"
+dispatch2 = "0.3"
 
 # Line tables only: full debug info made a clean test build about 12 GB of
 # target/, too close to the free disk on CI runners and agent containers.

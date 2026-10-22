@@ -1,7 +1,8 @@
 # macOS shell (`loctel-macos`)
 
 The menu bar item, the main window's lifecycle (opening it, the Dock while it
-is open), the accessory-app behaviour and start at login. Design
+is open), the Liquid Glass behind its sidebar and toolbar, the accessory-app
+behaviour and start at login. Design
 references: §9.1 (app lifecycle), §9.2 (menu bar popover, which is Milestone 4;
 Milestone 1 has the plain menu below), §10.3 (macOS checks), §10.4 (the Mac
 checks), §11 (technology).
@@ -13,16 +14,17 @@ anyone has seen work.
 
 ## What is in the crate
 
-The crate is empty off macOS, except for three plain-Rust modules that are
-compiled for tests on every OS (see decision 0009): `menu` (the menu's rows as
-values), `first_launch` (the once-only step) and `icon` (the two PNG
-constants). Their tests run in the Linux gate. All `objc2` and `unsafe` code in
-the project lives here.
+The crate is empty off macOS, except for plain-Rust parts that are compiled
+for tests on every OS (see decision 0009): `menu` (the menu's rows as values),
+`first_launch` (the once-only step), `icon` (the two PNG constants) and, in
+`glass`, `appkit_frame` (the y flip of the glass frames). Their tests run in
+the Linux gate. All `objc2` and `unsafe` code in the project lives here.
 
 | Item | What it is |
 |---|---|
 | `install(cx, engine, settings_path)` | `loctel-app` calls this once, inside `Application::run`. Runs the first-launch step, registers the actions, builds the status item and starts the 2 s refresh. Opens no window. If the item cannot be created it prints why and quits |
 | `window::open_or_focus(cx, engine)` (also `loctel_macos::open_or_focus`) | shows the main window: brings the open one to the front, or opens it with the Dock icon on. The menu's `Open loctel` and GPUI's reopen event call it. See "The main window's lifecycle" below |
+| `glass::attach(window)` | puts Liquid Glass behind the main window's sidebar and toolbar and returns the `Backdrop` the shell reports their places to; `None` without `NSGlassEffectView`. `open_or_focus` passes it to `open_main_window`. See "Liquid Glass" below |
 | `login_item::is_enabled()` | `SMAppService.mainAppService().status() == Enabled`. Asked every time; nothing is cached |
 | `login_item::set_enabled(on)` | `registerAndReturnError` or `unregisterAndReturnError`; the system's `NSError` becomes an `anyhow` error |
 | `menu::rows(&MenuState)` | the rows below, as values: tested on Linux |
@@ -108,8 +110,10 @@ Milestone 1); the menu's `Open loctel` is the way in.
   - Otherwise, in this order:
     1. `cx.set_activation_policy(ActivationPolicy::Regular)`: the Dock icon and
        the ⌘-Tab entry appear.
-    2. `loctel_ui::app::open_main_window(Rc::new(engine), cx, |_| None)`. The
-       backdrop closure returns `None` until Task 10 passes `glass::attach`.
+    2. `loctel_ui::app::open_main_window(Rc::new(engine), cx, attach_glass)`:
+       `attach_glass` is `glass::attach`, and when that returns `None` it sets
+       the `Blurred` window background and logs the fallback once (see "Liquid
+       Glass").
     3. `cx.activate(true)`.
   - If opening fails the reason goes to stderr and the policy goes back to
     `Accessory`.
@@ -126,6 +130,46 @@ Milestone 1); the menu's `Open loctel` is the way in.
   existing one forward when it is there but not visible (minimised or hidden).
 - **Linux** has none of this: closing the main window quits (see
   [`ui.md`](ui.md), "The real window").
+
+## Liquid Glass
+
+`glass.rs` (Milestone 3, Task 10; decision
+[0030](../decisions/0030-liquid-glass.md) has the reasons). GPUI draws the whole
+window into one `NSView`, so the glass is native views *under* it, in a
+transparent window.
+
+- **`glass::attach(window: &mut Window) -> Option<Box<dyn Backdrop>>`** runs
+  inside the new window, before the shell is built:
+  - It returns `None`, having changed nothing, when the `NSGlassEffectView`
+    class is not there (macOS before 26), when it is not on the main thread, or
+    when the window's handle is not an AppKit one.
+  - Otherwise it sets `WindowBackgroundAppearance::Transparent` and makes two
+    regions (the sidebar first, then the toolbar). Each is a host `NSView`
+    (`LoctelGlassHost`: clips to its bounds, `hitTest:` returns `nil`) holding an
+    `NSGlassEffectView` (style Regular, an empty content view) that fills it.
+    The hosts are inserted into GPUI's view's superview, below GPUI's view, and
+    are hidden until the first regions are applied.
+- **The backdrop** stores the latest regions in `set_regions` and applies them
+  from the main dispatch queue, never inside GPUI's frame:
+  - For each region: the host's frame (`to_appkit_frame`), the glass's frame
+    (the host's bounds) and the glass's corner radius (the region's, 16), then
+    the host is shown.
+  - Several reports before the queue's turn apply once, with the last.
+  - Regions the shell no longer reports hide their hosts.
+- **`to_appkit_frame(region, view_height, flipped) -> NSRect`**: GPUI's regions
+  are measured from the top left of GPUI's view. For a parent that is not
+  flipped (AppKit's default) y becomes `view_height - y - height`; for a flipped
+  one it stays. The frames are also offset by GPUI's view's own origin in its
+  parent, which is zero when it fills it. The y flip is `appkit_frame`, plain
+  Rust with tests in the Linux gate.
+- **The fallback**: when `attach` returns `None`, `window.rs` sets
+  `WindowBackgroundAppearance::Blurred` and prints one line to stderr (the first
+  time only). The shell then has no backdrop and paints its opaque panels.
+- **What the shell does for the glass** (in `loctel-ui`, tested on Linux): with a
+  backdrop, the sidebar and toolbar have no fill, only a hairline and an inner
+  highlight; the window colour is painted round them, not under them; and Kit's
+  `Root` background is cleared, so nothing above the glass hides it. See
+  [`ui.md`](ui.md), "Glass regions".
 
 ## Start at login
 
@@ -252,9 +296,41 @@ should confirm:
 - **No leftovers**: opening and closing the window ten times in a row leaves one
   window each time and no stray Dock icon.
 
+## Unverified until the M3 Mac check (Liquid Glass)
+
+Milestone 3 Task 10 added the glass. Nobody has run it either; the Milestone 3
+section of the Mac checklist (item 2) should confirm, and report in words what
+it sees:
+
+- **The glass appears** behind the sidebar and the toolbar, and looks like
+  Liquid Glass (blurred and refracted, changing as the window moves over
+  different backgrounds), not plain blur. The content panels are solid, and the
+  window colour is solid in the gaps and the margin.
+- **No seam**: AppKit rounds the glass and GPUI rounds the hole in the window
+  colour round it; the 1 px hairline is meant to cover the edge. Check the
+  four corners of each glass part.
+- **Opening, resizing and closing the window never hangs.** The frames are
+  applied from the main queue to avoid the AppKit-calls-GPUI deadlock; this is
+  where that is tested for the first time. Resize the window quickly and move
+  the sidebar's edge over busy backgrounds.
+- **How far the glass trails a live resize.** It follows each layout one
+  main-queue turn late; report whether it is visible.
+- **Clicks reach GPUI** through the glass hosts (the nav entry, the toolbar,
+  the traffic lights), and the hosts never take a click or the keyboard.
+- **The transparent window**: its shadow, the traffic lights over the sidebar,
+  and the title bar. The window colour must not show a see-through window
+  anywhere (a gap that shows the desktop is a bug).
+- **Light and dark**: the glass follows the system appearance, and the text on
+  it stays readable in both. The hairline and the highlight are pinned only
+  against a flat stand-in colour on Linux.
+- **The fallback** (only if you can force it, for instance on a Mac without
+  `NSGlassEffectView`): the window gets the blurred background, the panels are
+  opaque, and one line about it is printed to stderr.
+
 ## Tests
 
-- `cargo test -p loctel-macos` (runs on Linux): `menu` (the designed order with
+- `cargo test -p loctel-macos` (runs on Linux): `glass` (the y flip of the
+  frames: kept for a flipped parent, counted from the bottom otherwise), `menu` (the designed order with
   `Open loctel` first after the headers, the rules header and the Edit item,
   the Pause/Resume label, the checkmark, the greyed Copy and the greyed Edit,
   the header text),
@@ -262,5 +338,11 @@ should confirm:
   broken file left alone) and `icon` (18 and 36 pixels, black template ink, three
   rings at the mockup's positions).
 - `bash script/check-macos.sh --all-targets`: the macOS-only code type-checks
-  and passes clippy.
+  and passes clippy. That includes the two tests of `to_appkit_frame` that
+  need an `NSRect` (`to_appkit_frame_flips_y_when_not_flipped` and
+  `to_appkit_frame_keeps_y_when_flipped`): they are compiled there and run
+  nowhere until someone runs `cargo test -p loctel-macos` on a Mac.
+- `cargo test -p loctel-ui --test screens`: the shell's side of the glass (the
+  see-through parts, the hairline and the highlight, and the `shell_glass_dark`
+  and `shell_glass_light` references).
 - Nothing runs the AppKit parts. That is what the Mac check is for.

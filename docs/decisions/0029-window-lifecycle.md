@@ -33,7 +33,8 @@ existing code differs from what the plan assumed.
   GPUI calls it only when AppKit says there are no visible windows.
 - **The backdrop closure is `|_| None` in Task 9.** The plan writes
   `|w| glass::attach(w)`, but `glass.rs` is Task 10's file. Task 10 changes this
-  one closure (and adds the `Blurred` fallback).
+  one closure (and adds the `Blurred` fallback). Done: `window::attach_glass`,
+  decision 0030.
 - **⌘O is bound, but cannot be in the menu.** `gpui-tray` 0.2.0 builds its
   `NSMenuItem`s with an empty key equivalent (decision 0009 says the same of
   ⌘Q), so the menu cannot show or answer ⌘O. `cmd-o` is bound to the

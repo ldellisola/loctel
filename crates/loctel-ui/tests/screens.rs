@@ -144,6 +144,162 @@ fn glass_regions_follow_a_resize() {
     );
 }
 
+/// What the compositor puts behind a window with glass parts on a Mac: the
+/// desktop. The headless renderer cannot draw Apple's glass, and its capture is
+/// always opaque (it clears to black), so this stands in for the glass:
+/// a flat colour that is nothing like the window's own, painted under the
+/// window. Where the shell leaves the window see-through, the colour shows.
+/// Real glass is dark under a dark appearance and pale under a light one, and so
+/// is the stand-in (the text has to read on it).
+fn desktop(theme: &Theme) -> gpui::Rgba {
+    if theme.dark {
+        gpui::rgb(0x2a4663)
+    } else {
+        gpui::rgb(0xc4d6e8)
+    }
+}
+
+struct Desktop {
+    main: gpui::Entity<MainWindow>,
+    color: gpui::Rgba,
+}
+
+impl gpui::Render for Desktop {
+    fn render(
+        &mut self,
+        _window: &mut gpui::Window,
+        _cx: &mut gpui::Context<Self>,
+    ) -> impl gpui::IntoElement {
+        use gpui::{ParentElement as _, Styled as _};
+        gpui::div()
+            .size_full()
+            .bg(self.color)
+            .child(self.main.clone())
+    }
+}
+
+/// The window as `glass::attach` leaves it on a Mac, as far as a headless
+/// window can show it: a backdrop that has been handed the regions, over the
+/// [`desktop`] stand-in.
+fn glass_capture(theme: &Theme) -> image::RgbaImage {
+    let backdrop = RecordingBackdrop::default();
+    let backend = backend();
+    let color = desktop(theme);
+    let image = render_window_png(WINDOW, theme, move |window, cx| {
+        let main = cx.new(|cx| MainWindow::new(backend, Some(Box::new(backdrop)), window, cx));
+        cx.new(|_| Desktop { main, color })
+    });
+    assert_eq!(image.dimensions(), (2880, 1800));
+    image
+}
+
+/// The pixel at a position of a 1440 by 900 window, in logical pixels (the
+/// capture is drawn at scale 2).
+fn pixel_at(image: &image::RgbaImage, x: f32, y: f32) -> image::Rgba<u8> {
+    *image.get_pixel((x * 2.0) as u32, (y * 2.0) as u32)
+}
+
+/// A colour as the 8 bit channels of an opaque pixel.
+fn opaque(color: gpui::Rgba) -> image::Rgba<u8> {
+    let byte = |channel: f32| (channel * 255.0).round() as u8;
+    image::Rgba([byte(color.r), byte(color.g), byte(color.b), 255])
+}
+
+/// `line` (a translucent colour) drawn over `ground`, as 8 bit channels.
+fn blended(line: gpui::Rgba, ground: gpui::Rgba) -> [u8; 3] {
+    let mix = |over: f32, under: f32| ((over * line.a + under * (1.0 - line.a)) * 255.0).round();
+    [
+        mix(line.r, ground.r) as u8,
+        mix(line.g, ground.g) as u8,
+        mix(line.b, ground.b) as u8,
+    ]
+}
+
+/// Whether `found` is `expected` give or take rounding in the renderer.
+fn close(found: image::Rgba<u8>, expected: [u8; 3]) -> bool {
+    (0..3).all(|channel| found[channel].abs_diff(expected[channel]) <= 2)
+}
+
+#[test]
+fn shell_glass_dark() {
+    assert_snapshot("shell_glass_dark", &glass_capture(&Theme::dark()));
+}
+
+#[test]
+fn shell_glass_light() {
+    assert_snapshot("shell_glass_light", &glass_capture(&Theme::light()));
+}
+
+#[test]
+fn glass_parts_show_what_is_behind_and_the_rest_does_not() {
+    for theme in [Theme::dark(), Theme::light()] {
+        let image = glass_capture(&theme);
+        let behind = desktop(&theme);
+        let at = |x: f32, y: f32| pixel_at(&image, x, y);
+
+        // The sidebar and the toolbar paint nothing of their own where they
+        // are empty: what is behind the window shows through. That includes
+        // Kit's root and the window colour, which would otherwise cover it.
+        assert_eq!(at(120.0, 300.0), opaque(behind), "inside the sidebar");
+        assert_eq!(at(1000.0, 34.0), opaque(behind), "inside the toolbar");
+
+        // The content panels are solid, and so is the window colour around
+        // every panel: the gaps, the margin, and the slivers outside the
+        // rounded corners of the glass parts.
+        assert_eq!(at(250.0, 80.0), opaque(theme.panel), "the map panel");
+        assert_eq!(at(300.0, 860.0), opaque(theme.panel), "the table panel");
+        for (name, x, y) in [
+            ("between the sidebar and the content", 235.0, 400.0),
+            ("between the toolbar and the map", 800.0, 63.0),
+            ("between the map and the table", 800.0, 499.0),
+            ("the margin", 5.0, 5.0),
+            ("outside the sidebar's rounded corner", 11.0, 11.0),
+            ("outside the toolbar's rounded corner", 241.0, 11.0),
+        ] {
+            assert_eq!(at(x, y), opaque(theme.bg), "{name} at ({x}, {y})");
+        }
+
+        // Each glass part has a hairline round it and, just inside it, a
+        // highlight: both translucent, so what is behind shows through them.
+        for (x, y) in [(10.5, 400.0), (800.0, 10.5)] {
+            let expected = blended(theme.glass_hairline(), behind);
+            assert!(
+                close(at(x, y), expected),
+                "the hairline at ({x}, {y}) is {:?}, not {expected:?}",
+                at(x, y)
+            );
+        }
+        for (x, y) in [(11.5, 400.0), (800.0, 11.5)] {
+            let expected = blended(theme.glass_highlight(), behind);
+            assert!(
+                close(at(x, y), expected),
+                "the highlight at ({x}, {y}) is {:?}, not {expected:?}",
+                at(x, y)
+            );
+        }
+    }
+}
+
+#[test]
+fn without_a_backdrop_the_panels_have_their_fill() {
+    // No glass behind the window (Linux, or the Blurred fallback of a Mac):
+    // the sidebar and the toolbar are panels, and the window colour is
+    // painted everywhere.
+    for theme in [Theme::dark(), Theme::light()] {
+        let backend = backend();
+        let color = desktop(&theme);
+        let image = render_window_png(WINDOW, &theme, move |window, cx| {
+            let main = cx.new(|cx| MainWindow::new(backend, None, window, cx));
+            cx.new(|_| Desktop { main, color })
+        });
+        let at = |x: f32, y: f32| pixel_at(&image, x, y);
+        assert_eq!(at(120.0, 300.0), opaque(theme.panel), "the sidebar");
+        assert_eq!(at(1000.0, 34.0), opaque(theme.panel), "the toolbar");
+        assert_eq!(at(235.0, 400.0), opaque(theme.bg), "the gap");
+        assert_eq!(at(11.0, 11.0), opaque(theme.bg), "outside the corner");
+    }
+}
+
 #[test]
 fn appearance_switch_changes_theme() {
     let backend = backend();

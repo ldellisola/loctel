@@ -67,7 +67,7 @@ pub fn init(cx: &mut App) {
 ///
 /// `attach_backdrop` runs once, inside the new window, before the shell is
 /// built: a platform that can put something behind the glass parts attaches it
-/// to the window and returns it (macOS, Task 10); `|_| None` opens a window
+/// to the window and returns it (macOS: `loctel_macos::glass::attach`); `|_| None` opens a window
 /// with opaque panels. Reduced motion is left at the system's value.
 ///
 /// Fails when the platform has no display to open a window on.
