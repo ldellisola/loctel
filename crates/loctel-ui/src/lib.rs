@@ -41,7 +41,11 @@
 //!   [`RulesView`](views::RulesView) (the cards of the rules, and beside them the
 //!   [`RuleEditorView`](views::RuleEditorView) with its preview), and the
 //!   Settings window's [`SettingsView`](views::SettingsView) (the three ports
-//!   with the state of their endpoints, the login switch, `Apply` and `Close`).
+//!   with the state of their endpoints, the login switch, `Apply` and `Close`)
+//!   and the menu bar popover's [`PopoverView`](views::PopoverView) (the status
+//!   pill, four stats, the endpoints, the rules line and the actions, all of which
+//!   it asks of a [`PopoverActions`](views::PopoverActions); glass through an
+//!   optional [`Backdrop`](app::Backdrop)).
 //! - [`menu_text`] holds the exact strings for the status line, the discard
 //!   rules line and the rates, so the macOS menu and the view cannot drift apart.
 //! - [`Theme`] holds the colours; [`register_fonts`] the bundled typeface.

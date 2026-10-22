@@ -25,14 +25,20 @@
 //!   inputs with the state of their endpoints, the login switch where there is a
 //!   login item, `Apply` and `Close`.
 //!
+//! - [`PopoverView`]: the menu bar popover (Milestone 4): the status pill, the four
+//!   stats, the endpoints with `Copy`, the rules line and the actions. It does
+//!   nothing itself: every action is a call on its [`PopoverActions`], which
+//!   `loctel-macos` implements and the tests record.
+//!
 //! `docs/areas/ui.md` ("The service map", "The trace table", "The trace view",
-//! "The Logs screen", "The Discard rules screen", "The Settings window") has the
-//! look and the interactions.
+//! "The Logs screen", "The Discard rules screen", "The Settings window", "The
+//! popover") has the look and the interactions.
 
 mod histogram_view;
 mod inspector_view;
 mod logs_view;
 mod map_view;
+mod popover_view;
 mod rule_editor_view;
 mod rules_view;
 mod settings_view;
@@ -50,6 +56,11 @@ pub use logs_view::{
     OPEN_TRACE, SHOW_AROUND,
 };
 pub use map_view::{Camera, EMPTY_HINT, EMPTY_TITLE, MAX_ZOOM, MIN_ZOOM, MapView};
+pub(crate) use popover_view::bind_keys as bind_popover_keys;
+pub use popover_view::{
+    POPOVER_RADIUS, POPOVER_REFRESH, POPOVER_WIDTH, PopoverActions, PopoverPart, PopoverView,
+    popover_height,
+};
 pub use rule_editor_view::{
     APPLIES_LABEL, CANCEL, DELETE, DELETE_ASK, DELETE_CONFIRM, DELETE_KEEP, DISCARD_DRAFT,
     EDITOR_WIDTH, EXTERNAL_CHANGE, KEEP_DRAFT, LANGUAGE_LOGS, LANGUAGE_TRACES, NAME_LABEL,

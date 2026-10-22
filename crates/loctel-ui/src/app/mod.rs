@@ -63,6 +63,7 @@ pub use logs_data::{
 pub use nav::{NavItem, OpenSettings, SETTINGS_SHORTCUT, ShowLogs, ShowMapAndTraces, ShowRules};
 pub use rules_data::{PREVIEW_DEBOUNCE, PreviewState, RULES_REFRESH, RuleEditor, RulesModel};
 pub use settings_window::{SETTINGS_SIZE, open_settings_window};
+pub(crate) use shell::clear_root_background;
 pub use shell::{
     Backdrop, DEFAULT_SIZE, GlassRegion, INSET, MIN_SIZE, MainWindow, PANEL_RADIUS, SIDEBAR_WIDTH,
     Screen, TOOLBAR_HEIGHT, content_width,
@@ -89,6 +90,7 @@ pub fn init(cx: &mut App) {
     crate::register_fonts(cx);
     gpui_kit::init(cx);
     nav::bind_keys(cx);
+    crate::views::bind_popover_keys(cx);
     cx.set_global(Ready);
 }
 

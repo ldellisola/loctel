@@ -20,10 +20,11 @@ below and [`macos.md`](macos.md)); the look of the glass parts is done and
 tested here, and Apple's glass behind them is `loctel-macos`'s and unverified.
 Milestones 1 and 2 had one view, the **status view**, which stays as a
 standalone view with its own screenshot tests (Milestone 2 added the discard
-rules line to it and to the macOS menu). Milestone 4 Task 6 adds the Settings
-window, a window of its own (see "The Settings window"); the popover is the
-remaining part. The macOS menu bar item is in
-`loctel-macos`; it only borrows the strings from `menu_text`.
+rules line to it and to the macOS menu). Milestone 4 adds two windows of their own:
+the Settings window (Task 6, see "The Settings window") and the menu bar popover's
+view (Task 8, see "The popover"), which is cross-platform and tested here; what
+opens it under the menu bar icon is `loctel-macos` (Task 9). The macOS menu bar
+item is in `loctel-macos`; it only borrows the strings from `menu_text`.
 
 GPUI comes as the weekly `gpui-pre` snapshot, `gpui-pre`, `gpui-pre-platform`
 and `gpui-pre-wgpu`, all pinned to exactly `=0.3.9` (zed@93d7456), and GPUI Kit
@@ -44,7 +45,7 @@ are what shows you what moved (the `upgrade-gpui` skill has the steps; decision
 | `menu_text::format_rate(f64)` | `412` is `412`, `1234` is `1.2k`, `0.4` is `0`. One decimal under ten thousand, none above, never `.0` (`1k`, `10k`, `1.3M`); NaN, infinity and negatives read `0` |
 | `model` | the pure models of the main window: `format`, `colors`, `trace_table`, `query_bar`, `map_layout`, `waterfall`, `inspector`, `trace_view`, and (Milestone 4) `logs`, `histogram`, `rules`, `settings`, `popover` (see "Models" below) |
 | `app` | the main window's shell (see "The main window"): `MainWindow`, `Screen`, `UiBackend`, `open_main_window`, `Backdrop`/`GlassRegion`, `kit_theme`; the home screen's live data (see "Live data"): `HomeModel`, `HomeData`, `TimeRange`; the open trace's (see "The trace view"): `TraceModel`; the Logs screen's (see "The Logs screen"): `LogsModel`, `LogsControls`; and the Discard rules screen's (see "The Discard rules screen"): `RulesModel`, `RuleEditor`, `PreviewState`; and `open_settings_window` (see "The Settings window") |
-| `views` | the views of the main window's screens (see "The service map", "The trace table", "The trace view", "The Logs screen" and "The Discard rules screen"): `MapView`, with its `Camera`, `TraceTableView`, `TraceView` with its `WaterfallView`, `InspectorView` and `SpanLogsView`, `LogsView` with its `HistogramView`, `RulesView` with its `RuleEditorView`, and (see "The Settings window") `SettingsView` |
+| `views` | the views of the main window's screens (see "The service map", "The trace table", "The trace view", "The Logs screen" and "The Discard rules screen"): `MapView`, with its `Camera`, `TraceTableView`, `TraceView` with its `WaterfallView`, `InspectorView` and `SpanLogsView`, `LogsView` with its `HistogramView`, `RulesView` with its `RuleEditorView`, and (see "The Settings window" and "The popover") `SettingsView` and `PopoverView` with its `PopoverActions` |
 | `Theme` | the colours below. `Theme::dark()`, `Theme::light()` and `Theme::for_appearance(WindowAppearance)`. It is also a GPUI global once `kit_theme::apply` has run |
 | `KitAssets` | the icons to register with `Application::with_assets`: GPUI Kit's default bundle (what its components draw) plus the list and the funnel, which the sidebar uses and the default bundle leaves out (decision 0040). `testing::headless_app` registers it too |
 | `register_fonts(cx)`, `FONT_FAMILY` | the bundled typeface (below) |
@@ -106,6 +107,16 @@ status box) and the toolbar are on every screen.
                        will (Task 9))
    SettingsView   three port inputs with the state of their endpoints, the login switch (macOS),
                   `Apply` and `Close`;  app::open_settings_window opens it or focuses the open one
+
+ The menu bar popover  (Milestone 4 Task 8: a panel of its own, 336 wide, that `loctel-macos`
+                        opens under the menu bar icon (Task 9); it replaces the M1 and M2 menu)
+   PopoverView    title and status pill, four stats, the endpoints (`Copy` on MCP), the rules line,
+                  |    the rules line         -> PopoverActions::open_main(Screen::Rules { draft: None })
+                  |    `Open loctel`, ⌘O      -> open_main(Screen::Home)
+                  |    `Settings…`, ⌘,        -> open_settings()      (both then close())
+                  `Pause receiving`, `Clear all data…` (asks inline), `Start at login` (macOS),
+                  `Quit loctel` ⌘Q;  every action goes through PopoverActions, so the view runs
+                  and is tested without a Mac
 ```
 
 | From | The user does | To |
@@ -604,7 +615,8 @@ Pinned in `tests/model_misc.rs`.
   it ignored, else `Enter a port from 1 to 65535`. Fields that are ports and share
   a number (as numbers: `4318` and `04318` are the same) each get `Each endpoint
   needs its own port`.
-- `popover::from_status(&EngineStatus, login)` is the `Popover`. `pill` is the
+- `popover::from_status(&EngineStatus, login)` is the `Popover` (drawn by
+  `views::PopoverView`, see "The popover"). `pill` is the
   first that applies, as in the status line: a failed listener `Port problem`
   (`Tone::Error`), paused `Paused` (`Tone::Warn`), else `Receiving` (`Tone::Ok`).
   `stats` are `(value, label)` for `spans per second` and `log lines per second`
@@ -1588,7 +1600,7 @@ of the port it listens on.
 `message(field)`, `notice()`, `sections()`, `input_text(field, cx)` and
 `bounds_of(SettingsPart, cx)` / `center_of` (`Input(field)`, `Status(field)`,
 `Message(field)`, `LoginSwitch`, `Apply`, `Close`). `tests/settings_popover.rs`
-(the popover's tests join it in Task 8) drives it in a `Driver<SettingsView>` at
+(the popover's tests are in the same file, see "The popover") drives it in a `Driver<SettingsView>` at
 520 by 360 over a `FixedBackend`: `fail_bind` makes the HTTP listener `Failed`
 the way a port in use does, `fail_save` makes `apply_settings` an error, and the
 login item is a `FakeLogin` the test can move behind the window's back. `Driver`
@@ -1604,6 +1616,107 @@ row and `otlp-http: address in use` beside the buttons) and
 third out of range, each with its message, and everything still in view). How the
 window looks and behaves on a Mac (its chrome, that it is not resizable, how it
 takes the focus from a menu bar app) is unverified.
+
+## The popover
+
+`views::PopoverView` (`src/views/popover_view.rs`, Milestone 4 Task 8) is the menu
+bar popover: the panel that replaces the M1 and M2 menu. It is cross-platform on
+purpose. The view, its content (`model::popover`) and everything it asks of the
+app (`PopoverActions`) are built and screenshotted on Linux; what is left for
+`loctel-macos` (Task 9) is to put it in a window under the menu bar icon and to
+implement `PopoverActions`. The popover on a Mac is unverified (see "Unverified").
+Decision 0041 has the choices the plan left open.
+
+**The panel** is `POPOVER_WIDTH` (336) wide, with corners of `POPOVER_RADIUS` (18),
+and as tall as its rows: every row has a fixed height, so `popover_height(login_item)`
+is the sum (504 with the `Start at login` row, 476 without, in logical pixels) and
+the popover's window is made that size. Swapping `Clear all data…` for its question
+changes no height (`the_height_does_not_change_while_it_asks_to_clear`). From the
+top:
+
+| Row | What |
+|---|---|
+| title and pill | `loctel` (16 px, semibold) and the pill: a dot and the words `Receiving` (green), `Paused` (amber) or `Port problem` (red, in `error_text`), as `popover::from_status` says (a failed listener over paused over receiving) |
+| stats | four tiles, two by two (56 px high): the value (20 px, semibold) over its label: `412` `spans per second`, `1.2k` `log lines per second`, `1,204` `traces held`, `96,433` `log lines held` |
+| endpoints | a group of three 28 px rows: a dot (green, or red for a listener that is not listening), the name (`OTLP gRPC`, `OTLP HTTP`, `MCP`), and the address in the mono face: `127.0.0.1:4317`, and for MCP the URL without its scheme, `127.0.0.1:4319/mcp`. A listener that could not be bound is red and says `127.0.0.1:4318 · failed` (the colour is not the only sign). `Copy` ends the MCP row, only while MCP is listening: there is no address to copy otherwise |
+| rules line | a dot, `menu_text::rules_line` (`1 discard rule on · 31% dropped`) and a chevron; red for a rule or a file with an error, grey for none on, green otherwise (the status view's rules row). A click opens the main window on Discard rules |
+| divider | |
+| actions | `Open loctel` ⌘O, `Pause receiving` or `Resume receiving`, `Clear all data…`, and where `UiBackend::login_item()` is `Some` (macOS) `Start at login` with a switch |
+| `Settings…` | ⌘, |
+| divider | |
+| `Quit loctel` | ⌘Q |
+
+**What it does.** Every action is a call on the `PopoverActions` the view was
+given (`Rc<dyn PopoverActions>`): `open_main(Screen)`, `open_settings()`,
+`toggle_pause()`, `clear_all()`, `copy_mcp()`, `set_start_at_login(bool)`, `quit()`
+and `close()`. The view never opens a window, writes a setting or touches the
+clipboard itself.
+
+| The user | The view calls |
+|---|---|
+| `Open loctel`, ⌘O | `open_main(Screen::Home)`, then `close()` |
+| the rules line | `open_main(Screen::Rules { draft: None })`, then `close()` |
+| `Settings…`, ⌘, | `open_settings()`, then `close()` |
+| `Pause receiving` / `Resume receiving` | `toggle_pause()` (the popover stays open) |
+| `Copy` | `copy_mcp()` (stays open) |
+| the `Start at login` switch (or its row) | `set_start_at_login(!shown)` (stays open) |
+| `Clear all data…` | nothing yet: the row turns into `Clear all traces and logs?` with `Clear` and `Cancel`. `Clear` calls `clear_all()` once (stays open); `Cancel` puts the row back |
+| `Quit loctel`, ⌘Q | `quit()` |
+| Esc | `close()` (a question that is open is forgotten) |
+
+The popover closes when it loses focus (Task 9: the window's deactivation), on Esc,
+and after an action that opens a window, which is the `close()` after those three
+rows. It does not close for pause, `Copy`, the switch or a confirmed clear.
+
+**Refreshing.** The popover reads `UiBackend::status()` and the login item when it
+opens and every second (`POPOVER_REFRESH`), and **at once after an action that
+changes what it shows** (pause, the switch, a confirmed clear), so `Pause receiving`
+reads `Resume receiving` as soon as it is clicked. The switch always shows what the
+system holds: after `set_start_at_login` the view asks the login item again, so a
+refusal leaves it as it was (`the_login_switch_follows_the_system`).
+
+**Keys.** The panel is a key context of its own, `LoctelPopover` (not `Popover`,
+which GPUI Kit's popover binds Esc in), with Esc, ⌘O, ⌘, and ⌘Q bound by
+`app::init` to the same things as the rows. They work wherever in the panel the
+keyboard is: the view takes the focus when it is first drawn and takes it back
+whenever what had it leaves the frame (the same as the main window's shell,
+decision 0040; GPUI Kit's buttons do not take focus on a click, so a stray focus
+is simulated in `the_popover_takes_the_keyboard_back_when_what_had_it_is_gone`).
+
+**Glass.** `PopoverView::with_backdrop(Some(backdrop))` (`loctel_macos::glass::attach`
+returns one; it is `None` on Linux and in most tests) makes the panel glass, as the
+sidebar and the toolbar of the main window are: no fill, so the platform's glass
+shows, with a hairline round it (`Theme::glass_hairline`) and a highlight just
+inside (`glass_highlight`), the tiles and the endpoint group translucent
+(`Theme::panel` at 45% in the dark look and 55% in the light one) and the window
+colour that Kit's `Root` paints over the window cleared on the first frame. The
+view then reports **one** `GlassRegion` (the panel's border box, radius 18) to the
+backdrop whenever it changes, and never otherwise (`popover_reports_one_glass_region`).
+Without a backdrop the panel is opaque: `Theme::bg` with the tiles in `Theme::panel`
+and `Theme::border` hairlines. The first frame also takes the theme from the window's
+appearance and follows it, as `SettingsView` does: the popover is the first window
+of a menu bar app, so no other window has set `Theme` yet.
+
+**For tests.** `PopoverView` reads: `popover()` (the model it draws),
+`action_rows()` (the rows as `(words, shortcut)`, top to bottom),
+`endpoint_lines()`, `confirming_clear()` and `bounds_of(PopoverPart)` /
+`center_of` (`Panel`, `Pill`, `Stat(i)`, `Endpoint(i)`, `CopyMcp`, `RulesLine`,
+`OpenMain`, `Pause`, `ClearAll`, `ConfirmClear`, `CancelClear`, `LoginSwitch`,
+`Settings`, `Quit`). `tests/settings_popover.rs` (the popover half) drives it in a
+`Driver<PopoverView>` at 336 by `popover_height` over a `FixedBackend`, with a
+`Recorder` for the `PopoverActions`: it writes each call down and, as the app's
+actions do, flips the backend's pause, clears its store and asks the login item
+(the `FakeLogin` of the Settings tests, which can refuse), so the tests see the
+view read the result back.
+
+**References** (336 by 504, at 2x: 672 by 1008): `popover_dark.png` and
+`popover_light.png` (receiving with 412 spans and 1.2k lines per second, one rule on
+with 31% dropped, the login switch on), `popover_paused_dark.png` (paused, zeros, `Resume
+receiving`, no rules, the switch off), `popover_port_problem_dark.png` (`otlp-http`
+failed and a rule with an error), `popover_clear_asks_dark.png` (the row asking) and
+`popover_glass_dark.png` / `popover_glass_light.png` (a `RecordingBackdrop` over a flat
+stand-in for the desktop: the panel clear, tiles translucent, corners outside the
+radius showing the desktop; on a Mac the stand-in is Apple's glass).
 
 ## Theme tokens
 
@@ -1776,11 +1889,12 @@ repo skill `update-screenshots` has the steps, and how to read a CI failure.
 
 Every reference of `crates/loctel-ui/tests/snapshots/`, with the test that
 owns it, the data it is drawn from and what it shows. All of them were opened
-and checked when they were made (Milestone 3, and the Logs, Discard rules and Settings ones in Milestone 4 Tasks 4, 5 and 6): legible text, the forced theme, and
+and checked when they were made (Milestone 3, and the Logs, Discard rules, Settings and popover ones in Milestone 4 Tasks 4, 5, 6 and 8): legible text, the forced theme, and
 nothing clipped other than the table and the lists that scroll. The main
 window's are 1440 by 900 logical pixels (2880 by 1800, 220 to 740 KB each, all
 under the 1.5 MB the plan allows, so the capture stays at 2x); the Settings
-window's are 520 by 360 (1040 by 720, 60 to 90 KB). "Home store" is
+window's are 520 by 360 (1040 by 720, 60 to 90 KB), and the popover's 336 by 504
+(672 by 1008, 110 to 130 KB). "Home store" is
 `common::home_store()`: the failing checkout, the successful one 5 s later and
 one health check of each service, on a store clock 70 s later, so every trace is
 complete; "empty store" has nothing in it.
@@ -1819,6 +1933,11 @@ complete; "empty store" has nothing in it.
 | `settings_edited_dark` | `settings_popover.rs` | the same with the login item off, HTTP typed as `4400` and the switch clicked | the edit not applied: `Apply` lit, the switch on, the HTTP row still `listening` (the old port) |
 | `settings_failed_dark` | `settings_popover.rs` | the login item off, HTTP typed as `4400` and `Apply` clicked, with `fail_bind` on `otlp-http` | the red dot and `failed: address in use` on the HTTP row (the input still shows `4400`), `otlp-http: address in use` beside the buttons, `Apply` dimmed again |
 | `settings_invalid_dark` | `settings_popover.rs` | the login item on, HTTP typed as `4317` and MCP as `70000` | `Each endpoint needs its own port` under the first two inputs and `Enter a port from 1 to 65535` under the third, the rows still `listening`, `Apply` dimmed, the `Startup` panel still in view above the buttons |
+| `popover_dark`, `popover_light` | `settings_popover.rs` | a `FixedBackend` with a login item that is on, 412 spans and 1,234 log lines per second, 1,204 traces and 96,433 log lines held, one rule on with 31% dropped | the popover (336 by 504): `loctel` and the green `Receiving` pill, the four tiles, the three endpoints with `Copy` on MCP (`127.0.0.1:4319/mcp`), `1 discard rule on · 31% dropped` with its chevron, `Open loctel ⌘O`, `Pause receiving`, `Clear all data…`, `Start at login` with its switch on, `Settings… ⌘,` and `Quit loctel ⌘Q` |
+| `popover_paused_dark` | `settings_popover.rs` | paused, nothing flowing, no rules, the login item off | the amber `Paused` pill, the zeros, `Resume receiving`, the grey `No discard rules on`, the switch off |
+| `popover_port_problem_dark` | `settings_popover.rs` | `otlp-http` failed to bind, one rule on with a query that does not parse | the red `Port problem` pill, the HTTP row red with `127.0.0.1:4318 · failed`, and the red `1 discard rule on · 1 has an error` |
+| `popover_clear_asks_dark` | `settings_popover.rs` | the first popover, a click on `Clear all data…` | the row replaced by `Clear all traces and logs?` with the red `Clear` and the outlined `Cancel`, everything else and the height unchanged |
+| `popover_glass_dark`, `popover_glass_light` | `settings_popover.rs` | the first popover with a `RecordingBackdrop`, over a flat stand-in for the desktop | the glass look: no fill, the stand-in colour showing in the padding and outside the rounded corners, the hairline and highlight, translucent tiles and endpoint group. On a Mac the stand-in is Apple's glass |
 
 `shell_light`, `shell_glass_light`, `home_light`, `trace_light` and the `toolbar_*_light` ones are the same
 picture as their dark twins with the light `Theme`: the same data and the same
@@ -1971,6 +2090,14 @@ The repo skill `run-and-screenshot` covers running with meshgen data.
   `Start loctel at login` switch (`SMAppService`) follows System Settings and
   reports a refusal. The tests run Linux's headless platform with a fake login
   item.
+- The popover on a Mac (Milestone 4 Task 8, the view; Task 9 hosts it): how the
+  panel looks with Apple's glass behind it (the translucent tiles over real
+  glass, the hairline and highlight, the clear window colour), that Esc, ⌘O, ⌘, and
+  ⌘Q reach the view when the popover is the key window of an app that has no
+  menu, and how Kit's switch and buttons look and behave in a panel that is not
+  a normal window. The tests run Linux's headless platform with a recording
+  `PopoverActions` and a flat stand-in for the glass; where the popover opens, how
+  it closes on a click away, and what its actions do on a Mac are `macos.md`'s.
 - Everything here was checked on Linux with software rendering. How the status
   view looks and behaves on macOS (fonts, scale, window chrome) is unverified
   until a milestone check on a real Mac.

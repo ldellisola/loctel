@@ -580,9 +580,16 @@ details, the theme tokens and the workflow are in
   `WaterfallView`, `InspectorView` and `SpanLogsView` (Milestone 3), and the
   Logs screen's `LogsView` with its `HistogramView` (Milestone 4: the LogQL bar,
   the level toggles, the volume bars and a variable-height list whose rows expand
-  where they stand). They use GPUI Kit's table, input, toggles, split panel,
+  where they stand), and the two windows of their own, `SettingsView` (the ports
+  and the login switch, opened by `app::open_settings_window`) and `PopoverView`
+  (Milestone 4 Task 8: the menu bar popover, 336 wide, over a `PopoverActions`
+  trait that is everything it asks of the app, so the platform crate decides what
+  a click does and where the panel opens, and the view is built and screenshotted
+  on Linux; with an optional `Backdrop` it is glass and reports one `GlassRegion`).
+  They use GPUI Kit's table, input, toggles, split panel,
   scroll areas and tooltips. See
-  [`areas/ui.md`](areas/ui.md) ("Screens and views at a glance" is the map).
+  [`areas/ui.md`](areas/ui.md) ("Screens and views at a glance" is the map; "The
+  popover") and [`decisions/0041-popover-view.md`](decisions/0041-popover-view.md).
 - **The data flow of the main window** is one direction, with the user's
   actions coming back the same way:
 

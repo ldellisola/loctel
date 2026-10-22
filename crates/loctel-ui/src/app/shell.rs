@@ -605,7 +605,7 @@ impl Render for MainWindow {
 
 /// Makes the window's Kit `Root` paint no background. A window that is not
 /// inside a `Root` has nothing to clear.
-fn clear_root_background(window: &Window, cx: &mut App) {
+pub(crate) fn clear_root_background(window: &Window, cx: &mut App) {
     let Some(root) = window.root::<Root>().flatten() else {
         return;
     };
