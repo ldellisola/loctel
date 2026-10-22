@@ -128,9 +128,18 @@ fn app_backend_saves_settings_and_rebinds() {
     let settings_path = dir.path().join("settings.toml");
     let backend = AppBackend::new(engine(dir.path()), settings_path.clone(), None);
 
-    // Nothing is saved yet: the settings are the defaults.
-    assert_eq!(backend.settings(), Settings::default());
+    // Nothing is saved yet: the settings are the defaults, except the ports,
+    // which are the ones the listeners use (port 0 here, so the system's).
     let old_http = port_of(&backend, "otlp-http");
+    assert_eq!(
+        backend.settings(),
+        Settings {
+            otlp_grpc_port: port_of(&backend, "otlp-grpc"),
+            otlp_http_port: old_http,
+            mcp_port: port_of(&backend, "mcp"),
+            ..Settings::default()
+        }
+    );
 
     // New ports are saved, whole (what the form does not touch is kept), and
     // the listeners move at once.
@@ -180,6 +189,35 @@ fn app_backend_saves_settings_and_rebinds() {
     assert_eq!(port_of(&backend, "otlp-grpc"), grpc);
     assert_eq!(port_of(&backend, "mcp"), mcp);
     drop(busy);
+}
+
+#[test]
+fn settings_show_the_ports_in_use_and_apply_moves_only_the_changed_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let settings_path = dir.path().join("settings.toml");
+    // The file says the default ports; the engine was started on others, as
+    // the command-line port flags do.
+    Settings::default().save(&settings_path).unwrap();
+    let backend = AppBackend::new(engine(dir.path()), settings_path, None);
+    let grpc = port_of(&backend, "otlp-grpc");
+    let mcp = port_of(&backend, "mcp");
+
+    let shown = backend.settings();
+    assert_eq!(shown.otlp_grpc_port, grpc);
+    assert_eq!(shown.otlp_http_port, port_of(&backend, "otlp-http"));
+    assert_eq!(shown.mcp_port, mcp);
+
+    // Changing only the HTTP port moves only the HTTP listener.
+    let [http] = free_ports();
+    backend
+        .apply_settings(Settings {
+            otlp_http_port: http,
+            ..shown
+        })
+        .unwrap();
+    assert_eq!(port_of(&backend, "otlp-http"), http);
+    assert_eq!(port_of(&backend, "otlp-grpc"), grpc, "gRPC did not move");
+    assert_eq!(port_of(&backend, "mcp"), mcp, "MCP did not move");
 }
 
 #[test]

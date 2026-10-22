@@ -403,7 +403,7 @@ it sees:
 ## Unverified until the M4 Mac check
 
 Milestone 4 Task 2 changed what the window is built over. Nobody has run it on a
-Mac. The Milestone 4 section of the Mac checklist should confirm, once it exists:
+Mac. The Milestone 4 section of the Mac checklist (`docs/milestones/mac-checklist.md`) asks the tester to confirm:
 
 - **The window still opens and works** from the popover's `Open loctel` and from
   the Dock icon after the change of `open_or_focus` (it takes the settings path now

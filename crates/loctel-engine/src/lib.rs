@@ -565,12 +565,9 @@ impl EngineHandle {
 
         let wanted = [ports.otlp_grpc, ports.otlp_http, ports.mcp];
         let moving = [
-            wanted[0] != before.grpc.requested.port(),
-            wanted[1] != before.http.requested.port(),
-            before
-                .mcp
-                .as_ref()
-                .is_none_or(|mcp| wanted[2] != mcp.requested.port()),
+            !holds(&before.grpc, wanted[0]),
+            !holds(&before.http, wanted[1]),
+            before.mcp.as_ref().is_none_or(|mcp| !holds(mcp, wanted[2])),
         ];
         if !moving.contains(&true) {
             return before.all();
@@ -762,4 +759,13 @@ impl Drop for Shared {
         // inside another one panics, and this may run anywhere, so never wait.
         self.stop(false);
     }
+}
+
+/// Whether `status` already answers on `port`: it was asked for that port, or
+/// it was asked for port 0 and the system gave it that one. Such a listener
+/// does not move on a rebind, so the Settings window can hand back the ports in
+/// use without restarting the listeners it did not change.
+fn holds(status: &ListenerStatus, port: u16) -> bool {
+    port == status.requested.port()
+        || matches!(&status.state, ListenerState::Listening(address) if address.port() == port)
 }

@@ -799,8 +799,11 @@ Its methods:
 `impl UiBackend for EngineHandle` is gone: every caller uses it). `loctel-app`
 builds it for the Linux window with no login item, and `loctel-macos`
 (`window::open_or_focus`) with `login_item::SystemLoginItem`. Its `settings()`
-reads `settings.toml`, not the engine's own settings: a command-line port flag
-(`--http-port 0`) changes what the engine listens on, not the file.
+reads `settings.toml` and lays the ports the listeners use now over it: a
+command-line port flag (`--http-port 0`) changes what the engine listens on, not
+the file, and the Settings window shows the real ports so Apply moves only the
+one that was changed (`EngineHandle::rebind` leaves a listener that already
+answers on its port alone; decision 0043).
 
 `testing::FixedBackend` is the test one; `FixedBackend::new(store)` gives the
 status of a healthy engine (`testing::listening_status()`: three listening
@@ -1951,7 +1954,7 @@ complete; "empty store" has nothing in it.
 | `popover_clear_asks_dark` | `settings_popover.rs` | the first popover, a click on `Clear all data…` | the row replaced by `Clear all traces and logs?` with the red `Clear` and the outlined `Cancel`, everything else and the height unchanged |
 | `popover_glass_dark`, `popover_glass_light` | `settings_popover.rs` | the first popover with a `RecordingBackdrop`, over a flat stand-in for the desktop | the glass look: no fill, the stand-in colour showing in the padding and outside the rounded corners, the hairline and highlight, translucent tiles and endpoint group. On a Mac the stand-in is Apple's glass |
 
-`shell_light`, `shell_glass_light`, `home_light`, `trace_light` and the `toolbar_*_light` ones are the same
+`shell_light`, `shell_glass_light`, `home_light`, `trace_light`, the `toolbar_*_light` ones, `logs_light`, `rules_light`, `settings_light`, `popover_light` and `popover_glass_light` are the same
 picture as their dark twins with the light `Theme`: the same data and the same
 layout, so a difference other than colour between a pair is a bug (the
 status view's pair differs on purpose, see above). A new screen needs a pair of

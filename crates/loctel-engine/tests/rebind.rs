@@ -301,6 +301,22 @@ fn rebind_unchanged_is_noop() {
 }
 
 #[test]
+fn rebind_to_the_ports_a_port_zero_engine_was_given_is_noop() {
+    let engine = start(None);
+    let before = engine.status().listeners;
+    let ports = Ports {
+        otlp_grpc: address(&listener(&before, "otlp-grpc")).port(),
+        otlp_http: address(&listener(&before, "otlp-http")).port(),
+        mcp: address(&listener(&before, "mcp")).port(),
+    };
+
+    let after = engine.rebind(ports);
+
+    assert_eq!(after, before, "nothing moved: each already answers there");
+    assert!(accepts(address(&listener(&after, "otlp-http"))));
+}
+
+#[test]
 fn rebind_can_take_the_port_another_listener_just_left() {
     let [a, b] = free_ports();
     let engine = start_on(a, b, 0, None);

@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use loctel_engine::{EngineHandle, EngineStatus, ListenerStatus, Ports, Settings};
+use loctel_engine::{EngineHandle, EngineStatus, ListenerState, ListenerStatus, Ports, Settings};
 use loctel_query::QueryError;
 use loctel_rules::{Preview, RuleId, RuleSpec, RuleStatus};
 use loctel_store::Store;
@@ -93,8 +93,27 @@ impl UiBackend for AppBackend {
         self.engine.rules_generation()
     }
 
+    /// `settings.toml`, with the ports the listeners use now. Those are the
+    /// file's, except when the command line overrode them for this run
+    /// (`--grpc-port` and the others, as the docs' Xvfb runs do): then the
+    /// Settings window shows where loctel really listens, and Apply moves only
+    /// the port that was changed (`EngineHandle::rebind` leaves a listener
+    /// that already answers on its port alone).
     fn settings(&self) -> Settings {
-        Settings::load_or_default(&self.settings_path)
+        let mut settings = Settings::load_or_default(&self.settings_path);
+        for listener in self.engine.status().listeners {
+            let port = match listener.state {
+                ListenerState::Listening(address) => address.port(),
+                ListenerState::Failed(_) => listener.requested.port(),
+            };
+            match listener.name {
+                "otlp-grpc" => settings.otlp_grpc_port = port,
+                "otlp-http" => settings.otlp_http_port = port,
+                "mcp" => settings.mcp_port = port,
+                _ => {}
+            }
+        }
+        settings
     }
 
     fn apply_settings(&self, s: Settings) -> anyhow::Result<Vec<ListenerStatus>> {

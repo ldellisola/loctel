@@ -62,9 +62,11 @@ pins it.
   are accepted by the form (it parses numbers), and the input is rewritten to
   `4500`, so what is on the screen is what the file says.
   (`apply_saves_the_ports_and_shows_the_listeners_it_got`)
-- **The form opens on the saved settings, not on what the engine listens on.**
-  `UiBackend::settings()` reads `settings.toml` (decision 0035), so a command-line
-  port flag (`--http-port 0`) shows in the row (`listening`), not in the input.
+- **The form opens on the ports the listeners use now** (superseded by decision
+  0043; first written as "the saved settings"). `AppBackend::settings()` reads
+  `settings.toml` and lays the listeners' ports over it, so a command-line port
+  flag (`--http-port 0`) shows in the input as the port it was given, and Apply
+  moves only the port that was changed.
 - **The view applies the theme, not `open_settings_window`.** `SettingsView::new`
   takes the theme from the window's appearance and follows it, as `MainWindow::new`
   does, because the first frame is drawn while the window opens and in the test
