@@ -12,16 +12,44 @@ use std::sync::Arc;
 
 use loctel_model::{LogRecord, Severity, SpanId, TraceId};
 use loctel_query::logql::{self, LogQuery};
-use loctel_store::LogId;
+use loctel_store::{LevelSet, LogId};
 
 use super::colors::ServiceColors;
 use super::format;
+use super::trace_table::thousands;
 
 /// How many leading hex digits of a trace ID the trace column shows.
 pub const TRACE_SHORT_CHARS: usize = 8;
 
 /// What stands in the message where the body had a line break.
 pub const LINE_BREAK: &str = " \u{23ce} ";
+
+/// How many lines one page of the list holds (M4 plan, Global Constraints:
+/// pages of 500, newest first).
+pub const PAGE_SIZE: usize = 500;
+
+/// The most rows the list holds in memory. Past it the list stops loading and
+/// [`CAPPED_FOOTER`] says so (the 10M-line scroll is M5).
+pub const MAX_ROWS: usize = 20_000;
+
+/// How close to the end of the loaded rows a row must be drawn for the next
+/// page to be read: within this many rows.
+pub const PREFETCH_ROWS: usize = 50;
+
+/// The footer of a list that stopped at [`MAX_ROWS`].
+pub const CAPPED_FOOTER: &str = "Showing the newest 20,000 matching lines";
+
+/// The words of the link in the context banner that goes back to the search.
+pub const BACK_TO_SEARCH: &str = "Back to search";
+
+/// The pill that shows while the live tail is paused by scrolling away from
+/// the top: a click on it goes back to the newest lines.
+pub const NEW_LINES_PILL: &str = "New lines \u{b7} Jump to newest";
+
+/// What the LogQL bar's empty input suggests (its placeholder). It is a real
+/// query: a test pins that it parses, so the hint never teaches a syntax the
+/// bar rejects.
+pub const EXAMPLE_QUERY: &str = "{service_name=\"payments-api\"} |= \"error\"";
 
 /// The four level badges and toggles of the Logs screen. Each is a group of
 /// severities, the same four the level toggles have (and the same groups as
@@ -33,7 +61,7 @@ pub const LINE_BREAK: &str = " \u{23ce} ";
 /// | `WRN` | warn |
 /// | `INF` | info, unspecified |
 /// | `DBG` | debug, trace |
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum LevelBadge {
     Err,
     Wrn,
@@ -42,6 +70,15 @@ pub enum LevelBadge {
 }
 
 impl LevelBadge {
+    /// The four badges, in the order the toggles list them: `ERR`, `WRN`, `INF`,
+    /// `DBG`.
+    pub const ALL: [LevelBadge; 4] = [
+        LevelBadge::Err,
+        LevelBadge::Wrn,
+        LevelBadge::Inf,
+        LevelBadge::Dbg,
+    ];
+
     /// The badge of a severity.
     pub fn from_severity(severity: Severity) -> LevelBadge {
         match severity {
@@ -61,6 +98,37 @@ impl LevelBadge {
             LevelBadge::Dbg => "DBG",
         }
     }
+}
+
+/// Whether the toggle of `badge` is on in `levels`: the set holds the severity
+/// that names the group (error, warn, info or debug; the other severity of the
+/// group, fatal, unspecified or trace, goes with it). A set the toggles built
+/// always holds a group whole or not at all.
+pub fn level_is_on(levels: LevelSet, badge: LevelBadge) -> bool {
+    levels.contains(match badge {
+        LevelBadge::Err => Severity::Error,
+        LevelBadge::Wrn => Severity::Warn,
+        LevelBadge::Inf => Severity::Info,
+        LevelBadge::Dbg => Severity::Debug,
+    })
+}
+
+/// `levels` with the toggle of `badge` set to `on`, the other three as they
+/// were.
+pub fn levels_with(levels: LevelSet, badge: LevelBadge, on: bool) -> LevelSet {
+    let state = |b: LevelBadge| {
+        if b == badge {
+            on
+        } else {
+            level_is_on(levels, b)
+        }
+    };
+    LevelSet::from_groups(
+        state(LevelBadge::Err),
+        state(LevelBadge::Wrn),
+        state(LevelBadge::Inf),
+        state(LevelBadge::Dbg),
+    )
 }
 
 /// One line of the logs list.
@@ -218,4 +286,95 @@ pub(crate) fn escaped(text: &str) -> String {
         escaped.push(c);
     }
     escaped
+}
+
+/// The line under the input while the text is not a query: `at column 12:
+/// <message>` (the column counts from 1), like the TraceQL bar's. `None` for an
+/// empty bar and for a query that parses.
+pub fn error_line(state: &LogQueryState) -> Option<String> {
+    match state {
+        LogQueryState::Invalid { column, message } => {
+            Some(format!("at column {column}: {message}"))
+        }
+        LogQueryState::Empty | LogQueryState::Valid(_) => None,
+    }
+}
+
+/// The count on the right of the level toggles. `loaded` is the number of rows
+/// the list holds, `more` whether another page is waiting, `capped` whether the
+/// list stopped at [`MAX_ROWS`].
+///
+/// - everything is loaded: `1,204 lines · newest first` (`1 line` for one)
+/// - more is waiting: `500+ lines · newest first`; the count is what is loaded
+///   (the store has no cheap count of what matches), and the plus says there is
+///   more
+/// - capped: `20,000+ lines`
+pub fn count_line(loaded: usize, more: bool, capped: bool) -> String {
+    if capped {
+        return format!("{}+ lines", thousands(loaded));
+    }
+    if more {
+        return format!("{}+ lines \u{b7} newest first", thousands(loaded));
+    }
+    let noun = if loaded == 1 { "line" } else { "lines" };
+    format!("{} {noun} \u{b7} newest first", thousands(loaded))
+}
+
+/// The count over the lines around a log: `51 lines · oldest first` (they are
+/// read oldest first, like a file, and all of them are shown).
+pub fn context_count_line(shown: usize) -> String {
+    let noun = if shown == 1 { "line" } else { "lines" };
+    format!("{} {noun} \u{b7} oldest first", thousands(shown))
+}
+
+/// The footer under a list that stopped at [`MAX_ROWS`] ([`CAPPED_FOOTER`]),
+/// `None` for any other list.
+pub fn footer(capped: bool) -> Option<&'static str> {
+    capped.then_some(CAPPED_FOOTER)
+}
+
+/// The words of the banner over the lines around a log: `Lines around
+/// 14:32:09.194` (the clock time of the log, which its ID carries, in the zone
+/// `utc_offset` gives), or `This line is no longer held` when the log has been
+/// evicted, removed or cleared (the lines shown are the ones that were nearest
+/// to where it was). The view adds [`BACK_TO_SEARCH`] after it.
+pub fn context_banner(target: LogId, held: bool, utc_offset: i32) -> String {
+    if held {
+        format!(
+            "Lines around {}",
+            format::clock(target.time_unix_nano, utc_offset)
+        )
+    } else {
+        "This line is no longer held".to_owned()
+    }
+}
+
+/// How the newest page, read again by the live tail, joins the rows the list
+/// holds. `held` are the rows (`id` says which log each is), newest first, and
+/// `fresh` the IDs of the page, newest first. The list after the join is the
+/// fresh page followed by the held rows older than it: `fresh ++
+/// held[keep_from..]`, and `Some(keep_from)` is that number of held rows, which
+/// the page supersedes (it has them, and any line that arrived late among them).
+///
+/// Every row of the join is strictly older than the one before it, so no line
+/// is in the list twice, whatever arrived since the last read.
+///
+/// `None` means the page cannot be joined and the list starts over from it:
+///
+/// - it is empty: nothing matches any more (the store was cleared), so nothing
+///   held may stay
+/// - it ends newer than the newest row held: more lines arrived than a page
+///   holds (a log flood), so lines between the two were never read, and a join
+///   would hide the gap
+///
+/// An empty list takes any non-empty page whole (`Some(0)`).
+pub fn merge_head<T>(held: &[T], id: impl Fn(&T) -> LogId, fresh: &[LogId]) -> Option<usize> {
+    let oldest = *fresh.last()?;
+    let Some(top) = held.first().map(&id) else {
+        return Some(0);
+    };
+    if oldest > top {
+        return None;
+    }
+    Some(held.partition_point(|row| id(row) >= oldest))
 }

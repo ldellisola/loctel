@@ -148,6 +148,14 @@ impl Store {
         self.shared.inner.read().logs.get(id)
     }
 
+    /// The time of the oldest log held (its own timestamp, or its observed time
+    /// when it has none), in nanoseconds since the Unix epoch, or `None` when
+    /// the store holds no log. The Logs screen's histogram starts here when it
+    /// shows everything stored. A lookup, not a pass over the logs.
+    pub fn oldest_log_unix_nano(&self) -> Option<u64> {
+        self.shared.inner.read().logs.oldest_time()
+    }
+
     /// A histogram of the logs in `[since, until)` (nanoseconds since the
     /// Unix epoch, by the log's time as for `since_unix_nano` of
     /// [`LogFilter`]) that match `f`: `buckets` buckets of equal width,

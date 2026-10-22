@@ -11,12 +11,15 @@ use loctel_meshgen::{Scenario, generate};
 use loctel_model::{AttrValue, LogRecord, Resource, Severity, SpanId, TraceId};
 use loctel_query::logql;
 use loctel_store::{
-    HistogramBucket, LogFilter, LogId, ManualClock, PageRequest, Store, StoreConfig,
+    HistogramBucket, LevelSet, LogFilter, LogId, ManualClock, PageRequest, Store, StoreConfig,
 };
 use loctel_ui::model::colors::ServiceColors;
 use loctel_ui::model::histogram::{self, Bars};
 use loctel_ui::model::logs::{
-    LevelBadge, LogQueryState, LogRow, details, rows, span_logs_query, validate,
+    BACK_TO_SEARCH, CAPPED_FOOTER, EXAMPLE_QUERY, LevelBadge, LogQueryState, LogRow, MAX_ROWS,
+    NEW_LINES_PILL, PAGE_SIZE, PREFETCH_ROWS, context_banner, context_count_line, count_line,
+    details, error_line, footer, level_is_on, levels_with, merge_head, rows, span_logs_query,
+    validate,
 };
 
 /// 2027-01-15T08:00:00Z. The failing checkout starts here.
@@ -558,4 +561,256 @@ fn the_failed_checkout_is_one_tall_bar_of_the_store_histogram() {
     assert_eq!(labels[0], "07:50:00.000");
     assert_eq!(labels[2], "08:00:00.000", "two thirds in is where BASE is");
     assert_eq!(labels[3], "08:05:00.000");
+}
+
+// --- the bar's hint and error line ------------------------------------------------
+
+#[test]
+fn the_example_query_is_a_query_the_bar_accepts() {
+    // The placeholder must never teach a syntax the bar rejects.
+    assert!(
+        matches!(validate(EXAMPLE_QUERY), LogQueryState::Valid(_)),
+        "{EXAMPLE_QUERY}"
+    );
+}
+
+#[test]
+fn the_error_line_says_where_and_what() {
+    assert_eq!(error_line(&LogQueryState::Empty), None);
+    assert_eq!(error_line(&validate(r#"{service_name="a"}"#)), None);
+
+    let LogQueryState::Invalid { column, message } = validate(r#"{service_name="a""#) else {
+        panic!("an unclosed selector is an error");
+    };
+    assert_eq!(
+        error_line(&validate(r#"{service_name="a""#)),
+        Some(format!("at column {column}: {message}"))
+    );
+}
+
+// --- the count, the footer, the banner and the pill --------------------------------
+
+#[test]
+fn the_paging_numbers_are_the_plans() {
+    assert_eq!(PAGE_SIZE, 500);
+    assert_eq!(MAX_ROWS, 20_000);
+    assert_eq!(PREFETCH_ROWS, 50);
+}
+
+#[test]
+fn the_count_line_counts_loaded_lines_and_marks_more_to_come() {
+    // Everything that matches is loaded: an exact count, newest first.
+    assert_eq!(count_line(0, false, false), "0 lines \u{b7} newest first");
+    assert_eq!(count_line(1, false, false), "1 line \u{b7} newest first");
+    assert_eq!(
+        count_line(1_204, false, false),
+        "1,204 lines \u{b7} newest first"
+    );
+    // More pages wait: the count is what is loaded, and it says so.
+    assert_eq!(
+        count_line(500, true, false),
+        "500+ lines \u{b7} newest first"
+    );
+    // At the cap the plan's text, with no ordering.
+    assert_eq!(count_line(20_000, true, true), "20,000+ lines");
+}
+
+#[test]
+fn the_lines_around_a_log_are_counted_oldest_first() {
+    assert_eq!(context_count_line(51), "51 lines \u{b7} oldest first");
+    assert_eq!(context_count_line(1), "1 line \u{b7} oldest first");
+}
+
+#[test]
+fn the_footer_is_only_there_at_the_cap() {
+    assert_eq!(CAPPED_FOOTER, "Showing the newest 20,000 matching lines");
+    assert_eq!(footer(false), None);
+    assert_eq!(footer(true), Some(CAPPED_FOOTER));
+}
+
+#[test]
+fn the_banner_names_the_time_or_says_the_line_is_gone() {
+    let id = LogId {
+        time_unix_nano: BASE + 9 * 1_000 * MS + 194 * MS,
+        seq: 3,
+    };
+    assert_eq!(context_banner(id, true, 0), "Lines around 08:00:09.194");
+    assert_eq!(
+        context_banner(id, true, 3_600),
+        "Lines around 09:00:09.194",
+        "in the zone given"
+    );
+    // The time is in the ID, so an evicted line still has a banner; it says
+    // what the plan says.
+    assert_eq!(context_banner(id, false, 0), "This line is no longer held");
+    assert_eq!(BACK_TO_SEARCH, "Back to search");
+}
+
+#[test]
+fn the_pill_text_is_the_plans() {
+    assert_eq!(NEW_LINES_PILL, "New lines \u{b7} Jump to newest");
+}
+
+// --- how the live tail joins the newest page to the rows held ------------------------
+
+fn ids(times: &[u64]) -> Vec<LogId> {
+    // Newest first, as the store gives them; the arrival number follows the time.
+    times
+        .iter()
+        .map(|&t| LogId {
+            time_unix_nano: t,
+            seq: t,
+        })
+        .collect()
+}
+
+/// The list the model builds: the fresh page, then the held rows it did not
+/// supersede.
+fn joined(held: &[LogId], fresh: &[LogId], keep_from: usize) -> Vec<LogId> {
+    fresh.iter().chain(&held[keep_from..]).copied().collect()
+}
+
+#[test]
+fn a_page_that_reaches_the_held_rows_is_joined_without_a_gap() {
+    let held = ids(&[50, 40, 30, 20, 10]);
+    // 70 and 60 are new; 50 and 40 are rows we hold.
+    let fresh = ids(&[70, 60, 50, 40]);
+
+    let keep_from = merge_head(&held, |id| *id, &fresh).expect("the page overlaps");
+
+    assert_eq!(keep_from, 2, "50 and 40 are superseded by the page");
+    assert_eq!(
+        joined(&held, &fresh, keep_from),
+        ids(&[70, 60, 50, 40, 30, 20, 10])
+    );
+}
+
+#[test]
+fn a_page_with_nothing_new_changes_nothing() {
+    let held = ids(&[50, 40, 30]);
+    let fresh = ids(&[50, 40, 30]);
+    let keep_from = merge_head(&held, |id| *id, &fresh).expect("the page overlaps");
+    assert_eq!(joined(&held, &fresh, keep_from), held);
+}
+
+#[test]
+fn a_late_line_inside_the_page_is_picked_up_once() {
+    // 45 arrived late: older than the newest held row (50), newer than 40.
+    let held = ids(&[50, 40, 30, 20]);
+    let fresh = ids(&[60, 50, 45, 40, 30]);
+    let keep_from = merge_head(&held, |id| *id, &fresh).expect("the page overlaps");
+    assert_eq!(keep_from, 3);
+    assert_eq!(
+        joined(&held, &fresh, keep_from),
+        ids(&[60, 50, 45, 40, 30, 20])
+    );
+}
+
+#[test]
+fn a_page_that_ends_above_the_held_rows_is_a_gap_and_starts_over() {
+    // A flood: more lines arrived than a page holds, so the page ends newer
+    // than the newest row held and lines in between were never read.
+    let held = ids(&[50, 40, 30]);
+    let fresh = ids(&[900, 800, 700]);
+    assert_eq!(merge_head(&held, |id| *id, &fresh), None);
+}
+
+#[test]
+fn an_empty_page_means_nothing_matches_so_nothing_held_is_kept() {
+    // The store was cleared, or the logs held were all evicted.
+    assert_eq!(merge_head(&ids(&[50, 40]), |id| *id, &[]), None);
+    assert_eq!(merge_head(&[] as &[LogId], |id| *id, &[]), None);
+}
+
+#[test]
+fn a_page_joins_an_empty_list_whole() {
+    let fresh = ids(&[30, 20]);
+    assert_eq!(merge_head(&[] as &[LogId], |id| *id, &fresh), Some(0));
+}
+
+#[test]
+fn a_page_that_ends_on_the_newest_held_row_overlaps_by_that_row() {
+    let held = ids(&[50, 40]);
+    let fresh = ids(&[70, 60, 50]);
+    let keep_from = merge_head(&held, |id| *id, &fresh).expect("the page overlaps");
+    assert_eq!(joined(&held, &fresh, keep_from), ids(&[70, 60, 50, 40]));
+}
+
+#[test]
+fn whatever_arrives_the_joined_list_is_strictly_newest_first() {
+    // The invariant the list stands on, over many shapes of page: a joined
+    // list has no line twice and no line out of order.
+    let mut seed = 0x2545_f491_4f6c_dd1du64;
+    let mut next = move |below: u64| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed % below
+    };
+    for _ in 0..2_000 {
+        // The store: distinct times 1..=200, a random subset.
+        let mut store: Vec<u64> = (1..=200).filter(|_| next(3) != 0).collect();
+        store.sort_unstable_by(|a, b| b.cmp(a));
+        // Held: a run of the store that was the newest page some time ago.
+        let start = next(store.len() as u64 + 1) as usize;
+        let len = next(40) as usize;
+        let held: Vec<u64> = store.iter().copied().skip(start).take(len).collect();
+        // Fresh: the newest `page` rows of the store now.
+        let page = 1 + next(60) as usize;
+        let fresh: Vec<u64> = store.iter().copied().take(page).collect();
+        let (held, fresh) = (ids(&held), ids(&fresh));
+
+        if let Some(keep_from) = merge_head(&held, |id| *id, &fresh) {
+            let list = joined(&held, &fresh, keep_from);
+            assert!(
+                list.windows(2).all(|pair| pair[0] > pair[1]),
+                "held {held:?} fresh {fresh:?} gave {list:?}"
+            );
+        }
+    }
+}
+
+// --- the level toggles ---------------------------------------------------------------
+
+#[test]
+fn all_four_toggles_start_on_and_each_flips_its_own_group() {
+    let all = LevelSet::ALL;
+    for badge in LevelBadge::ALL {
+        assert!(level_is_on(all, badge), "{badge:?} is on in the full set");
+    }
+
+    // Switching one group off leaves the other three on.
+    for off in LevelBadge::ALL {
+        let set = levels_with(all, off, false);
+        for badge in LevelBadge::ALL {
+            assert_eq!(
+                level_is_on(set, badge),
+                badge != off,
+                "{off:?} off, {badge:?}"
+            );
+        }
+        // And on again gives the full set back.
+        assert_eq!(levels_with(set, off, true), all);
+    }
+}
+
+#[test]
+fn a_toggle_covers_the_severities_of_its_group() {
+    let only_err = levels_with(
+        levels_with(
+            levels_with(LevelSet::ALL, LevelBadge::Wrn, false),
+            LevelBadge::Inf,
+            false,
+        ),
+        LevelBadge::Dbg,
+        false,
+    );
+    assert_eq!(only_err, LevelSet::from_groups(true, false, false, false));
+    assert!(only_err.contains(Severity::Error) && only_err.contains(Severity::Fatal));
+    assert!(!only_err.contains(Severity::Warn));
+
+    // INF takes the unlabelled logs with it, as the store's groups say.
+    let inf = levels_with(LevelSet::default(), LevelBadge::Inf, true);
+    assert!(inf.contains(Severity::Info) && inf.contains(Severity::Unspecified));
+    assert!(!inf.contains(Severity::Debug));
 }

@@ -7,15 +7,17 @@ feel), §10.3 (screenshot tests) and §10.5 (gotchas from the spike).
 Status: Milestone 3 is the main window. It has two screens (the home screen,
 the service map above the trace table, and the trace view) in a shell with a
 glass sidebar and toolbar, all in `src/app` and `src/views` over the pure models
-in `src/model`; "Screens and views at a glance" below is the map of them, and
+in `src/model`; Milestone 4 Task 4 adds a third, the Logs screen (see "The Logs
+screen"), reached for now through `navigate` and the trace view's `Open in Logs`
+(the sidebar entries are Task 7's); "Screens and views at a glance" below is the map of them, and
 the sections after it say how each one works. The window opens from the Linux
 `loctel` and from the macOS menu bar item's `Open loctel` (see "The real window"
 below and [`macos.md`](macos.md)); the look of the glass parts is done and
 tested here, and Apple's glass behind them is `loctel-macos`'s and unverified.
 Milestones 1 and 2 had one view, the **status view**, which stays as a
 standalone view with its own screenshot tests (Milestone 2 added the discard
-rules line to it and to the macOS menu). The remaining screens (Logs, Discard
-rules, Settings) and the popover are Milestone 4. The macOS menu bar item is in
+rules line to it and to the macOS menu). The remaining screens (Discard rules,
+Settings) and the popover are the rest of Milestone 4. The macOS menu bar item is in
 `loctel-macos`; it only borrows the strings from `menu_text`.
 
 GPUI comes as the weekly `gpui-pre` snapshot, `gpui-pre`, `gpui-pre-platform`
@@ -36,8 +38,8 @@ are what shows you what moved (the `upgrade-gpui` skill has the steps; decision
 | `menu_text::rules_line(&StatusModel)` | the discard rules in one line, the first that applies: `Discard rules file has an error`; `1 discard rule on · 1 has an error` (for more than one, `3 discard rules on · 2 have errors`); `No discard rules on`; `1 discard rule on · 31% dropped` or `3 discard rules on · 0% dropped`. The percentage is the share the rules dropped of what arrived since launch, rounded to a whole number; a value that is not a number reads `0%` and one outside 0 to 1 is cut to it. A file error wins over a rule error, a rule error over "no rules on" |
 | `menu_text::format_rate(f64)` | `412` is `412`, `1234` is `1.2k`, `0.4` is `0`. One decimal under ten thousand, none above, never `.0` (`1k`, `10k`, `1.3M`); NaN, infinity and negatives read `0` |
 | `model` | the pure models of the main window: `format`, `colors`, `trace_table`, `query_bar`, `map_layout`, `waterfall`, `inspector`, `trace_view`, and (Milestone 4) `logs`, `histogram`, `rules`, `settings`, `popover` (see "Models" below) |
-| `app` | the main window's shell (see "The main window"): `MainWindow`, `Screen`, `UiBackend`, `open_main_window`, `Backdrop`/`GlassRegion`, `kit_theme`; the home screen's live data (see "Live data"): `HomeModel`, `HomeData`, `TimeRange`; and the open trace's (see "The trace view"): `TraceModel` |
-| `views` | the views of the main window's screens (see "The service map", "The trace table" and "The trace view"): `MapView`, with its `Camera`, `TraceTableView`, and `TraceView` with its `WaterfallView`, `InspectorView` and `SpanLogsView` |
+| `app` | the main window's shell (see "The main window"): `MainWindow`, `Screen`, `UiBackend`, `open_main_window`, `Backdrop`/`GlassRegion`, `kit_theme`; the home screen's live data (see "Live data"): `HomeModel`, `HomeData`, `TimeRange`; the open trace's (see "The trace view"): `TraceModel`; and the Logs screen's (see "The Logs screen"): `LogsModel`, `LogsControls` |
+| `views` | the views of the main window's screens (see "The service map", "The trace table", "The trace view" and "The Logs screen"): `MapView`, with its `Camera`, `TraceTableView`, `TraceView` with its `WaterfallView`, `InspectorView` and `SpanLogsView`, and `LogsView` with its `HistogramView` |
 | `Theme` | the colours below. `Theme::dark()`, `Theme::light()` and `Theme::for_appearance(WindowAppearance)`. It is also a GPUI global once `kit_theme::apply` has run |
 | `KitAssets` | GPUI Kit's bundled icons, to register with `Application::with_assets` |
 | `register_fonts(cx)`, `FONT_FAMILY` | the bundled typeface (below) |
@@ -60,7 +62,7 @@ has its own section further down, which is where the rules are.
 status box) and the toolbar are on every screen.
 
 ```
- sidebar:  Map & traces  (the one entry; Logs and Discard rules are Milestone 4)
+ sidebar:  Map & traces  (the one entry; Logs and Discard rules are Task 7's)
               |
               v
  Screen::Home ---------------------------------------------------------------.
@@ -77,7 +79,16 @@ status box) and the toolbar are on every screen.
               | Esc, the `Traces` button, or the sidebar entry  -> Screen::Home
               | `Traces through this span name` -> Screen::Home with
               |   { name = "..." } written into the query bar
+              | `Open in Logs` -> Screen::Logs { query: Some(`{service_name=..} | span_id = ..`) }
               '--------------------------------------------------------------'
+
+ Screen::Logs { query }  (Milestone 4: no sidebar entry yet)
+   LogsView   LogQL bar, level toggles, histogram, the list; toolbar: Live tail, range, Clear all
+              |  expand a row, then:
+              |    `Open trace` (or the trace link of a row) -> Screen::Trace(id), the log's span selected
+              |    `Discard lines like this…`                -> Screen::Rules { draft: Some(..) }
+              |    `Show lines around this one`              -> context mode, `Back to search` returns
+ Screen::Rules { draft }  (the rules screen is Task 5's; an empty panel until then)
 ```
 
 | From | The user does | To |
@@ -86,6 +97,9 @@ status box) and the toolbar are on every screen.
 | `Home` | clicks a row of the table | `Trace(id)` |
 | `Trace` | Esc, or `Traces` | `Home`, as it was left (query, toggles, rows, the map's camera) |
 | `Trace` | `Traces through this span name` | `Home`, with `span_name_filter(name)` in the bar |
+| `Trace` | `Open in Logs` | `Logs { query: Some(span_logs_query(service, span)) }` |
+| `Logs` | `Open trace`, or a click on a row's trace link | `Trace(id)` with the log's span selected (`MainWindow::open_trace_at`) |
+| `Logs` | `Discard lines like this…` | `Rules { draft: Some(suggest_from_log(record)) }` |
 
 The home screen's views and its `HomeModel` live as long as the window, so the
 map keeps its camera and the table its query, toggles and rows while a trace is
@@ -112,17 +126,21 @@ the choices; decision 0031 has the two gaps of Milestone 3 that remain.
 | `WaterfallView` | `views/waterfall_view.rs` | `TraceModel`: the `Waterfall` | `model::waterfall` | "The trace view" |
 | `InspectorView` | `views/inspector_view.rs` | `TraceModel`: the span's details | `model::inspector` | "The trace view" |
 | `SpanLogsView` | `views/span_logs_view.rs` | `TraceModel`: the span's logs | `model::trace_view` (`log_lines`) | "The trace view" |
+| `LogsView` | `views/logs_view.rs` | `LogsModel`: rows, query state, levels, tail | `model::logs` | "The Logs screen" |
+| `HistogramView` | `views/histogram_view.rs` | `LogsModel`: the bars | `model::histogram` | "The Logs screen" |
+| `LogsControls` | `app/toolbar.rs` | `LogsModel`: tail, range | | "The Logs screen" |
 | `StatusView` | `status_view.rs` | `StatusModel` | `menu_text` | "What is in the crate" |
 
-`HomeModel` (`app/data.rs`) and `TraceModel` (`app/trace_data.rs`) are the two
-entities that read the store: one for the home screen, one for the open trace.
+`HomeModel` (`app/data.rs`), `TraceModel` (`app/trace_data.rs`) and `LogsModel`
+(`app/logs_data.rs`) are the three entities that read the store: one for the home
+screen, one for the open trace, one for the Logs screen.
 
 ### The data flow
 
 ```
  Engine (EngineHandle) --- AppBackend: UiBackend ---> store() / status() / clear_all() / utc_offset() / rules / settings
                                                    |
-        HomeModel / TraceModel   read the Store on GPUI's background executor
+        HomeModel / TraceModel / LogsModel   read the Store on GPUI's background executor
         (every 500 ms; the trace every 2 s once complete), then on the foreground:
                                                    |
         model::*   pure: strings, rows, positions, colour indices (no GPUI)
@@ -161,7 +179,7 @@ screens, `tests/model_logs.rs`, `tests/model_rules.rs` and `tests/model_misc.rs`
 | `waterfall` | the trace view's rows, folding, find, errors path | `Waterfall` | `model_waterfall.rs` |
 | `inspector` | the selected span's panel and what its buttons copy | `span_details`, `span_json` | `model_trace_view.rs` |
 | `trace_view` | the trace header, the find count, a span's log lines | `header`, `find_status`, `log_lines` | `model_trace_view.rs` |
-| `logs` | the Logs list's rows, an expanded line's details, the LogQL bar, `Open in Logs` | `rows`, `details`, `validate`, `span_logs_query` | `model_logs.rs` |
+| `logs` | the Logs list's rows, an expanded line's details, the LogQL bar and its error line, `Open in Logs`, the level toggles' state, the count line, the context banner, how the live tail joins a page | `rows`, `details`, `validate`, `error_line`, `span_logs_query`, `level_is_on`, `levels_with`, `count_line`, `context_banner`, `merge_head` | `model_logs.rs` |
 | `histogram` | the log volume bars and their four time labels | `bars` | `model_logs.rs` |
 | `rules` | the rule cards and their counts, the total dropped, the editor's draft, the log suggestion | `rows`, `dropped_line`, `Draft`, `suggest_from_log` | `model_rules.rs` |
 | `settings` | the Settings form's port validation | `Form::from`, `Form::validate` | `model_misc.rs` |
@@ -490,6 +508,18 @@ Pinned in `tests/model_logs.rs`, over the fixed fake mesh's seven checkout logs.
 - `span_logs_query(service, span)` is `{service_name="payments-api"} | span_id =
   "00f067aa0ba902b7"`, what the trace view's `Open in Logs` writes into the bar;
   `"` and `\` in the service name are escaped.
+- Task 4 added the rest of what the screen shows that is not a pixel:
+  `PAGE_SIZE` 500, `MAX_ROWS` 20,000, `PREFETCH_ROWS` 50, `EXAMPLE_QUERY` (the
+  bar's placeholder, pinned to parse), `error_line` (`at column N: message`, like
+  the TraceQL bar's), `level_is_on(LevelSet, LevelBadge)` and `levels_with(set,
+  badge, on)` (a toggle flips its own group of severities and nothing else),
+  `count_line(loaded, more, capped)` (`1,204 lines · newest first`, `500+ lines ·
+  newest first`, `20,000+ lines`), `context_count_line` (`51 lines · oldest
+  first`), `footer(capped)` (`Showing the newest 20,000 matching lines`),
+  `context_banner(target, held, utc_offset)` (`Lines around 08:00:01.440`, or `This
+  line is no longer held`), `BACK_TO_SEARCH`, `NEW_LINES_PILL` and
+  `merge_head(held, id, fresh)`, which says how the live tail's newest page joins
+  the rows held (below, "The live tail").
 - `histogram::bars(&[HistogramBucket], since, until, utc_offset)` is `Bars`:
   `bars` holds `(total, errors)` per bucket as fractions of the tallest bar's
   total (so the error stack is on the same scale, and never above its bar; all 0
@@ -617,11 +647,23 @@ receiving and `Resume` catches up, the range menu lists the four ranges and each
 choice changes the rows, a click outside closes the menu, Clear all empties the
 map, the table and the store (and works while frozen).
 
-**Screens.** `Screen` is `Home` or `Trace(TraceId)`; `MainWindow::screen()` and
-`navigate(screen, cx)` read and change it, and clicking the navigation entry
-shows `Home`. The home screen's views live as long as the window; the trace
-screen is made when it is first drawn and dropped when the window leaves it
-(see "The trace view").
+**Screens.** `Screen` is `Home`, `Trace(TraceId)`, `Logs { query: Option<String> }`
+or `Rules { draft: Option<Draft> }` (the last two are Milestone 4's);
+`MainWindow::screen()` and `navigate(screen, cx)` read and change it, and
+clicking the navigation entry shows `Home`. The home screen's views live as long
+as the window; the trace screen is made when it is first drawn and dropped when
+the window leaves it (see "The trace view"). The Logs screen's model and view
+live as long as the window too (`main.logs()`, `main.logs_view()`, made in
+`MainWindow::new`), so its query, toggles and tail stay while another screen
+shows; the model reads the store only while `Screen::Logs` is the one showing
+(`navigate` tells it). `navigate(Screen::Logs { query: Some(q) })` puts `q` in the
+LogQL bar every time, even when the Logs screen is already showing and the user
+typed something else since. `open_trace_at(id, Some(span), cx)` is `navigate` to
+the trace of `id` with `span` selected once the trace has it
+(`TraceModel::prefer_selection`). The rules screen is Task 5's: until then
+`Screen::Rules` shows an empty panel. The toolbar's title is `toolbar_title`:
+`Logs` and `Discard rules` join the two above, and on the Logs screen the
+controls at its right are `LogsControls`.
 
 **Lifecycle.** The window is opened by `loctel-app`, not by the shell. On Linux
 `loctel` without `--headless` opens it at launch; on macOS the menu's `Open
@@ -1039,8 +1081,11 @@ view and a store whose clock the test moves.
   debug build, a fraction of that in release); decision 0028 has why.
 - **Selection** starts at `initial_selection` (the failed-in span, else the root)
   as soon as there is one, and the list scrolls to it
-  (`TraceModelEvent::Reveal`). After that it is the user's: a click on a row, or
-  Enter in the find box. The selected span's logs are read from the store
+  (`TraceModelEvent::Reveal`). `prefer_selection(span)` (what `Open trace` of a
+  log calls on a model just made) puts a span of the caller's choice in its place
+  once the trace has it, and waits for it while the trace is still arriving
+  (the failed-in span stands in meanwhile). After that it is the user's: a click
+  on a row, or Enter in the find box, which also ends a pending preference. The selected span's logs are read from the store
   (`logs_for_span`) when the selection moves and with every refresh.
 - A trace the store does not have says `This trace is not in the store`
   (`LoadState::Missing`) and keeps polling, so one that arrives shows up.
@@ -1093,10 +1138,17 @@ and `Copy span as JSON`. Another span starts with every value cut. Nothing
 selected: `Select a span to see its details`.
 
 **The span's logs** (`SpanLogsView`, `span_logs_view.rs`) are the 200 px under the
-waterfall: `Logs from POST /charges` and `4 logs`, then a row per log (the time
-in the monospace face, the level in a badge, the message on one line cut with an
-ellipsis and whole in a tooltip) in a `uniform_list`. `No logs from this span`
-when it has none, `Select a span to see its logs` with no selection.
+waterfall: `Logs from POST /charges` and `4 logs`, and at the right of that line
+an `Open in Logs` button (a ghost button; only with a span selected), then a row
+per log (the time in the monospace face, the level in a badge, the message on one
+line cut with an ellipsis and whole in a tooltip) in a `uniform_list`. `No logs
+from this span` when it has none, `Select a span to see its logs` with no
+selection. `Open in Logs` emits `SpanLogsEvent::OpenInLogs(query)`, which
+`TraceView` re-emits as `TraceViewEvent::OpenLogs(query)` and the shell turns into
+`navigate(Screen::Logs { query: Some(query) })`; the query is
+`span_logs_query(service, span)`, `{service_name="payments-api"} | span_id =
+"03feb5f65e799604"`, so the Logs screen lists exactly that span's logs
+(`open_in_logs_from_trace_view_sets_query`).
 
 **Keys.** The screen takes the keyboard when it opens. **Esc** goes back (the home
 screen as it was left: its query, its toggles, its rows), except that with the
@@ -1108,7 +1160,7 @@ back to the screen.
 `logs_view()` and `split()` reach the parts; `bounds_of(TracePart, cx)` and
 `center_of` give where a part (`Back`, `CopyId`, `Find`, `ErrorsPath`,
 `ToggleAll`, `List`, `Inspector`, `TracesThrough`, `CopyJson`, `CopyException`,
-`ShowAll`) is in the window in the latest frame (`None` while it is not
+`ShowAll`, `OpenInLogs`) is in the window in the latest frame (`None` while it is not
 there); `WaterfallView::row_center(row)` and `chevron_center` find a row with
 the scroll taken into account, `scroll_to_row` and `top_row` scroll it, and
 `tests/common/mod.rs` has the helpers the tests share (`open_trace`: navigate
@@ -1123,10 +1175,139 @@ selected and in the inspector), `trace_charges_selected_dark.png` (a click on
 `huge_trace_middle_dark.png` (`HugeTrace` of 100,000 spans scrolled to row
 50,000), `long_values_dark.png` (a 300-character name, a 20 KB attribute, a
 600-character token, a long exception) and `long_values_shown_whole_dark.png`
-(the same with the long value shown whole). The colours of the services are the
+(the same with the long value shown whole). All seven were regenerated in
+Milestone 4 Task 4 for one visible change, the `Open in Logs` button at the right
+of the span-logs header. The colours of the services are the
 session's, in the order the home screen first met them (the health checks of
 `home_store` come first, so `web-bff` is not blue). The monospace face is Inter
 on Linux, as in the table. How the screen looks and scrolls on a Mac is
+unverified.
+
+## The Logs screen
+
+`views::LogsView` (`src/views/logs_view.rs`, Milestone 4 Task 4) is the content of
+`Screen::Logs { query }`: the LogQL bar, the level toggles, the volume histogram
+and the list of lines, over the live data of `app::LogsModel`
+(`src/app/logs_data.rs`). Decision 0037 has the choices the plan left open.
+
+**Top to bottom** (two floating panels like the home screen's, the content
+width):
+
+| Part | What |
+|---|---|
+| toolbar (the shell's glass strip, `LogsControls`) | the title `Logs`; at the right a `Live tail` pill (green dot and an accent tint while the tail runs, an amber dot while scrolling away or the lines around a log have stopped it, a hollow ring and no tint when it is off; a click toggles it), the range button (`Last 15 minutes` and its menu: the same menu as the home toolbar's) and `Clear all` (empties the store, as the home one) |
+| search | a `LogQL` chip, the input (placeholder `EXAMPLE_QUERY`, a clear button), `Run`; under them `at column N: message` in red while the text does not parse. Typing validates and searches live; an invalid text changes nothing but the error line, and the list keeps the last good query's rows |
+| toggles | `ERR` (`error_text`), `WRN` (`warn`), `INF` (`text_secondary`), `DBG` (`text_tertiary`): the letters in the group's colour, a tint and a ring when on, no fill when off (all four on at first). Each is its group of severities (`ERR` error and fatal, `INF` info and unspecified, `DBG` debug and trace). At the right the count (`207 lines · newest first`, `500+ lines · newest first` while more pages wait, `20,000+ lines` at the cap) |
+| histogram | `HistogramView`: 48 bars 64 px high with 2 px between them, the errors stacked at the bottom of each bar in `error` and the rest in `border` (a bucket with a line is at least 2 px, an empty one a 1 px stub), and four clock labels under them at the start, a third, two thirds and the end of the window (the window ends now) |
+| list | 30 px rows: the time (mono, 96 px), the level badge (44 px column), the service with its colour dot (112 px), the message (mono, one line, an ellipsis), the first 8 hex digits of the trace ID as a link (96 px; none for a log outside a trace) |
+| banner | context mode only: `Lines around 08:00:01.440 · Back to search`, or `This line is no longer held · Back to search` |
+| pill | while the tail is paused by scrolling: `New lines · Jump to newest`, floating at the top of the list |
+| footer | once the list stopped at 20,000 rows: `Showing the newest 20,000 matching lines` |
+| empty | `No logs yet`, or `No lines match` when a query or a toggle narrows the list |
+
+**A click on a row expands it** where it stands (one row at a time: another click
+moves the expansion, a click on the same row folds it). The row is taller by the
+details grid, which is the whole body first (wrapped, line breaks kept: a stack
+trace stays a stack trace) and then the labels LogQL sees (`model::logs::details`),
+and three buttons: `Open trace` (a log in a trace), `Show lines around this one`
+and `Discard lines like this…`. The trace link of a row opens the trace without
+expanding the row. The list is GPUI's variable-height `list` (an expanded row is
+taller than 30 px, which a `uniform_list` cannot hold); the view owns its
+`ListState` and keeps it in step with the rows through the model's events, with a
+check in every frame that the list's count is the model's.
+
+**The data** is `LogsModel`. What the user sets (the call, then what it does):
+
+| Call | Effect |
+|---|---|
+| `set_query(text)` | validates at once (`state()` is new when it returns); an empty bar or a query that parses searches again from the first page, an invalid text only changes the state |
+| `set_levels(LevelSet)`, `set_range(TimeRange)` | search again from the first page; `None` levels to the store when all four are on |
+| `set_tail(bool)` | the live tail switch; on, it catches up at once |
+| `load_more()` | read the next page and append it |
+| `expand(Option<LogId>)` | expand or fold a row (an ID not in the list is `None`) |
+| `show_around(LogId)`, `back_to_search()` | context mode and back |
+| `set_at_top(bool)` | what the view tells it (below) |
+| `jump_to_newest()` | the pill: the first page again, the list at the top |
+| `refresh_now()` | what Enter and `Run` do: the first page again |
+| `clear_all()` | empties the store through the backend and reads again |
+| `set_active(bool)` | what the shell tells it; nothing is read while it is `false` |
+
+and what it holds: `rows()`, `record(index)`, `histogram()`, `state()` (the LogQL
+bar's `LogQueryState`), `query_text()`, `levels()`, `range()`, `tail()`,
+`tail_paused()`, `expanded()`, `expanded_record()`, `expanded_details()`,
+`context()` (`ContextInfo { target, held, index }`), `context_target()`,
+`banner()`, `loaded()`, `more()`, `capped()`, `footer()`, `count_line()` and
+`has_filters()`. Every store read runs on GPUI's background executor on a copy of
+its inputs, and a result that a newer read replaced is dropped when it arrives.
+
+- **Paging.** The first page is 500 lines (`PAGE_SIZE`), newest first. A row drawn
+  within 50 rows (`PREFETCH_ROWS`) of the end of the loaded rows asks for the next
+  page as it is drawn, so a scroll to the end reads one more page; a list with nothing more to load
+  ignores the asking. The list holds
+  at most 20,000 rows (`MAX_ROWS`); past that it stops, `capped()` is true and the
+  footer shows. The count line counts the rows **loaded**, with a `+` while more
+  are waiting: the store has no cheap count of what matches, and the histogram
+  (which is a pass over the window) is not asked to give one.
+- **The live tail** (design 9.2; plan Review Focus 1). While the tail is on, the
+  list is at the top and no read of the list is out, the newest page (500) is read
+  every 500 ms (`TAIL_REFRESH`) and joined to the rows by `model::logs::merge_head`:
+  new lines go on top, once. The join is the fresh page followed by the held rows
+  older than it, so every row is strictly older than the one before and **no line
+  can be in the list twice**. A page that cannot be joined without a gap (a flood
+  that outran a page: the page ends newer than the newest row held) or an empty
+  one (the store was cleared) starts the list over from the page. A late line that
+  arrived inside the page's range shows once, in its place. The histogram is read
+  every 2 s (`HISTOGRAM_REFRESH`) while the tail is on.
+- **Scrolling away pauses the tail.** The view reports whether the list is at its
+  top (`set_at_top`, after each frame in which that changed); away from the top
+  nothing is ever put above the rows being looked at, the pill shows, and a head
+  read that was already out when the user scrolled is dropped when it arrives.
+  Clicking the pill (`jump_to_newest`), or scrolling back to the top, resumes: the
+  first brings the first page, the second joins what came meanwhile. With the tail
+  off the list and the histogram stand still. Tests:
+  `tail_dedupes_and_paused_tail_keeps_position`,
+  `the_tail_toggle_stops_the_list_and_the_histogram`.
+- **Lines around** (design 9.2; plan Review Focus 5). `show_around(id)` reads
+  `Store::logs_around(id, 25, 25)` (`CONTEXT_BEFORE`, `CONTEXT_AFTER`): the store's
+  lines around the log, unfiltered, **oldest first** like a file, with the target
+  row highlighted and scrolled into view. The tail and the paging stand still. A
+  log that is gone gives `This line is no longer held` and the lines nearest to
+  where it was (`lines_around_a_line_that_is_gone_say_so_and_show_what_remains`).
+  Changing the query, the levels or the range, or `Back to search`, leaves context
+  mode and searches again from the first page (the list does not remember where it
+  was).
+- **The histogram** is `Store::log_histogram` over the window that ends now: 48
+  buckets over the range (`Everything` starts at `Store::oldest_log_unix_nano`),
+  for the lines that match the query and the toggles, turned into bars by
+  `model::histogram::bars`.
+- **The range is the Logs screen's own**: the home screen's range and this one are
+  separate settings, both `Last 15 minutes` at first, with the same menu.
+
+**For tests.** `main.logs()` and `main.logs_view()` reach the model and the view;
+`LogsView::bounds_of(LogsPart)` and `center_of` give where a part (`QueryInput`,
+`Run`, `Level(badge)`, `Histogram`, `List`, `Pill`, `Banner`, `BackToSearch`,
+`Footer`, and for an expanded row `OpenTrace`, `ShowAround`, `Discard`) is in the
+latest frame, `row_center(index)` and `trace_link_center(index)` find a row,
+`scroll_offset()` says where the list is scrolled, and `input_text`, `error_line`,
+`banner` and `empty_state` read what it says; `LogsView::controls()` reaches the
+toolbar's `LogsControls` (`bounds_of(ToolbarPart::LiveTail | Range | ClearAll)`).
+`tests/logs_screen.rs` has the data (`logs_store`: the failing checkout's seven
+logs at `BASE` and 200 lines of `LogFlood` spread over the ten minutes before them,
+on a clock 30 s after `BASE`) and every test below.
+
+**References** (1440 by 900, at 2x, over that store, with the sidebar of the time:
+`Map & traces` is the one entry and is not lit, because the Logs screen is not under
+it; Task 7 regenerates them with the sidebar's new entries): `logs_dark.png` and
+`logs_light.png` (the list at the top, newest first, with the checkout's three
+errors, the warning and three infos over the flood's `INF` and `DBG` lines; the
+histogram with the checkout's bar last, its three errors in red at the bottom),
+`logs_expanded_dark.png` (the `Charge failed…` line expanded: the body, the
+labels with the stack trace on three lines, and the three buttons),
+`logs_query_error_dark.png` (an unclosed selector typed: `at column 29: expected
+`,` or `}`` in red under the focused input, the rows the last good query's) and
+`logs_context_dark.png` (the lines around the `card-gateway did not answer` error:
+the banner, the target highlighted, `28 lines · oldest first`). The monospace face
+is Inter on Linux, as in the table. How the screen looks and scrolls on a Mac is
 unverified.
 
 ## Theme tokens
@@ -1297,7 +1478,7 @@ repo skill `update-screenshots` has the steps, and how to read a CI failure.
 
 Every reference of `crates/loctel-ui/tests/snapshots/`, with the test that
 owns it, the data it is drawn from and what it shows. All of them were opened
-and checked when Milestone 3 was finished: legible text, the forced theme, and
+and checked when they were made (Milestone 3, and the Logs ones in Milestone 4 Task 4): legible text, the forced theme, and
 nothing clipped other than the table and the lists that scroll. The main
 window's are 1440 by 900 logical pixels (2880 by 1800, 220 to 740 KB each, all
 under the 1.5 MB the plan allows, so the capture stays at 2x). "Home store" is
@@ -1325,6 +1506,10 @@ complete; "empty store" has nothing in it.
 | `huge_trace_middle_dark` | `screens.rs` | meshgen `HugeTrace`, 100,000 spans, scrolled to row 50,000 | `36 ms · 100,000 spans · 4 services`, rows `work item 56102` and on at the middle of the list with the Kit scrollbar there, and no blank rows |
 | `long_values_dark` | `screens.rs` | one trace with a 300-character span name, a 20 KB attribute, a 600-character token and a long exception | the name cut with an ellipsis in the header, the badge, the row and the logs title; wrapped in the inspector; every long value cut; the layout unchanged (inspector 340 wide at the panel's edge) |
 | `long_values_shown_whole_dark` | `screens.rs` | the same, the inspector scrolled and `… (show all)` pressed on the 20 KB payload | the pane scrolled and the value shown in full, the pane longer and never wider |
+| `logs_dark`, `logs_light` | `logs_screen.rs` | the failing checkout's 7 logs and 200 lines of `LogFlood` spread over 10 minutes | the Logs screen: the `Live tail` pill, the range and `Clear all` in the toolbar, the LogQL bar with its placeholder, the four toggles (all on), `207 lines · newest first`, the histogram (48 bars, the checkout's with three red errors at the bottom) and the first rows of the list |
+| `logs_expanded_dark` | `logs_screen.rs` | the same, a click on the `Charge failed…` row | that row expanded: the whole body, the labels (the stack trace on three lines), `Open trace`, `Show lines around this one`, `Discard lines like this…` |
+| `logs_query_error_dark` | `logs_screen.rs` | the same, `{service_name="payments-api"` typed | the focused input, `at column 29: expected `,` or `}`` in red under it, the rows kept |
+| `logs_context_dark` | `logs_screen.rs` | the same, the lines around the 600 ms error | the banner `Lines around 08:00:01.440 · Back to search`, `28 lines · oldest first`, the target highlighted, a scrollbar |
 
 `shell_light`, `shell_glass_light`, `home_light`, `trace_light` and the `toolbar_*_light` ones are the same
 picture as their dark twins with the light `Theme`: the same data and the same

@@ -11,8 +11,12 @@
 //! - [`TraceModel`]: the trace screen's live data (the trace read from the store
 //!   while it is open, its waterfall, the selection and the selected span's
 //!   logs).
+//! - [`LogsModel`]: the Logs screen's live data (the rows of the list, read in
+//!   pages, kept fresh by the live tail, and the histogram) and the settings that
+//!   shape it (query, levels, range, tail).
 //! - [`HomeControls`]: the home toolbar's Live indicator, time range, Pause and
-//!   Clear all, over the [`HomeModel`].
+//!   Clear all, over the [`HomeModel`]; [`LogsControls`] the Logs toolbar's
+//!   Live tail pill, range and Clear all, over the [`LogsModel`].
 //! - [`MainWindow`] is the root view; [`Screen`] says what it shows.
 //! - [`open_main_window`] opens it.
 //! - [`Backdrop`] and [`GlassRegion`]: how the shell tells a platform where its
@@ -25,6 +29,7 @@ mod app_backend;
 mod backend;
 mod data;
 pub mod kit_theme;
+mod logs_data;
 mod nav;
 mod shell;
 mod sidebar;
@@ -42,6 +47,10 @@ use gpui_kit::base::Root;
 pub use app_backend::{AppBackend, LoginItem};
 pub use backend::UiBackend;
 pub use data::{HOME_MAX_ROWS, HOME_REFRESH, HomeData, HomeModel, SLOW_TRACE, TimeRange};
+pub use logs_data::{
+    CONTEXT_AFTER, CONTEXT_BEFORE, ContextInfo, HISTOGRAM_BUCKETS, HISTOGRAM_REFRESH, LogsModel,
+    LogsModelEvent, TAIL_REFRESH,
+};
 pub use nav::NavItem;
 pub use shell::{
     Backdrop, DEFAULT_SIZE, GlassRegion, INSET, MIN_SIZE, MainWindow, PANEL_RADIUS, SIDEBAR_WIDTH,
@@ -49,8 +58,8 @@ pub use shell::{
 };
 pub use sidebar::{NAV_ITEM_HEIGHT, TRAFFIC_LIGHT_SPACE};
 pub use toolbar::{
-    CLEAR_ALL_LABEL, HomeControls, LIVE_LABEL, PAUSE_LABEL, PAUSED_LABEL, RESUME_LABEL,
-    ToolbarPart, live_label, pause_label, toolbar_title,
+    CLEAR_ALL_LABEL, HomeControls, LIVE_LABEL, LIVE_TAIL_LABEL, LogsControls, PAUSE_LABEL,
+    PAUSED_LABEL, RESUME_LABEL, ToolbarPart, live_label, pause_label, toolbar_title,
 };
 pub use trace_data::{DONE_REFRESH, LoadState, OPEN_REFRESH, TraceModel, TraceModelEvent};
 

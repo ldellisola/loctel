@@ -100,6 +100,12 @@ pub struct TraceModel {
     find_text: String,
     /// The rows (positions among the rows shown) that match the find text.
     matches: Vec<usize>,
+    /// A span to select as soon as the trace has it ([`prefer_selection`]
+    /// (Self::prefer_selection)), until the user selects one themselves.
+    preferred: Option<SpanId>,
+    /// The user has chosen a span (a click, a find jump): the model no longer
+    /// moves the selection by itself.
+    user_selected: bool,
     /// Counts the trace reads started; only the latest one is applied.
     generation: u64,
     /// The same for the logs of the selected span.
@@ -134,6 +140,8 @@ impl TraceModel {
             logs_loaded: false,
             find_text: String::new(),
             matches: Vec::new(),
+            preferred: None,
+            user_selected: false,
             generation: 0,
             logs_generation: 0,
         };
@@ -224,6 +232,16 @@ impl TraceModel {
 
     // --- what the user does ----------------------------------------------------
 
+    /// Asks for `span` to be the selected span as soon as the trace has it, in
+    /// place of the one a trace opens on (the failure, else the root): what
+    /// `Open trace` of a log does. It is meant for a model that was just made.
+    /// A span the trace does not have yet is waited for (the trace may still be
+    /// arriving); once the user selects a span themselves, the request is over.
+    pub fn prefer_selection(&mut self, span: SpanId) {
+        self.preferred = Some(span);
+        self.user_selected = false;
+    }
+
     /// Selects the span `id`: its ancestors open so the row is shown, the
     /// inspector shows it and its logs are read. An ID the trace does not have
     /// (the placeholder's) changes nothing.
@@ -234,6 +252,7 @@ impl TraceModel {
         if span_details(snapshot, id).is_none() {
             return;
         }
+        self.user_selected = true;
         let before = waterfall.selected();
         waterfall.select(id);
         self.changed(before, cx);
@@ -505,13 +524,28 @@ impl TraceModel {
                 None => self.waterfall = Some(Waterfall::new(&snapshot, &mut colors)),
             }
         }
-        // The first selection: the failure, else the root, as soon as there
-        // is one. After that the selection is the user's.
+        // The first selection: the span asked for ([`prefer_selection`]
+        // (Self::prefer_selection)) once the trace has it, else the failure,
+        // else the root, as soon as there is one. After that the selection is
+        // the user's.
+        let wanted = self
+            .preferred
+            .filter(|&id| !self.user_selected && span_details(&snapshot, id).is_some());
         let reveal = match &mut self.waterfall {
-            Some(waterfall) if waterfall.selected().is_none() => {
-                initial_selection(&snapshot).inspect(|&id| waterfall.select(id))
+            Some(waterfall) => {
+                if let Some(id) = wanted {
+                    self.preferred = None;
+                    (waterfall.selected() != Some(id)).then(|| {
+                        waterfall.select(id);
+                        id
+                    })
+                } else if waterfall.selected().is_none() {
+                    initial_selection(&snapshot).inspect(|&id| waterfall.select(id))
+                } else {
+                    None
+                }
             }
-            _ => None,
+            None => None,
         };
         self.header = Some(header);
         self.snapshot = Some(Arc::new(snapshot));

@@ -673,3 +673,32 @@ fn histogram_counts_unstamped_logs_by_observed_time() {
     let h = store.log_histogram(&LogFilter::default(), 100 * MS, 200 * MS, 2);
     assert_eq!(h.iter().map(|b| b.total).collect::<Vec<_>>(), vec![0, 1]);
 }
+
+#[test]
+fn oldest_log_time_is_the_earliest_held() {
+    let (store, _c) = store_with_manual_clock();
+    assert_eq!(store.oldest_log_unix_nano(), None, "an empty store");
+
+    // Arriving out of order: the oldest by time, not by arrival.
+    let mut unstamped = log("a", "no timestamp", 0);
+    unstamped.observed_unix_nano = 150 * MS;
+    store.ingest_logs(vec![log("a", "late", 300), unstamped, log("a", "x", 200)]);
+    assert_eq!(store.oldest_log_unix_nano(), Some(150 * MS));
+
+    store.ingest_logs(vec![log("a", "earlier", 50)]);
+    assert_eq!(store.oldest_log_unix_nano(), Some(50 * MS));
+
+    store.clear();
+    assert_eq!(store.oldest_log_unix_nano(), None, "cleared");
+}
+
+#[test]
+fn oldest_log_time_follows_eviction() {
+    let store = with_cap(2);
+    store.ingest_logs(numbered(3));
+    assert_eq!(
+        store.oldest_log_unix_nano(),
+        Some(20 * MS),
+        "l1 was evicted, l2 is the oldest held"
+    );
+}

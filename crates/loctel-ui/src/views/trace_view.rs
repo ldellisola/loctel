@@ -42,7 +42,7 @@ use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _};
 use loctel_model::TraceId;
 
 use super::inspector_view::{InspectorEvent, InspectorView};
-use super::span_logs_view::{PANEL_HEIGHT as LOGS_HEIGHT, SpanLogsView};
+use super::span_logs_view::{PANEL_HEIGHT as LOGS_HEIGHT, SpanLogsEvent, SpanLogsView};
 use super::waterfall_view::WaterfallView;
 use crate::Theme;
 use crate::app::{LoadState, TraceModel, UiBackend};
@@ -101,6 +101,9 @@ pub enum TracePart {
     /// The `… (show all)` (or `(show less)`) link of the last long value of the
     /// inspector; present only when there is one.
     ShowAll,
+    /// The span-logs header's `Open in Logs` button; present only with a span
+    /// selected.
+    OpenInLogs,
 }
 
 /// Where the parts of the latest frame are, in window coordinates.
@@ -131,6 +134,9 @@ pub enum TraceViewEvent {
     /// Show the home screen with this TraceQL query in the bar (the query of
     /// `Traces through this span name`).
     Query(String),
+    /// Show the Logs screen with this LogQL query in the bar (the query of
+    /// `Open in Logs`: the selected span's logs).
+    OpenLogs(String),
 }
 
 /// The trace screen. Make it with
@@ -143,8 +149,9 @@ pub struct TraceView {
     split: Entity<ResizableState>,
     focus: FocusHandle,
     frame: Rc<Frame>,
-    /// Keeps the observation of the model and of the inspector alive.
-    _subscriptions: [Subscription; 2],
+    /// Keeps the observation of the model, of the inspector and of the span
+    /// logs alive.
+    _subscriptions: [Subscription; 3],
 }
 
 impl EventEmitter<TraceViewEvent> for TraceView {}
@@ -192,6 +199,10 @@ impl TraceView {
                 let InspectorEvent::TracesThrough(name) = event;
                 cx.emit(TraceViewEvent::Query(span_name_filter(name)));
             }),
+            cx.subscribe(&logs, |_, _, event: &SpanLogsEvent, cx| {
+                let SpanLogsEvent::OpenInLogs(query) = event;
+                cx.emit(TraceViewEvent::OpenLogs(query.clone()));
+            }),
         ];
         TraceView {
             model,
@@ -238,6 +249,7 @@ impl TraceView {
             TracePart::Find | TracePart::ErrorsPath | TracePart::ToggleAll | TracePart::List => {
                 self.waterfall.read(cx).bounds_of(part)
             }
+            TracePart::OpenInLogs => self.logs.read(cx).bounds_of(part),
             TracePart::Inspector
             | TracePart::TracesThrough
             | TracePart::CopyJson

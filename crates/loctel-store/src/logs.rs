@@ -311,6 +311,13 @@ impl LogStore {
             .collect()
     }
 
+    /// The time of the oldest held log, `None` when there is none.
+    pub(crate) fn oldest_time(&self) -> Option<u64> {
+        self.records
+            .first_key_value()
+            .map(|(key, _)| key.time_unix_nano)
+    }
+
     /// The log held under `id`.
     pub(crate) fn get(&self, id: LogId) -> Option<LogRecord> {
         self.records.get(&id).map(|stored| stored.record.clone())

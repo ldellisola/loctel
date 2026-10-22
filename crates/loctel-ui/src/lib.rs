@@ -23,13 +23,17 @@
 //!   Kit's theme, [`open_main_window`](app::open_main_window), and
 //!   [`HomeModel`](app::HomeModel), the home screen's live data (the map and
 //!   the table's rows, read every 500 ms behind a time range, two toggles and
-//!   the query bar), and [`TraceModel`](app::TraceModel), an open trace's (read
-//!   every 500 ms while it arrives, then every 2 s).
+//!   the query bar), [`TraceModel`](app::TraceModel), an open trace's (read
+//!   every 500 ms while it arrives, then every 2 s), and
+//!   [`LogsModel`](app::LogsModel), the Logs screen's (the rows of the list in
+//!   pages, kept fresh by the live tail, and the histogram).
 //! - [`views`] holds the views of the main window's screens: the live
 //!   [`MapView`](views::MapView) and the [`TraceTableView`](views::TraceTableView)
 //!   (the TraceQL bar, the two toggles and the table) of the home screen, and
 //!   the [`TraceView`](views::TraceView) (the waterfall, the inspector and the
-//!   selected span's logs).
+//!   selected span's logs), and (Milestone 4) the Logs screen's
+//!   [`LogsView`](views::LogsView) (the LogQL bar, the level toggles, the
+//!   histogram and the list of lines).
 //! - [`menu_text`] holds the exact strings for the status line, the discard
 //!   rules line and the rates, so the macOS menu and the view cannot drift apart.
 //! - [`Theme`] holds the colours; [`register_fonts`] the bundled typeface.

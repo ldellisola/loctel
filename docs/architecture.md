@@ -36,7 +36,7 @@ crate updates this table and the diagram below it.
 | `loctel-engine` | core | Wires store, ingest, MCP and the discard rules; settings, pause, rates; owns threads and runtime | implemented: store, OTLP receivers and MCP server, `settings.toml`, pause, rates, and (Milestone 2) the discard rules at ingest with live reload of `rules.toml` and the handle API (see "Engine" below) |
 | `loctel-meshgen` | test tooling | Fake microservice mesh scenarios (library and `meshgen` binary) | implemented: six scenarios and a sender over gRPC, HTTP protobuf and HTTP JSON (see "Test tooling" below) |
 | `loctel-e2e` | test tooling | End-to-end tests through real OTLP and a real MCP client (`publish = false`) | implemented: a `Harness` over a real engine (with or without a rules file) and the tests of the transports, assembly, service map, agent flow, pause, release fixture, discard rules and queries (see "Test tooling" below) |
-| `loctel-ui` | UI | GPUI views, the pure view models and the headless screenshot harness | implemented: the status view (with the discard rules line, from Milestone 2), the shared menu text, the theme, the pure models of the main window (`model`: formats, service colours, trace table rows, query bar state, map layout, waterfall rows, inspector text and the trace view's text), the main window's shell (`app`: sidebar, toolbar, `UiBackend`, the GPUI Kit theme bridge, `open_main_window`, and the live data entities `HomeModel` and `TraceModel`), the views of its two screens (`views`: the service map, the trace table, and the trace view with its waterfall, inspector and span logs; Milestone 3) and `testing::{render_png, render_window_png, Driver, headless_app, assert_snapshot}` behind the `screenshot` feature (see "UI" below) |
+| `loctel-ui` | UI | GPUI views, the pure view models and the headless screenshot harness | implemented: the status view (with the discard rules line, from Milestone 2), the shared menu text, the theme, the pure models of the main window (`model`: formats, service colours, trace table rows, query bar state, map layout, waterfall rows, inspector text and the trace view's text), the main window's shell (`app`: sidebar, toolbar, `UiBackend`, the GPUI Kit theme bridge, `open_main_window`, and the live data entities `HomeModel`, `TraceModel` and, from Milestone 4, `LogsModel`), the views of its two screens (`views`: the service map, the trace table, and the trace view with its waterfall, inspector and span logs; Milestone 3) and `testing::{render_png, render_window_png, Driver, headless_app, assert_snapshot}` behind the `screenshot` feature (see "UI" below) |
 | `loctel-macos` | macOS | Status item, activation policy, login item (`cfg(target_os = "macos")`) | implemented, never run: the menu bar item and its menu (with the discard rules line, Open loctel and Edit discard rules…), the main window's lifecycle (`window::open_or_focus`: the Dock while it is open, Accessory after it closes), Liquid Glass behind the main window's sidebar and toolbar (`glass::attach`), the login item and the first-launch step; empty off macOS apart from plain-Rust parts that the Linux tests cover (see "macOS shell" below) |
 | `loctel-app` | binary | The `loctel` binary: headless mode and GUI, bundle metadata | implemented: headless mode, on Linux the main window (it also quits cleanly on SIGINT and SIGTERM) and on macOS the menu bar app that opens the main window from its menu (see "Headless mode", "UI" and "macOS shell" below); `[package.metadata.bundle]` and `bundle/` hold what goes into `loctel.app` (see "Release pipeline" below) |
 | `xtask` | tooling | Screenshots, next-version, release notes, MCP smoke test | implemented: `screenshots [--update]`, `run-shot`, `next-version`, `release-notes` and `mcp-smoke --url URL` (see "UI" and "Release pipeline" below) |
@@ -546,14 +546,14 @@ details, the theme tokens and the workflow are in
   window's shell and its data: `MainWindow` (the floating sidebar with its
   status box, the toolbar (with `HomeControls`: Live, the time range, Pause and
   Clear all over the `HomeModel`) and the content panel, which show a `Screen`:
-  `Home` or `Trace(id)`), the `UiBackend` trait that gives views the `Store` and the
+  `Home`, `Trace(id)`, `Logs { query }` or `Rules { draft }`), the `UiBackend` trait that gives views the `Store` and the
   `EngineStatus`, the discard rules, the settings, pause and the login item
   (`AppBackend`, over an `EngineHandle`, the settings path and an optional
   `LoginItem`, implements it; tests use `testing::FixedBackend`, which keeps
   all of it in memory), `open_main_window`, the `Backdrop` and
   `GlassRegion` types through which a platform learns where the glass parts
   are, and `kit_theme::apply`, the one place loctel's `Theme` is mapped onto
-  GPUI Kit's. Two entities read the store over time, both on GPUI's background
+  GPUI Kit's. Three entities read the store over time, all on GPUI's background
   executor and never in a frame: `HomeModel` (`app::data`) every 500 ms, behind
   a `TimeRange`, the errors-only and slow-only toggles and the query bar (at
   most 1,000 rows), building the placed service map and the table's rows
@@ -561,18 +561,27 @@ details, the theme tokens and the workflow are in
   and `TraceModel` (`app::trace_data`) for the open trace, every 500 ms until
   it is complete and every 2 s after, rebuilding the waterfall by span ID so a
   trace that is still arriving does not jump, and reading the selected span's
-  logs. See [`areas/ui.md`](areas/ui.md) ("The main window", "Live data",
-  "The trace view"), [`decisions/0024-gpui-kit.md`](decisions/0024-gpui-kit.md),
+  logs; and `LogsModel` (`app::logs_data`, Milestone 4) for the Logs screen:
+  the list in pages of 500 (at most 20,000 rows), the live tail that joins the
+  newest page every 500 ms without ever repeating a line (and stands still while
+  the list is scrolled away from the top), the histogram every 2 s and the lines
+  around a log, reading only while the Logs screen shows. See
+  [`areas/ui.md`](areas/ui.md) ("The main window", "Live data",
+  "The trace view", "The Logs screen"), [`decisions/0024-gpui-kit.md`](decisions/0024-gpui-kit.md),
   [`decisions/0025-live-home-data.md`](decisions/0025-live-home-data.md) and
-  [`decisions/0028-trace-view.md`](decisions/0028-trace-view.md).
+  [`decisions/0028-trace-view.md`](decisions/0028-trace-view.md) and
+  [`decisions/0037-logs-screen.md`](decisions/0037-logs-screen.md).
 - **The `views` module** (`crates/loctel-ui/src/views/`, Milestone 3) holds the
-  views of the two screens, thin GPUI views that lay out what a model gives
+  views of the main window's screens, thin GPUI views that lay out what a model gives
   them and write what the user does back into it: `MapView` (the live service
   map on one `canvas`, with pan, zoom and a click on a service that filters the
   table), `TraceTableView` (the TraceQL bar, the toggles and the table of
   traces; a click on a row opens the trace) and `TraceView` with its
-  `WaterfallView`, `InspectorView` and `SpanLogsView`. They use GPUI Kit's
-  table, input, toggles, split panel, scroll areas and tooltips. See
+  `WaterfallView`, `InspectorView` and `SpanLogsView` (Milestone 3), and the
+  Logs screen's `LogsView` with its `HistogramView` (Milestone 4: the LogQL bar,
+  the level toggles, the volume bars and a variable-height list whose rows expand
+  where they stand). They use GPUI Kit's table, input, toggles, split panel,
+  scroll areas and tooltips. See
   [`areas/ui.md`](areas/ui.md) ("Screens and views at a glance" is the map).
 - **The data flow of the main window** is one direction, with the user's
   actions coming back the same way:

@@ -44,6 +44,7 @@ pub fn feed(store: &Store, generated: &Generated) {
 /// minute and ten seconds later when this returns, so every trace is complete
 /// (the quiet period is 10 s: until then a trace's `card-gateway` is not a node
 /// of the map) and inside the default range of 15 minutes.
+#[allow(dead_code)] // not every test file shows the home screen
 pub fn home_store() -> Store {
     let clock = Arc::new(ManualClock::new(BASE));
     let store = Store::new(StoreConfig::default(), clock.clone());

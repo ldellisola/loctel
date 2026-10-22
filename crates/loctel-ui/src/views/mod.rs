@@ -12,22 +12,34 @@
 //!   tree with find, folding and the errors path), the [`InspectorView`] (the
 //!   selected span) and the [`SpanLogsView`] (its logs).
 //!
-//! `docs/areas/ui.md` ("The service map", "The trace table", "The trace view")
-//! has the look and the interactions.
+//! - [`LogsView`]: the Logs screen (Milestone 4): the LogQL bar, the level
+//!   toggles, the [`HistogramView`] and the list of lines, which expand where they
+//!   stand.
+//!
+//! `docs/areas/ui.md` ("The service map", "The trace table", "The trace view",
+//! "The Logs screen") has the look and the interactions.
 
+mod histogram_view;
 mod inspector_view;
+mod logs_view;
 mod map_view;
 mod span_logs_view;
 mod trace_table_view;
 mod trace_view;
 mod waterfall_view;
 
+pub use histogram_view::HistogramView;
 pub use inspector_view::{
     COPY_JSON, InspectorEvent, InspectorView, NOTHING_SELECTED as INSPECTOR_EMPTY, TRACES_THROUGH,
 };
+pub use logs_view::{
+    DISCARD_LIKE_THIS, LOGS_EMPTY_NO_DATA, LOGS_EMPTY_NO_MATCH, LogsPart, LogsView, LogsViewEvent,
+    OPEN_TRACE, SHOW_AROUND,
+};
 pub use map_view::{Camera, EMPTY_HINT, EMPTY_TITLE, MAX_ZOOM, MIN_ZOOM, MapView};
 pub use span_logs_view::{
-    NO_LOGS, NOTHING_SELECTED as LOGS_EMPTY, PANEL_HEIGHT as LOGS_HEIGHT, SpanLogsView,
+    NO_LOGS, NOTHING_SELECTED as LOGS_EMPTY, OPEN_IN_LOGS, PANEL_HEIGHT as LOGS_HEIGHT,
+    SpanLogsEvent, SpanLogsView,
 };
 pub use trace_table_view::{
     CLEAR_FILTERS, COLUMNS, EMPTY_NO_DATA, EMPTY_NO_MATCH, HEADER_HEIGHT, ROW_HEIGHT, TablePart,

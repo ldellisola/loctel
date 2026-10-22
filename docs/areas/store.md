@@ -38,6 +38,7 @@ let page = store.search_logs_keyed(&LogFilter::default(), &PageRequest { limit: 
 let record = store.log(log_id);          // Option<LogRecord>
 let bars = store.log_histogram(&LogFilter::default(), since, until, 48); // Vec<HistogramBucket>
 let around = store.logs_around(log_id, 3, 3); // Around { lines, target }
+let oldest = store.oldest_log_unix_nano(); // Option<u64>
 let map = store.service_map(TimeWindow { since_unix_nano }); // ServiceMap
 let services = store.services(TimeWindow { since_unix_nano }); // Vec<ServiceStats>
 let stats = store.stats();               // StoreStats
@@ -425,6 +426,10 @@ cleared) reads as "gone", never as some other log.
   above by the older of `until` and the cursor.
 - `Store::log(LogId) -> Option<LogRecord>` is a map lookup: `None` once the log
   is gone, or for an ID never issued.
+- `Store::oldest_log_unix_nano() -> Option<u64>` is the time of the oldest log
+  held (a lookup at the front of the time order, not a pass), `None` for no logs.
+  Added in Milestone 4 Task 4: the Logs screen's histogram has no start to count
+  from under `Everything` without it.
 
 **`LevelSet`** is a `u8` with a bit per `Severity` (a `match` without a wildcard
 maps severities to bits, so a new severity is a compile error until it has one).
