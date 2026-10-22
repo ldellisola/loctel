@@ -12,11 +12,16 @@
 //!   service writes into it.
 //! - [`map_layout`]: where each node of the service map goes, and what it
 //!   says, kept stable as services come and go.
+//! - [`waterfall`]: the rows of the trace view's waterfall (tree order, bars,
+//!   folding, find, the errors path), kept as the trace fills in.
+//! - [`inspector`]: the text of the selected span's inspector panel.
 //!
 //! `docs/areas/ui.md` ("Models") has the formats table.
 
 pub mod colors;
 pub mod format;
+pub mod inspector;
 pub mod map_layout;
 pub mod query_bar;
 pub mod trace_table;
+pub mod waterfall;

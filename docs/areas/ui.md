@@ -7,7 +7,8 @@ feel), §10.3 (screenshot tests) and §10.5 (gotchas from the spike).
 Status: Milestones 1 and 2 have one view, the **status view**, and the Linux
 window that shows it. Milestone 2 added the discard rules line to it and to the
 macOS menu; the rules screen is Milestone 4. The main window (Map & traces, Trace view) is Milestone 3
-(in progress: the pure models in `src/model` are done, see "Models" below), the
+(in progress: the pure models in `src/model` are done, the views are not; see
+"Models" below), the
 remaining screens and the popover Milestone 4. The macOS menu bar item is in
 `loctel-macos`; it only borrows the strings from `menu_text`.
 
@@ -26,7 +27,7 @@ moved.
 | `menu_text::status_line(&StatusModel)` | the one-line status: `Receiving · 412 spans/s · 1.2k logs/s`, `Paused` or `Port problem: otlp-http (address in use)`. A failed listener wins over paused, paused over receiving. The reason is `address in use` when the OS error contains "in use", otherwise the raw error cut to 40 characters. The first failed listener is the one named |
 | `menu_text::rules_line(&StatusModel)` | the discard rules in one line, the first that applies: `Discard rules file has an error`; `1 discard rule on · 1 has an error` (for more than one, `3 discard rules on · 2 have errors`); `No discard rules on`; `1 discard rule on · 31% dropped` or `3 discard rules on · 0% dropped`. The percentage is the share the rules dropped of what arrived since launch, rounded to a whole number; a value that is not a number reads `0%` and one outside 0 to 1 is cut to it. A file error wins over a rule error, a rule error over "no rules on" |
 | `menu_text::format_rate(f64)` | `412` is `412`, `1234` is `1.2k`, `0.4` is `0`. One decimal under ten thousand, none above, never `.0` (`1k`, `10k`, `1.3M`); NaN, infinity and negatives read `0` |
-| `model` | the pure models of the main window: `format`, `colors`, `trace_table`, `query_bar`, `map_layout` (see "Models" below) |
+| `model` | the pure models of the main window: `format`, `colors`, `trace_table`, `query_bar`, `map_layout`, `waterfall`, `inspector` (see "Models" below) |
 | `Theme` | the colours below. `Theme::dark()` and `Theme::light()` |
 | `register_fonts(cx)`, `FONT_FAMILY` | the bundled typeface (below) |
 | `testing` (feature `screenshot`) | `render_png` and `assert_snapshot` |
@@ -44,7 +45,8 @@ and the TraceQL parser, with no GPUI in them: a colour is an index into
 `Theme::service_palette`, and a view only lays out the strings and numbers it
 is given. The rules of the design (the formats, the failure display of §9.4,
 the colours of §9.3) are therefore tested with plain `assert_eq!`s, in
-`tests/model_format.rs`, `tests/model_table.rs` and `tests/model_map.rs`.
+`tests/model_format.rs`, `tests/model_table.rs`, `tests/model_map.rs` and
+`tests/model_waterfall.rs`.
 
 ### Formats (`model::format`)
 
@@ -216,6 +218,75 @@ database can be named like a service). The store's edges carry names and no
 kind, so an end means the first node with that id, in the order service,
 database, queue, external. An edge to an id that is no node is left out of the
 layout, so every placed edge joins two placed nodes.
+
+### Waterfall (`model::waterfall`)
+
+`Waterfall::new(&TraceSnapshot, &mut ServiceColors)` turns one trace into the
+rows of the trace view's waterfall, and `rebuild` takes in a newer snapshot of
+the same trace as spans arrive. `rows()` is what the view draws: the **visible**
+`WaterfallRow`s, top to bottom. A row holds `span_id`, `depth`, `has_children`,
+`collapsed`, `name`, `service`, `color` (the unreduced `ServiceColors` index,
+the view takes `% 5`), `peer_note`, `start_frac` and `width_frac` (the bar, as
+shares of the trace), `duration` (`format::duration`), `is_error` and
+`exception_fracs` (where the `exception` events are, as shares of the trace).
+
+**The order.** Depth first; the roots, and the children of a span, go by start
+time and then span ID. The walk has its own stack, so a chain of any depth is
+fine (`depth` stops at 65,535) and 100,000 spans build in about 0.3 s in a debug
+build (the test allows 1.5 s, for building and for rebuilding).
+
+**Spans whose parent has not arrived** hang, one level down, under one
+placeholder row at depth 0, `missing parent`, which comes after the last root's
+subtree and is there only while such spans are. The placeholder is a
+`WaterfallRow` with `is_placeholder()` true (its `span_id` is all zeros, which no
+span has), name and `peer_note` `missing parent`, no service, no bar and no
+duration; it folds like any row, and with the errors filter on it shows only if
+an orphan's subtree has an error. A span with no parent is a root, so a second
+one is a second tree before the placeholder. A parent loop (malformed) goes under
+the placeholder too, so every span has one row.
+
+**The bar.** `start_frac` is the span's start over the trace's length, and
+`width_frac` its length over it, at least 0.003 (`MIN_WIDTH_FRAC`) so that a span
+with no length shows, and never so far right that `start_frac + width_frac`
+passes 1. The trace runs from the earliest start to the latest end, as the trace
+table's duration does. A marker is the event's time on the same scale, from 0 to
+1.
+
+**`peer_note`** is the other side of a call, as the service map names it: a
+client span's database (`postgresql`, `redis`), else its broker, else the host it
+calls (`card-gateway`); a producer's broker (`rabbitmq`) else its host; a
+consumer's broker. Other spans have none.
+
+**What the user does** is kept by span ID across `rebuild`, so a trace that is
+still arriving does not jump (Milestone 3 plan, review focus 1):
+
+| Call | What it does |
+|---|---|
+| `toggle(id)` | folds the children of a span that has some, or opens them. A leaf or an unknown ID does nothing |
+| `collapse_all()`, `expand_all()` | fold every span that has children now (a span that arrives later is open), or open all |
+| `set_errors_path_only(on)` | shows only the erroring spans and the spans above them, or everything. No error means no row. It combines with folding: a folded span hides its errors |
+| `select(id)` | selects the span and opens the spans above it. An unknown ID does nothing. The errors filter is not touched |
+| `selected()`, `row_of(id)` | the selection (none in a new waterfall), and where a span is among `rows()` (`None` when a fold or the filter hides it; a hidden span stays selected) |
+| `find(text)` | the positions in `rows()` whose span has `text` in its name, service or the value of any attribute, ignoring case. Keys, the status message, events and the resource are not searched; no text finds nothing; hidden rows are not looked at |
+| `ruler()` | the labels at 0, 25, 50, 75 and 100%: `["0", "460 ms", "920 ms", "1.38 s", "1.84 s"]` |
+
+`rebuild` keeps the folded spans, the selection and the errors filter, and forgets
+a span that is no longer in the trace (it is not folded, and not selected).
+`initial_selection(&TraceSnapshot)` is the span to select when the trace opens:
+the failed-in span, else the root (none if the trace has neither yet).
+
+### Inspector (`model::inspector`)
+
+`span_details(&TraceSnapshot, id)` is the text of the inspector panel for the
+span, or `None` for an ID the trace does not have (the placeholder's, too).
+`SpanDetails` holds `name`, `service`, `kind` (`Server`, `Client`, `Internal`,
+`Producer`, `Consumer`, `Unspecified`), `duration`, `offset` (`starts at +200 ms`,
+and `starts at +0 ms` for the root), `status` (`Unset`, `OK` or `Error`, then ` ·
+` and the status message when there is one: `Error · HTTP 500`), `exception` (the
+span's first `exception` event: type, message, stack trace), and `attributes` and
+`resource` as `(key, value)` pairs sorted by key, values whole. The view cuts the
+long ones (design 9.2 and the Task 8 plan: over 200 characters, `… (show all)`).
+Decision 0023 has the reasons for the details above.
 
 ## Theme tokens
 

@@ -9,9 +9,10 @@
 //!   window; on macOS the menu bar item comes first).
 //! - [`model`] holds the pure models of the main window (Milestone 3): the
 //!   formats of durations, clock times, rates and error shares, the colour a
-//!   service keeps, the trace table's rows, the query bar's state and the
-//!   place of every node of the service map. No GPUI in them, so plain tests
-//!   pin every string and every place.
+//!   service keeps, the trace table's rows, the query bar's state, the
+//!   place of every node of the service map, the rows of a trace's waterfall
+//!   and the text of the span inspector. No GPUI in them, so plain tests pin
+//!   every string and every place.
 //! - [`menu_text`] holds the exact strings for the status line, the discard
 //!   rules line and the rates, so the macOS menu and the view cannot drift apart.
 //! - [`Theme`] holds the colours; [`register_fonts`] the bundled typeface.

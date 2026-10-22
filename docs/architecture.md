@@ -33,7 +33,7 @@ crate updates this table and the diagram below it.
 | `loctel-engine` | core | Wires store, ingest, MCP and the discard rules; settings, pause, rates; owns threads and runtime | implemented: store, OTLP receivers and MCP server, `settings.toml`, pause, rates, and (Milestone 2) the discard rules at ingest with live reload of `rules.toml` and the handle API (see "Engine" below) |
 | `loctel-meshgen` | test tooling | Fake microservice mesh scenarios (library and `meshgen` binary) | implemented: six scenarios and a sender over gRPC, HTTP protobuf and HTTP JSON (see "Test tooling" below) |
 | `loctel-e2e` | test tooling | End-to-end tests through real OTLP and a real MCP client (`publish = false`) | implemented: a `Harness` over a real engine (with or without a rules file) and the tests of the transports, assembly, service map, agent flow, pause, release fixture, discard rules and queries (see "Test tooling" below) |
-| `loctel-ui` | UI | GPUI views, the pure view models and the headless screenshot harness | implemented: the status view (with the discard rules line, from Milestone 2), the shared menu text, the theme, the pure models of the main window (`model`: formats, service colours, trace table rows, query bar state; Milestone 3 in progress) and `testing::{render_png, assert_snapshot}` behind the `screenshot` feature (see "UI" below) |
+| `loctel-ui` | UI | GPUI views, the pure view models and the headless screenshot harness | implemented: the status view (with the discard rules line, from Milestone 2), the shared menu text, the theme, the pure models of the main window (`model`: formats, service colours, trace table rows, query bar state, map layout, waterfall rows and inspector text; Milestone 3 in progress) and `testing::{render_png, assert_snapshot}` behind the `screenshot` feature (see "UI" below) |
 | `loctel-macos` | macOS | Status item, activation policy, login item (`cfg(target_os = "macos")`) | implemented, never run: the menu bar item and its menu (with the discard rules line and Edit discard rules…), the login item and the first-launch step; empty off macOS apart from three plain-Rust modules that the Linux tests cover (see "macOS shell" below) |
 | `loctel-app` | binary | The `loctel` binary: headless mode and GUI, bundle metadata | implemented: headless mode, on Linux the status window and on macOS the menu bar app (see "Headless mode", "UI" and "macOS shell" below); `[package.metadata.bundle]` and `bundle/` hold what goes into `loctel.app` (see "Release pipeline" below) |
 | `xtask` | tooling | Screenshots, next-version, release notes, MCP smoke test | implemented: `screenshots [--update]`, `run-shot`, `next-version`, `release-notes` and `mcp-smoke --url URL` (see "UI" and "Release pipeline" below) |
@@ -492,13 +492,17 @@ details, the theme tokens and the workflow are in
   times, rates, error shares, truncation), `colors` (`ServiceColors`, the
   first-seen order of services), `trace_table` (`TraceRow`, `rows`,
   `failed_in_text`), `query_bar` (`QueryState`, `validate`,
-  `service_filter`) and `map_layout` (`layout`, `MapLayout`, `LayoutMemory`:
+  `service_filter`), `map_layout` (`layout`, `MapLayout`, `LayoutMemory`:
   the service map's nodes and edges placed in columns and rows, stable as
-  services come and go). It has no GPUI types, so `tests/model_format.rs`,
-  `tests/model_table.rs` and `tests/model_map.rs` pin every string and every
-  place with plain assertions. Later milestone 3 tasks add the waterfall and
-  the inspector models beside them. The formats and the layout rules are in
-  [`areas/ui.md`](areas/ui.md) ("Models").
+  services come and go), `waterfall` (`Waterfall`, `WaterfallRow`,
+  `initial_selection`: one trace as rows in tree order with their bars, folding,
+  find and the errors path, kept by span ID as the trace fills in) and
+  `inspector` (`SpanDetails`, `span_details`: the text of the selected span's
+  panel). It has no GPUI types, so `tests/model_format.rs`,
+  `tests/model_table.rs`, `tests/model_map.rs` and `tests/model_waterfall.rs`
+  pin every string and every place with plain assertions. The formats, the
+  layout and the waterfall rules are in [`areas/ui.md`](areas/ui.md)
+  ("Models").
 - **Screenshot tests** (`crates/loctel-ui/tests/screenshots.rs`) render views
   through GPUI's headless renderer (software wgpu, no GPU or display) with a
   bundled font, and compare pixel for pixel with references in
