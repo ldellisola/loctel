@@ -58,6 +58,11 @@ pub(crate) struct TraceEntry {
     /// The latest span end, each end counted no earlier than its own span's
     /// start (so clock skew never makes a trace end before it begins).
     max_end: u64,
+    /// How many of the spans are erroring.
+    errors: usize,
+    /// The `(start, span ID)` of the root: the parentless span that started
+    /// first, which is what [`root_span`] finds. `None` while there is none.
+    root: Option<(u64, SpanId)>,
 }
 
 /// The root of `spans` (in any order): the parentless span that started
@@ -84,6 +89,8 @@ impl TraceEntry {
             last_arrival: now,
             min_start: u64::MAX,
             max_end: 0,
+            errors: 0,
+            root: None,
         }
     }
 
@@ -125,9 +132,22 @@ impl TraceEntry {
         self.index.insert(span.span_id, self.spans.len());
         self.min_start = self.min_start.min(span.start_unix_nano);
         self.max_end = self.max_end.max(span_end(&span));
+        self.count(&span);
         self.spans.push(span);
         self.last_arrival = now;
         true
+    }
+
+    /// Takes `span`, which the trace holds or is about to, into the error count
+    /// and the choice of the root.
+    fn count(&mut self, span: &Span) {
+        self.errors += usize::from(span.is_error());
+        if span.parent_span_id.is_none() {
+            let key = (span.start_unix_nano, span.span_id);
+            if self.root.is_none_or(|root| key < root) {
+                self.root = Some(key);
+            }
+        }
     }
 
     /// Removes the spans whose IDs are in `ids` (IDs the trace does not have
@@ -150,11 +170,16 @@ impl TraceEntry {
         self.index.clear();
         self.min_start = u64::MAX;
         self.max_end = 0;
-        for (position, span) in self.spans.iter().enumerate() {
+        self.errors = 0;
+        self.root = None;
+        let spans = std::mem::take(&mut self.spans);
+        for (position, span) in spans.iter().enumerate() {
             self.index.insert(span.span_id, position);
             self.min_start = self.min_start.min(span.start_unix_nano);
             self.max_end = self.max_end.max(span_end(span));
+            self.count(span);
         }
+        self.spans = spans;
         doomed.len()
     }
 
@@ -185,6 +210,24 @@ impl TraceEntry {
         self.max_end.saturating_sub(self.min_start)
     }
 
+    /// Did the request work? What [`classify`] says of the spans, kept as they
+    /// come and go, so that it costs nothing to ask: a search that wants the
+    /// failed traces asks it of every trace it looks at.
+    pub(crate) fn status(&self) -> TraceStatus {
+        if self.errors == 0 {
+            return TraceStatus::Ok;
+        }
+        let root_erroring = self
+            .root
+            .and_then(|(_, id)| self.span(id))
+            .is_some_and(Span::is_error);
+        if root_erroring {
+            TraceStatus::Failed
+        } else {
+            TraceStatus::ErrorsInside
+        }
+    }
+
     pub(crate) fn snapshot(&self, trace_id: TraceId, complete: bool) -> TraceSnapshot {
         let mut spans = self.spans.clone();
         spans.sort_by_key(|span| (span.start_unix_nano, span.span_id));
@@ -206,6 +249,134 @@ impl TraceEntry {
             complete,
             status,
             failed_in,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use loctel_model::{Resource, SpanKind, StatusCode};
+
+    use super::*;
+
+    fn span(id: u8, parent: Option<u8>, start: u64, erroring: bool) -> Span {
+        Span {
+            trace_id: TraceId([1; 16]),
+            span_id: SpanId([id; 8]),
+            parent_span_id: parent.map(|parent| SpanId([parent; 8])),
+            name: "x".to_string(),
+            kind: SpanKind::Internal,
+            start_unix_nano: start,
+            end_unix_nano: start + 10,
+            status: if erroring {
+                StatusCode::Error
+            } else {
+                StatusCode::Unset
+            },
+            status_message: String::new(),
+            attributes: Vec::new(),
+            events: Vec::new(),
+            resource: Arc::new(Resource::default()),
+            scope_name: String::new(),
+        }
+    }
+
+    /// The status the failure rules give the spans the entry holds: what
+    /// `status` must always say.
+    fn by_the_rules(entry: &TraceEntry) -> TraceStatus {
+        let root = root_span(entry.spans()).map(|span| span.span_id);
+        classify(entry.spans(), root).0
+    }
+
+    #[test]
+    fn status_follows_the_spans_as_they_arrive() {
+        let mut entry = TraceEntry::new(0, 0);
+        assert_eq!(entry.status(), TraceStatus::Ok, "no spans");
+
+        // A child that errors before its root has arrived: errors inside.
+        entry.insert(span(2, Some(1), 20, true), 1);
+        assert_eq!(entry.status(), TraceStatus::ErrorsInside);
+        // The root arrives and is fine.
+        entry.insert(span(1, None, 10, false), 2);
+        assert_eq!(entry.status(), TraceStatus::ErrorsInside);
+        // A second parentless span that started earlier is the root now, and
+        // erroring: the request failed.
+        entry.insert(span(3, None, 5, true), 3);
+        assert_eq!(entry.status(), TraceStatus::Failed);
+        // A parentless span that started later is not the root.
+        entry.insert(span(4, None, 50, false), 4);
+        assert_eq!(entry.status(), TraceStatus::Failed);
+        // A retry of a span the trace has changes nothing, even if it now says
+        // that it is fine.
+        assert!(!entry.insert(span(3, None, 5, false), 5));
+        assert_eq!(entry.status(), TraceStatus::Failed);
+        assert_eq!(entry.status(), by_the_rules(&entry));
+    }
+
+    #[test]
+    fn status_follows_the_spans_as_they_are_removed() {
+        let mut entry = TraceEntry::new(0, 0);
+        entry.insert(span(1, None, 10, true), 1);
+        entry.insert(span(2, Some(1), 20, true), 1);
+        entry.insert(span(3, Some(1), 30, false), 1);
+        assert_eq!(entry.status(), TraceStatus::Failed);
+
+        // The erroring root goes: the next parentless span would be the root,
+        // and there is none, so what errors is inside.
+        entry.remove_spans(&[SpanId([1; 8])]);
+        assert_eq!(entry.status(), TraceStatus::ErrorsInside);
+        entry.remove_spans(&[SpanId([2; 8])]);
+        assert_eq!(entry.status(), TraceStatus::Ok);
+        assert_eq!(entry.status(), by_the_rules(&entry));
+    }
+
+    #[test]
+    fn a_trace_read_back_has_the_status_it_had() {
+        let mut entry = TraceEntry::new(0, 0);
+        entry.insert(span(1, None, 10, true), 1);
+        entry.insert(span(2, Some(1), 20, false), 1);
+        let back = TraceEntry::from_spans(entry.spans().to_vec(), 1, 0);
+        assert_eq!(back.status(), TraceStatus::Failed);
+        assert_eq!(back.status(), entry.status());
+    }
+
+    #[test]
+    fn status_equals_the_failure_rules_on_any_sequence() {
+        // A fixed pseudo-random walk over spans arriving in any order with any
+        // parents (parent cycles and self-parents included), then removals.
+        let mut seed = 0x2545_F491_4F6C_DD1D_u64;
+        let mut next = move |below: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % below
+        };
+        for round in 0..200 {
+            let mut entry = TraceEntry::new(0, 0);
+            for _ in 0..next(30) {
+                let id = 1 + next(24) as u8;
+                let parent = (next(3) != 0).then(|| 1 + next(24) as u8);
+                let erroring = next(4) == 0;
+                entry.insert(span(id, parent, next(100), erroring), 1);
+                assert_eq!(
+                    entry.status(),
+                    by_the_rules(&entry),
+                    "round {round}, insert"
+                );
+            }
+            for _ in 0..next(6) {
+                let doomed: Vec<SpanId> = (0..next(5))
+                    .map(|_| SpanId([1 + next(24) as u8; 8]))
+                    .collect();
+                entry.remove_spans(&doomed);
+                assert_eq!(
+                    entry.status(),
+                    by_the_rules(&entry),
+                    "round {round}, remove"
+                );
+            }
         }
     }
 }

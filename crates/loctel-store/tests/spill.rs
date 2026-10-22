@@ -758,6 +758,236 @@ fn traceql_search_decodes_newest_first_and_stops_at_page() {
     );
 }
 
+// ---- bounded work on search (Milestone 5, Task 5) ------------------------------------
+
+/// Trace `n` of [`tiny_trace`], failing at the root when `failed`, else with an
+/// error inside (the child span) when `inside`.
+fn graded_trace(n: u32, failed: bool, inside: bool) -> Vec<Span> {
+    let mut spans = tiny_trace(n, "work");
+    if failed {
+        spans[0] = error(spans[0].clone());
+    } else if inside {
+        spans[1] = error(spans[1].clone());
+    }
+    spans
+}
+
+/// 400 traces in both modes, all cold in `spill`: every 10th fails at the root
+/// and every 7th of the others has an error inside.
+fn graded_pair() -> Pair {
+    let pair = Pair::new();
+    let mut all = Vec::new();
+    for n in 1..=400u32 {
+        all.extend(graded_trace(n, n % 10 == 0, n % 7 == 0));
+    }
+    pair.ingest_spans(&all);
+    pair.settle();
+    assert_eq!(pair.spill.spilled_traces(), 400);
+    pair
+}
+
+fn first_page(limit: usize) -> PageRequest {
+    PageRequest {
+        limit,
+        cursor: None,
+    }
+}
+
+#[test]
+fn search_first_page_builds_at_most_limit_plus_one() {
+    let pair = graded_pair();
+    let filters = [
+        ("everything", TraceFilter::default()),
+        (
+            "errors only",
+            TraceFilter {
+                errors_only: true,
+                ..TraceFilter::default()
+            },
+        ),
+        (
+            "a service",
+            TraceFilter {
+                service: Some("orders".to_string()),
+                ..TraceFilter::default()
+            },
+        ),
+        (
+            "a duration",
+            TraceFilter {
+                min_duration_nanos: Some(5 * MS),
+                ..TraceFilter::default()
+            },
+        ),
+        (
+            "a query",
+            TraceFilter {
+                query: Some(Arc::new(traceql::parse("{ status = error }").unwrap())),
+                ..TraceFilter::default()
+            },
+        ),
+    ];
+    for (mode, store) in [("memory", &pair.memory), ("spilling", &pair.spill)] {
+        for (name, filter) in &filters {
+            for limit in [1, 5, 20] {
+                let before = store.summaries_built();
+                let page = store.search_traces(filter, &first_page(limit));
+                let built = store.summaries_built() - before;
+                assert_eq!(page.items.len(), limit, "{mode}, {name}");
+                assert!(page.next_cursor.is_some(), "{mode}, {name}: more follow");
+                assert!(
+                    built <= limit as u64 + 1,
+                    "{mode}, {name}: a page of {limit} built {built} summaries of 400 traces"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_search_builds_a_summary_only_for_what_it_returns() {
+    // The traces that do not pass (here the 300-odd that did not fail) cost the
+    // index lookup that rejects them, and no summary: in memory a summary is a
+    // walk of the trace's spans, and cold it is a copy of the index's.
+    let pair = graded_pair();
+    let errors_only = TraceFilter {
+        errors_only: true,
+        ..TraceFilter::default()
+    };
+    for (mode, store) in [("memory", &pair.memory), ("spilling", &pair.spill)] {
+        let before = store.summaries_built();
+        let pages = walk(store, &errors_only, 25);
+        let returned: usize = pages.iter().map(|page| page.items.len()).sum();
+        // 40 fail at the root, and 52 more (every 7th that did not) have an
+        // error inside.
+        assert_eq!(returned, 92, "{mode}: the traces with errors");
+        assert_eq!(
+            store.summaries_built() - before,
+            returned as u64,
+            "{mode}: one summary for each trace returned, none for the rest"
+        );
+    }
+}
+
+/// What `recent_failures` must say, worked out the slow way: every trace with
+/// errors by a full search, the first `limit` of each status.
+fn failures_by_search(
+    store: &Store,
+    since: Option<u64>,
+    limit: usize,
+) -> (Vec<TraceSummary>, Vec<TraceSummary>) {
+    let filter = TraceFilter {
+        since_unix_nano: since,
+        errors_only: true,
+        ..TraceFilter::default()
+    };
+    let all = store.search_traces(&filter, &page_all()).items;
+    let by_status = |status: TraceStatus| -> Vec<TraceSummary> {
+        all.iter()
+            .filter(|summary| summary.status == status)
+            .take(limit)
+            .cloned()
+            .collect()
+    };
+    (
+        by_status(TraceStatus::Failed),
+        by_status(TraceStatus::ErrorsInside),
+    )
+}
+
+#[test]
+fn recent_failures_one_pass_equals_a_full_search() {
+    let pair = mixed_pair();
+    for (mode, store) in [("memory", &pair.memory), ("spilling", &pair.spill)] {
+        // Cold and hot traces, failing at the root (5 of them) and inside (8).
+        let (all_failed, all_inside) = failures_by_search(store, None, usize::MAX);
+        assert_eq!((all_failed.len(), all_inside.len()), (5, 8), "{mode}");
+        for since in [None, Some(1_050 * MS), Some(1_150 * MS), Some(9_999 * MS)] {
+            for limit in [1, 2, 3, 5, 8, 20] {
+                let want = failures_by_search(store, since, limit);
+                let before = store.summaries_built();
+                let got = store.recent_failures(since, limit);
+                let built = store.summaries_built() - before;
+                assert_eq!(
+                    (&got.failed, &got.errors_inside),
+                    (&want.0, &want.1),
+                    "{mode}, since {since:?}, limit {limit}"
+                );
+                assert_eq!(
+                    built,
+                    (got.failed.len() + got.errors_inside.len()) as u64,
+                    "{mode}: a summary for each failure it returns, none for the rest"
+                );
+            }
+        }
+        assert!(
+            store.recent_failures(None, 0).failed.is_empty(),
+            "a limit of none"
+        );
+    }
+}
+
+#[test]
+fn recent_failures_builds_nothing_for_a_list_that_is_full() {
+    let pair = Pair::new();
+    // 300 failed traces and two with an error inside, the oldest ones: the
+    // second list can never fill, so the pass goes to the end of the index, and
+    // it must not build the summaries of the 295 failures it has no room for.
+    let mut all = Vec::new();
+    for n in 1..=302u32 {
+        all.extend(graded_trace(n, n > 2, n <= 2));
+    }
+    pair.ingest_spans(&all);
+    pair.settle();
+    for (mode, store) in [("memory", &pair.memory), ("spilling", &pair.spill)] {
+        let before = store.summaries_built();
+        let found = store.recent_failures(None, 5);
+        assert_eq!(found.failed.len(), 5, "{mode}");
+        assert_eq!(found.errors_inside.len(), 2, "{mode}");
+        let newest: Vec<TraceId> = (298..=302).rev().map(big_tid).collect();
+        let got: Vec<TraceId> = found.failed.iter().map(|item| item.trace_id).collect();
+        assert_eq!(got, newest, "{mode}: the newest failures, newest first");
+        assert_eq!(
+            store.summaries_built() - before,
+            7,
+            "{mode}: five and two, of 302 traces"
+        );
+    }
+}
+
+#[test]
+fn services_reads_only_the_traces_that_reach_the_window() {
+    let pair = Pair::new();
+    let mut all = Vec::new();
+    for n in 1..=300u32 {
+        all.extend(tiny_trace(n, "hay"));
+    }
+    pair.ingest_spans(&all);
+    pair.settle();
+    assert_eq!(pair.spill.spilled_traces(), 300);
+
+    // Trace n lasts from n ms to n + 5 ms, so the traces that reach 290 ms are
+    // 285 to 300.
+    let window = TimeWindow {
+        since_unix_nano: 290 * MS,
+    };
+    let before = pair.spill.trace_decodes();
+    let built = pair.spill.summaries_built();
+    let services = pair.spill.services(window);
+    assert_eq!(services, pair.memory.services(window));
+    assert!(!services.is_empty());
+    let decodes = pair.spill.trace_decodes() - before;
+    assert!(
+        decodes <= 16,
+        "decoded {decodes} of 300 traces for a window that 16 reach"
+    );
+    assert_eq!(
+        pair.spill.summaries_built(),
+        built,
+        "a services list is counted from spans, not from summaries"
+    );
+}
+
 // ---- the service map -----------------------------------------------------------
 
 #[test]

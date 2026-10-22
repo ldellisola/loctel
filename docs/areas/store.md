@@ -31,6 +31,9 @@ count of a filter, the log at a position and the histogram answered from what is
 kept about each chunk (see "Log chunks" below). The **disk cap** is enforced: the oldest
 segment files are deleted whole when the files take more than it, and a write that
 fails is waited out and reported (see "The disk cap" and "A failing disk" below).
+The searches over traces do bounded work: a summary is made only for a trace that
+is returned, and "recent failures" is one pass over the index (see "Bounded work"
+below).
 
 ## API
 
@@ -42,6 +45,7 @@ store.ingest_spans(spans);               // Vec<loctel_model::Span>
 let snapshot = store.trace(trace_id);    // Option<TraceSnapshot>
 let summary = store.summary(trace_id);   // Option<TraceSummary>
 let page = store.search_traces(&TraceFilter::default(), &PageRequest { limit: 20, cursor: None });
+let found = store.recent_failures(since, 5); // RecentFailures { failed, errors_inside }, one pass
 store.ingest_logs(logs);                 // Vec<loctel_model::LogRecord>
 let page = store.search_logs(&LogFilter::default(), &PageRequest { limit: 50, cursor: None });
 let lines = store.logs_for_span(trace_id, span_id); // Vec<LogRecord>, oldest first
@@ -360,11 +364,53 @@ Cost: the search walks the trace index newest first, from the top or from the
 cursor, and stops at the first trace that starts before `since` and once the
 page is full and one more match has shown that there is a next page. It never
 sorts or copies the traces held. The cheap conditions (`since`, `min_duration`,
-the cursor) are read from the index; service membership, `errors_only` and the
-summary of a trace in a segment file are too (see "Hot and cold traces"), and
-only a TraceQL query has to read the spans of a trace in a segment file, one
-trace at a time and only for traces the other conditions kept. The read lock is
-held for the call.
+`errors_only`, the cursor) are read from the index, for a trace in memory and one
+in a segment file alike; service membership of a trace in a segment file and its
+summary are too (see "Hot and cold traces"), and only a TraceQL query has to read
+the spans of a trace in a segment file, one trace at a time and only for traces
+the other conditions kept. The read lock is held for the call. See "Bounded work"
+for what a call makes.
+
+### Bounded work
+
+A search looks at many traces and returns few, so what it does for a trace it
+turns away is what it costs. Since Milestone 5, Task 5:
+
+- **A summary is made only for a trace that goes into the page.** A trace is
+  judged by the conditions above first, the cheap ones from the index, then
+  the service and the query, and only then summarized (for a trace in memory
+  that is a walk of its spans; for one in a segment file, a copy of the summary in
+  the index). The next page's "one more match" is found without making its
+  summary. So a page of `limit` makes `limit` summaries, however many traces were
+  turned away, and a search with `errors_only` over 50,000 traces of which 3
+  failed makes 3.
+- **The index knows whether a trace failed.** `errors_only` has to be answered
+  for every trace the walk meets, so `TraceMeta` holds the trace's status
+  (`Ok`, `ErrorsInside` or `Failed`), for a trace in memory as well as for one in
+  a segment file. A trace in memory keeps it up to date as spans come and go
+  (`TraceEntry` counts its erroring spans and tracks which parentless span is the
+  root, so asking costs nothing; a test holds it equal to `classify` over random
+  spans, removals included), and the index copies it after every change. Before,
+  a trace in memory was summarized to find out, and thrown away if it was fine.
+- **`Store::recent_failures(since_unix_nano, limit) -> RecentFailures`** is the
+  traces behind the MCP `recent_failures`: up to `limit` that failed and up to
+  `limit` with an error inside, each newest first, which is what two searches with
+  `errors_only` give once split by status. It is one pass over the index from the
+  newest trace, under one read of the store, that stops when both lists are full
+  and makes a summary only for the traces it puts in them. A trace that failed
+  after the `failed` list is full costs a lookup, and nothing else: with a
+  hundred thousand failed traces and no trace with an error inside (a service
+  that is down), it still makes `limit` summaries, not a hundred thousand.
+  `limit` 0 is two empty lists. It reads nothing from a segment file.
+- **`services` and `service_map`** do not sort or copy the traces held either:
+  they count the spans of the traces that reach into the window, one trace at a
+  time, and a trace that ended before the window is skipped from its index entry
+  (so a window of the last minute decodes the traces of the last minute, not all
+  of those in segment files).
+
+The hidden `Store::summaries_built()` counts the summaries reads have made (a
+search result or `summary`; the spill step writing a trace out is not a read), and
+is how the tests hold the above (`spill.rs` and the MCP `tools.rs`).
 
 ## Logs
 
@@ -893,10 +939,12 @@ Every held trace, hot or cold, has an entry in the index
 (`src/trace_index.rs`, `TraceMeta`): its ID, the order it first arrived in, the
 earliest start, the latest end, the span count, `last_arrival` (the clock time
 its last new span arrived) and where it is (`Hot`, or `Cold` with the position of
-its record). A cold trace's entry also holds the **summary it had when it left
-memory**: its services in the order of their first span (the service set), status,
-failed-in span, first exception and root. Nothing in a cold trace can change, since a
-new span brings it back to memory first, so that summary stays true.
+its record). Its **status** (did the request work) is there too, kept up to date for
+a trace in memory and fixed for a cold one. A cold trace's entry also holds the
+**summary it had when it left memory**: its services in the order of their first span
+(the service set), status, failed-in span, first exception and root. Nothing in a cold
+trace can change, since a new span brings it back to memory first, so that summary
+stays true.
 
 The index orders its entries three ways: by start (a `BTreeSet<(start, id)>`,
 walked backwards for "newest first" and for cursors), by first arrival (what
@@ -907,6 +955,7 @@ the spill step uses). So these cost the traces they look at, not the traces held
 |---|---|
 | `summary` | the index entry |
 | `search_traces` (time, service, errors only, duration, paging) | the index entry |
+| `recent_failures` | the index entries, newest first, and the summaries of the traces it returns |
 | `search_traces` with a TraceQL `query` | the index entry for every candidate, and the record for the ones the other conditions kept, newest first, until the page and one more match are found |
 | `oldest_start_unix_nano` | the index (the first key) |
 | `stats` | counters |
@@ -1309,7 +1358,16 @@ and failed) are how `disk_cap.rs` tests this without a full volume.
   and eviction of a cold trace; a damaged record (skipped, never a panic); a write
   that fails (the trace stays hot, and the next step retries); and readers and a
   writer on one spilling store. Most compare a store in memory
-  with one that spills, fed the same data on the same clock.
+  with one that spills, fed the same data on the same clock. Task 5 adds the
+  bounded-work tests, with the `summaries_built` hook:
+  `search_first_page_builds_at_most_limit_plus_one` (every kind of filter, in both
+  modes), `a_search_builds_a_summary_only_for_what_it_returns`,
+  `recent_failures_one_pass_equals_a_full_search` (the same lists as a full search
+  split by status, for many limits and `since`s, hot and cold),
+  `recent_failures_builds_nothing_for_a_list_that_is_full` and
+  `services_reads_only_the_traces_that_reach_the_window` (the decode hook). The
+  status a trace keeps in the index is held equal to `classify` by unit tests in
+  `src/trace.rs`.
 - `logs_scale.rs`: Milestone 5, Task 3. When a chunk seals (`chunk_seals_at_count_and_time`:
   65,536 logs or ten seconds, not a nanosecond early); late logs and chunks that overlap
   (`late_log_lands_in_time_order_across_chunks`, and 20,000 logs three seconds out of

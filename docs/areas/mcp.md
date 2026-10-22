@@ -225,7 +225,10 @@ Answers stay small by default (design §8: well under about 8k tokens).
   from `search_traces` and `search_logs`, which ends a reader's loop instead of
   restarting it, and an error from `get_trace`.
 - **`recent_failures`** reads newest first until it has `limit` failed traces
-  and `limit` traces with errors inside. `error_logs` are the trace's logs of
+  and `limit` traces with errors inside: one pass over the store's index
+  (`Store::recent_failures`) that makes a summary for the traces it returns and
+  for no other, however many traces are held (50,000 traces with 3 failures is
+  3 summaries; see "Bounded work" in `store.md`). `error_logs` are the trace's logs of
   level error or worse, linked by trace ID, **oldest first, the first 10**.
   `exception` is `trace_exception` (the failed-in span's, else the nearest
   ancestor's, else the first). A failed trace and a trace with errors inside are
@@ -299,7 +302,13 @@ To add a tool, follow `.claude/skills/add-mcp-tool/SKILL.md`.
 - `crates/loctel-mcp/tests/tools.rs`: the tools through `call`, on a store fed
   from `loctel-meshgen` through the real converter, with a manual clock moved
   past the quiet period. Every successful result is validated against its
-  tool's output schema.
+  tool's output schema. Milestone 5, Task 5 adds the bounded-work tests, which
+  put 50,000 traces in the store and count the summaries a call makes with the
+  store's `summaries_built` hook: `recent_failures_builds_bounded_summaries` (3
+  failures among the newest 100, `limit` 5: at most a few hundred summaries, in
+  fact 3), `recent_failures_does_not_build_summaries_for_a_full_list` (every trace
+  failed, and the list of traces with errors inside cannot fill) and
+  `search_traces_builds_one_page_of_summaries`.
 - `crates/loctel-mcp/tests/budget.rs`: every tool's default answer fits
   `ANSWER_TEXT_BUDGET` on the checkout, the health checks and a huge trace.
 - `crates/loctel-mcp/tests/http.rs`: a real rmcp client over HTTP, both

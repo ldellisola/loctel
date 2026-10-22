@@ -17,8 +17,10 @@
 //! trace can change, because a new span brings it back to memory first.
 //!
 //! The hot traces' spans are in the store's own map. For a hot trace the meta
-//! keeps only what the keys above need (start, end, count, last arrival), kept
-//! in step by [`TraceIndex::sync_hot`].
+//! keeps only what the keys above need (start, end, count, last arrival) and
+//! whether the request worked (its status, which a search for the traces with
+//! errors asks of every trace it looks at), kept in step by
+//! [`TraceIndex::sync_hot`].
 //!
 //! The decoded traces of recent cold reads are in the [`ColdCache`].
 
@@ -28,6 +30,7 @@ use std::sync::Arc;
 
 use loctel_model::TraceId;
 
+use crate::failure::TraceStatus;
 use crate::segment;
 use crate::summary::TraceSummary;
 use crate::trace::TraceEntry;
@@ -68,6 +71,10 @@ pub(crate) struct TraceMeta {
     /// The latest span end (no earlier than its own span's start).
     pub(crate) end: u64,
     pub(crate) span_count: usize,
+    /// Did the request work? Kept in step with the spans of a hot trace by
+    /// [`TraceIndex::sync_hot`] and fixed in a cold one, so that a search can
+    /// tell the traces with errors from the rest without reading any spans.
+    pub(crate) status: TraceStatus,
     /// Clock time at which the last new span arrived.
     pub(crate) last_arrival: u64,
     pub(crate) location: Location,
@@ -163,6 +170,7 @@ impl TraceIndex {
             start: entry.start_unix_nano(),
             end: entry.end_unix_nano(),
             span_count: entry.len(),
+            status: entry.status(),
             last_arrival: entry.last_arrival(),
             location: Location::Hot,
         };
@@ -193,6 +201,7 @@ impl TraceIndex {
         }
         meta.end = entry.end_unix_nano();
         meta.span_count = entry.len();
+        meta.status = entry.status();
     }
 
     /// The hot trace `id` was written to a segment.
@@ -202,6 +211,7 @@ impl TraceIndex {
         };
         if matches!(meta.location, Location::Hot) {
             self.hot_by_quiet.remove(&(meta.last_arrival, id));
+            meta.status = cold.summary.status;
             meta.location = Location::Cold(Box::new(cold));
             self.cold += 1;
         }

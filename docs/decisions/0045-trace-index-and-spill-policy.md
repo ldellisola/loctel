@@ -31,7 +31,8 @@ that spills. Logs stay in memory until Task 3, and the disk cap is Task 4's.
   a few hundred bytes a trace (a failing trace's first exception holds its
   stack, which is the one large part). For a hot trace the entry keeps only what
   the index keys need (start, end, count, `last_arrival`); status and the rest
-  are worked out from the spans when asked, as before M5.
+  are worked out from the spans when asked, as before M5. (Task 5 moved one of
+  them: the status of a hot trace is kept in the index too, decision 0048.)
 - **Three orders**, as the plan says for the first: `BTreeSet<(start, id)>`
   walked backwards for the search, `BTreeMap<arrival, id>` for eviction and
   `scan_traces` (the existing `arrival_order`), and one more the plan does not

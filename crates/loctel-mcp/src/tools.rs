@@ -14,9 +14,7 @@ use std::sync::Arc;
 use loctel_model::{Severity, SpanId, TraceId};
 use loctel_query::logql::{self, LogQuery};
 use loctel_query::traceql::{self, TraceQuery};
-use loctel_store::{
-    LogFilter, PageRequest, Store, TimeWindow, TraceFilter, TraceStatus, trace_exception,
-};
+use loctel_store::{LogFilter, PageRequest, Store, TimeWindow, TraceFilter, trace_exception};
 use rmcp::handler::server::tool::IntoCallToolResult;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResponse, CallToolResult, ContentBlock, ErrorData, Tool};
@@ -65,9 +63,6 @@ const LOGS_MAX: usize = 500;
 const SPAN_LOGS_MAX: usize = 50;
 /// Error logs shown with one failed trace.
 const ERROR_LOGS_MAX: usize = 10;
-/// A page of the store's own paging, for the tools that read until they have
-/// enough.
-const SCAN_PAGE: usize = 100;
 /// The most pages of error logs read to find a failed trace's first ten.
 const ERROR_LOG_SCAN_PAGES: usize = 10;
 
@@ -349,45 +344,25 @@ impl LoctelTools {
         Parameters(args): Parameters<RecentFailuresArgs>,
     ) -> Result<Json<RecentFailuresResult>, String> {
         let limit = page_limit(args.limit, FAILURES_DEFAULT, FAILURES_MAX);
-        let filter = TraceFilter {
-            since_unix_nano: since(args.since.as_deref())?,
-            errors_only: true,
-            ..TraceFilter::default()
-        };
 
-        // Newest first, until both lists are full or the traces run out.
-        let mut failed = Vec::new();
-        let mut errors_inside = Vec::new();
-        let mut cursor = None;
-        loop {
-            let page = self.store.search_traces(
-                &filter,
-                &PageRequest {
-                    limit: SCAN_PAGE,
-                    cursor,
-                },
-            );
-            for summary in page.items {
-                match summary.status {
-                    TraceStatus::Failed if failed.len() < limit => failed.push(summary),
-                    TraceStatus::ErrorsInside if errors_inside.len() < limit => {
-                        errors_inside.push(summary);
-                    }
-                    _ => {}
-                }
-            }
-            cursor = page.next_cursor;
-            if cursor.is_none() || (failed.len() >= limit && errors_inside.len() >= limit) {
-                break;
-            }
-        }
+        // One pass over the store's index, newest first, that stops when both
+        // lists are full, and builds a summary for what it returns and for
+        // nothing else (the store's `recent_failures`).
+        let found = self
+            .store
+            .recent_failures(since(args.since.as_deref())?, limit);
 
         Ok(Json(RecentFailuresResult {
-            failed: failed
+            failed: found
+                .failed
                 .iter()
                 .filter_map(|summary| self.failure(summary))
                 .collect(),
-            errors_inside: errors_inside.iter().map(TraceSummaryDto::from).collect(),
+            errors_inside: found
+                .errors_inside
+                .iter()
+                .map(TraceSummaryDto::from)
+                .collect(),
         }))
     }
 

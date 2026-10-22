@@ -45,6 +45,16 @@ pub struct TraceSummary {
     pub matched_span_ids: Vec<SpanId>,
 }
 
+/// What [`Store::recent_failures`](crate::Store::recent_failures) found.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RecentFailures {
+    /// The traces whose root span is erroring (status `failed`), newest first.
+    pub failed: Vec<TraceSummary>,
+    /// The traces whose root is fine, or has not arrived, but in which another
+    /// span is erroring (status `errors_inside`), newest first.
+    pub errors_inside: Vec<TraceSummary>,
+}
+
 /// What [`Store::search_traces`](crate::Store::search_traces) keeps. Every
 /// condition that is set must hold; the default keeps everything.
 #[derive(Clone, Debug, Default, PartialEq)]

@@ -18,15 +18,15 @@ use parking_lot::{Mutex, RwLock};
 
 use crate::clock::{Clock, saturating_nanos};
 use crate::config::StoreConfig;
-use crate::failure::{TraceStatus, classify};
+use crate::failure::TraceStatus;
 use crate::log_chunks::LogChunkInfo;
 use crate::logs::{Around, HistogramBucket, LogFilter, LogId, LogStore};
 use crate::page::{Page, PageRequest};
 use crate::segment::{Kind, decode_trace, encode_trace};
 use crate::segment_set::SegmentSet;
 use crate::service_map::{Aggregate, ServiceMap, ServiceStats, TimeWindow};
-use crate::summary::{TraceFilter, TraceSummary, decode_cursor, encode_cursor};
-use crate::trace::{TraceEntry, TraceSnapshot, root_span};
+use crate::summary::{RecentFailures, TraceFilter, TraceSummary, decode_cursor, encode_cursor};
+use crate::trace::{TraceEntry, TraceSnapshot};
 use crate::trace_index::{Cold, ColdCache, Location, TraceIndex, TraceMeta};
 
 /// Counts of what the store holds and has received, and where it holds it.
@@ -143,6 +143,8 @@ struct Inner {
     cache: Mutex<ColdCache>,
     /// How many traces have been decoded from a segment: a test hook.
     decodes: AtomicU64,
+    /// How many trace summaries reads have made: a test hook.
+    summaries: AtomicU64,
     /// Why the last write to a segment failed, until one works.
     spill_error: Option<String>,
     /// While a failed write is being waited out: when the next one may be tried
@@ -448,10 +450,7 @@ impl Store {
                     let Some(entry) = inner.hot.get(id) else {
                         continue;
                     };
-                    let spans = entry.spans();
-                    let root = root_span(spans).map(|span| span.span_id);
-                    let (status, _) = classify(spans, root);
-                    f(*id, spans, status);
+                    f(*id, entry.spans(), meta.status);
                 }
                 Location::Cold(cold) => {
                     let Some(entry) = inner.load_cold(*id, false) else {
@@ -568,17 +567,21 @@ impl Store {
             let Some(meta) = inner.index.get(&id) else {
                 continue;
             };
+            // What the index holds decides first, for a trace in memory and one
+            // in a segment alike: most traces are turned away here, and a
+            // summary costs a walk of the spans (or a copy) that they never get.
+            if filter.errors_only && meta.status == TraceStatus::Ok {
+                continue;
+            }
             if filter
                 .min_duration_nanos
                 .is_some_and(|min| meta.duration_nanos() < min)
             {
                 continue;
             }
-            let complete = self.shared.is_complete(meta, now);
-            let Some((mut summary, matched)) = inner.candidate(meta, filter, complete) else {
+            let Some(matched) = inner.matches(meta, filter) else {
                 continue;
             };
-            summary.matched_span_ids = matched;
             if items.len() == page.limit {
                 // One more match exists, so there is a next page.
                 next_cursor = items
@@ -586,9 +589,62 @@ impl Store {
                     .map(|last| encode_cursor(last.start_unix_nano, last.trace_id));
                 break;
             }
+            // The summary is made only for a trace that goes into the page.
+            let complete = self.shared.is_complete(meta, now);
+            let Some(mut summary) = inner.summary_of(meta, complete) else {
+                continue;
+            };
+            summary.matched_span_ids = matched;
             items.push(summary);
         }
         Page { items, next_cursor }
+    }
+
+    /// The most recent traces that failed and those that worked but have an
+    /// error inside: up to `limit` of each, each list newest first by trace
+    /// start, among the traces that started at or after `since_unix_nano` (all
+    /// of them when `None`). It is what two searches with `errors_only` would
+    /// say, split by [`TraceSummary::status`], made in one pass over the index
+    /// from the newest trace, under one read of the store (so the two lists are
+    /// of the same moment). The pass ends when both lists are full or the traces
+    /// run out.
+    ///
+    /// A trace is judged by what the index holds of it, so a trace that does not
+    /// qualify, or that qualifies for a list that is full, costs a lookup and
+    /// no summary, and nothing is read from a segment file: only the (at most
+    /// `2 * limit`) traces it returns are summarized. A `limit` of 0 is two
+    /// empty lists.
+    pub fn recent_failures(&self, since_unix_nano: Option<u64>, limit: usize) -> RecentFailures {
+        let mut found = RecentFailures::default();
+        if limit == 0 {
+            return found;
+        }
+        self.shared.spill_if_due();
+        let inner = self.shared.inner.read();
+        let now = self.shared.clock.now_unix_nano();
+        for (start, id) in inner.index.newest_first(None) {
+            if since_unix_nano.is_some_and(|since| start < since) {
+                break;
+            }
+            let Some(meta) = inner.index.get(&id) else {
+                continue;
+            };
+            let list = match meta.status {
+                TraceStatus::Failed => &mut found.failed,
+                TraceStatus::ErrorsInside => &mut found.errors_inside,
+                TraceStatus::Ok => continue,
+            };
+            if list.len() == limit {
+                continue;
+            }
+            if let Some(summary) = inner.summary_of(meta, self.shared.is_complete(meta, now)) {
+                list.push(summary);
+            }
+            if found.failed.len() == limit && found.errors_inside.len() == limit {
+                break;
+            }
+        }
+        found
     }
 
     /// The current time on the store's clock, in nanoseconds since the Unix
@@ -684,6 +740,17 @@ impl Store {
     #[doc(hidden)]
     pub fn trace_decodes(&self) -> u64 {
         self.shared.inner.read().decodes.load(Ordering::Relaxed)
+    }
+
+    /// How many trace summaries reads have made so far: one for each trace a
+    /// search or `summary` hands back (worked out from the spans of a trace in
+    /// memory, copied from the index for one in a segment file). The spill step
+    /// writing a trace to a segment is not counted. A search is expected to make
+    /// one for each trace in its page and for no other, however many traces it
+    /// has to look at. A test hook.
+    #[doc(hidden)]
+    pub fn summaries_built(&self) -> u64 {
+        self.shared.inner.read().summaries.load(Ordering::Relaxed)
     }
 
     /// Why the store last failed to write a segment, until a write works
@@ -1052,6 +1119,7 @@ impl Inner {
 
     /// The trace in one row: from the entry when hot, from the index when cold.
     fn summary_of(&self, meta: &TraceMeta, complete: bool) -> Option<TraceSummary> {
+        self.summaries.fetch_add(1, Ordering::Relaxed);
         match &meta.location {
             Location::Hot => Some(self.hot.get(&meta.id)?.summary(meta.id, complete)),
             Location::Cold(cold) => {
@@ -1062,17 +1130,12 @@ impl Inner {
         }
     }
 
-    /// The summary of the trace `meta` is of and the spans a query matched in
-    /// it, if the trace passes the service, errors-only and query conditions
-    /// of `filter` (the time and duration ones are the caller's). The cheap
-    /// conditions come first, so a trace in a segment is read only when it
-    /// has to be, for the query.
-    fn candidate(
-        &self,
-        meta: &TraceMeta,
-        filter: &TraceFilter,
-        complete: bool,
-    ) -> Option<(TraceSummary, Vec<SpanId>)> {
+    /// Whether the trace `meta` is of passes the service and query conditions of
+    /// `filter` (the time, errors-only and duration ones are the caller's, who
+    /// asks the index), and if so the spans the query matched in it (none
+    /// without a query). The cheap condition comes first, so a trace in a
+    /// segment is read only when it has to be, for the query.
+    fn matches(&self, meta: &TraceMeta, filter: &TraceFilter) -> Option<Vec<SpanId>> {
         let id = meta.id;
         match &meta.location {
             Location::Hot => {
@@ -1082,17 +1145,10 @@ impl Inner {
                 {
                     return None;
                 }
-                // The query before the summary: it is the condition that
-                // usually rejects, and a rejected trace then costs no summary.
-                let matched = match &filter.query {
-                    None => Vec::new(),
-                    Some(query) => entry.matched_span_ids(query)?,
-                };
-                let summary = entry.summary(id, complete);
-                if filter.errors_only && summary.status == TraceStatus::Ok {
-                    return None;
+                match &filter.query {
+                    None => Some(Vec::new()),
+                    Some(query) => entry.matched_span_ids(query),
                 }
-                Some((summary, matched))
             }
             Location::Cold(cold) => {
                 if let Some(service) = &filter.service
@@ -1100,19 +1156,13 @@ impl Inner {
                 {
                     return None;
                 }
-                if filter.errors_only && cold.summary.status == TraceStatus::Ok {
-                    return None;
-                }
-                let matched = match &filter.query {
-                    None => Vec::new(),
+                match &filter.query {
+                    None => Some(Vec::new()),
                     // Read for the query only, and not kept: a search walks
                     // many traces once and should not push out the one the
                     // window has open.
-                    Some(query) => self.load_cold(id, false)?.matched_span_ids(query)?,
-                };
-                let mut summary = cold.summary.clone();
-                summary.complete = complete;
-                Some((summary, matched))
+                    Some(query) => self.load_cold(id, false)?.matched_span_ids(query),
+                }
             }
         }
     }

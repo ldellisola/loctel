@@ -60,5 +60,5 @@ pub use logs::{Around, HistogramBucket, LevelSet, LogFilter, LogId};
 pub use page::{Page, PageRequest};
 pub use service_map::{NodeKind, ServiceEdge, ServiceMap, ServiceNode, ServiceStats, TimeWindow};
 pub use store::{Removed, Store, StoreStats};
-pub use summary::{MATCHED_SPANS_MAX, TraceFilter, TraceSummary};
+pub use summary::{MATCHED_SPANS_MAX, RecentFailures, TraceFilter, TraceSummary};
 pub use trace::TraceSnapshot;
