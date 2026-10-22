@@ -1,5 +1,6 @@
 //! The toolbar over the content: a title for the screen, and on the home
-//! screen the four controls of design §9.2.
+//! screen the four controls of design §9.2 (on the Logs screen the controls of
+//! [`LogsControls`], below).
 //!
 //! - **Live** shows whether the view is running (`Live`, a green dot) or frozen
 //!   (`Paused`, an amber dot).
@@ -28,6 +29,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::popover::Popover;
 
 use super::data::{HomeModel, TimeRange};
+use super::logs_data::LogsModel;
 use super::shell::Screen;
 use crate::Theme;
 use crate::model::format;
@@ -45,13 +47,17 @@ pub const PAUSE_LABEL: &str = "Pause";
 pub const RESUME_LABEL: &str = "Resume";
 /// The Clear all button's label.
 pub const CLEAR_ALL_LABEL: &str = "Clear all";
+/// The Logs toolbar's live tail pill.
+pub const LIVE_TAIL_LABEL: &str = "Live tail";
 
-/// The title of the toolbar on `screen`: `Map & traces` on the home screen and
+/// The title of the toolbar on `screen`: `Map & traces` on the home screen,
 /// `Map & traces › 4bf92f35…0e0e4736` on a trace (the ID cut in the middle:
-/// both ends of it identify it).
+/// both ends of it identify it), `Logs` and `Discard rules`.
 pub fn toolbar_title(screen: &Screen) -> String {
     match screen {
         Screen::Home => "Map & traces".to_owned(),
+        Screen::Logs { .. } => "Logs".to_owned(),
+        Screen::Rules { .. } => "Discard rules".to_owned(),
         Screen::Trace(id) => format!(
             "Map & traces \u{203a} {}",
             format::truncate_middle(&id.to_string(), TRACE_ID_CHARS)
@@ -76,6 +82,8 @@ pub fn pause_label(paused: bool) -> &'static str {
 pub enum ToolbarPart {
     /// The Live indicator.
     Live,
+    /// The Logs toolbar's `Live tail` pill.
+    LiveTail,
     /// The button that shows the range and opens the menu.
     Range,
     /// An entry of the range menu; present only while the menu is open.
@@ -240,7 +248,17 @@ impl Render for HomeControls {
             .content({
                 let home = self.home.clone();
                 let frame = Rc::clone(frame);
-                move |_state, _window, _cx| range_menu(&theme, range, &home, &controls, &frame)
+                move |_state, _window, _cx| {
+                    let pick = {
+                        let home = home.clone();
+                        let controls = controls.clone();
+                        move |option: TimeRange, cx: &mut gpui::App| {
+                            home.update(cx, |home, cx| home.set_range(option, cx));
+                            controls.update(cx, |controls, cx| controls.set_range_open(false, cx));
+                        }
+                    };
+                    range_menu(&theme, range, &frame, pick)
+                }
             });
         let range = div()
             .relative()
@@ -293,13 +311,13 @@ impl Render for HomeControls {
 }
 
 /// The entries of the range menu: the four ranges, the current one lit. A click
-/// sets the range on the model and closes the menu.
+/// calls `pick` with the range (which sets it and closes the menu: the home
+/// toolbar's and the Logs toolbar's differ in what they set).
 fn range_menu(
     theme: &Theme,
     current: TimeRange,
-    home: &Entity<HomeModel>,
-    controls: &Entity<HomeControls>,
     frame: &Rc<Frame>,
+    pick: impl Fn(TimeRange, &mut gpui::App) + Clone + 'static,
 ) -> AnyElement {
     div()
         .flex()
@@ -312,8 +330,7 @@ fn range_menu(
                 .enumerate()
                 .map(|(index, option)| {
                     let active = option == current;
-                    let home = home.clone();
-                    let controls = controls.clone();
+                    let pick = pick.clone();
                     div()
                         .relative()
                         .child(
@@ -335,12 +352,7 @@ fn range_menu(
                                     let hover = rgba(theme.text, 0.06);
                                     row.hover(move |style| style.bg(hover))
                                 })
-                                .on_click(move |_, _window, cx| {
-                                    home.update(cx, |home, cx| home.set_range(option, cx));
-                                    controls.update(cx, |controls, cx| {
-                                        controls.set_range_open(false, cx)
-                                    });
-                                })
+                                .on_click(move |_, _window, cx| pick(option, cx))
                                 .child(option.label()),
                         )
                         .child(measure(frame, ToolbarPart::RangeOption(option)))
@@ -349,12 +361,199 @@ fn range_menu(
         .into_any_element()
 }
 
+/// The controls of the Logs screen's toolbar: the `Live tail` pill, the range
+/// button with its menu (the same menu as the home toolbar's) and `Clear all`.
+/// Make it with `cx.new(|cx| LogsControls::new(logs, cx))`; it reads and writes
+/// `logs`.
+///
+/// Like [`HomeControls`] it holds no data: the model owns the tail switch and
+/// the range, and the controls redraw when it changes. What it keeps is whether
+/// the range menu is open and where its parts were drawn.
+pub struct LogsControls {
+    logs: Entity<LogsModel>,
+    range_open: bool,
+    frame: Rc<Frame>,
+    /// Keeps the observation of the model alive.
+    _logs: Subscription,
+}
+
+impl LogsControls {
+    pub fn new(logs: Entity<LogsModel>, cx: &mut Context<Self>) -> LogsControls {
+        let subscription = cx.observe(&logs, |_, _, cx| cx.notify());
+        LogsControls {
+            logs,
+            range_open: false,
+            frame: Rc::new(Frame::default()),
+            _logs: subscription,
+        }
+    }
+
+    /// Whether the range menu is open.
+    pub fn range_open(&self) -> bool {
+        self.range_open
+    }
+
+    /// Where `part` is in the window, as of the latest frame. `None` while it is
+    /// not on the screen (the toolbar of another screen, a closed range menu).
+    pub fn bounds_of(&self, part: ToolbarPart) -> Option<Bounds<Pixels>> {
+        self.frame.borrow().get(&part).copied()
+    }
+
+    /// The middle of `part`, as of the latest frame.
+    pub fn center_of(&self, part: ToolbarPart) -> Option<Point<Pixels>> {
+        self.bounds_of(part).map(|bounds| bounds.center())
+    }
+
+    /// Forgets where the parts were: the toolbar of another screen draws none of
+    /// them, and the shell calls this while it shows one.
+    pub(super) fn forget_places(&self) {
+        self.frame.borrow_mut().clear();
+    }
+
+    fn set_range_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        if self.range_open != open {
+            self.range_open = open;
+            cx.notify();
+        }
+    }
+}
+
+impl Render for LogsControls {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.frame.borrow_mut().clear();
+
+        let theme = *cx.global::<Theme>();
+        let (tail, paused, range) = {
+            let logs = self.logs.read(cx);
+            // Standing still: scrolled away from the top, or showing the lines
+            // around one log.
+            (
+                logs.tail(),
+                logs.tail_paused() || logs.context().is_some(),
+                logs.range(),
+            )
+        };
+        let frame = &self.frame;
+        let controls = cx.entity();
+
+        // On: the green dot of a tail that runs, an amber one while scrolling
+        // away (or the lines around a log) has stopped it; off: a hollow ring
+        // and no tint.
+        let dot = div().size(px(8.0)).flex_none().rounded_full();
+        let dot = if !tail {
+            dot.border_1().border_color(theme.text_tertiary)
+        } else if paused {
+            dot.bg(theme.warn)
+        } else {
+            dot.bg(theme.ok)
+        };
+        let live_tail = div()
+            .relative()
+            .flex_none()
+            .child(
+                div()
+                    .id("logs-live-tail")
+                    .h(px(26.0))
+                    .px(px(10.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(7.0))
+                    .rounded(px(14.0))
+                    .border_1()
+                    .cursor_pointer()
+                    .text_size(px(12.0))
+                    .when(tail, |pill| {
+                        pill.border_color(theme.accent)
+                            .bg(rgba(theme.accent, 0.16))
+                            .text_color(theme.accent)
+                    })
+                    .when(!tail, |pill| {
+                        pill.border_color(theme.border)
+                            .text_color(theme.text_secondary)
+                    })
+                    .on_click(cx.listener(|controls, _, _, cx| {
+                        controls.logs.update(cx, |logs, cx| {
+                            let on = !logs.tail();
+                            logs.set_tail(on, cx);
+                        });
+                    }))
+                    .child(dot)
+                    .child(LIVE_TAIL_LABEL),
+            )
+            .child(measure(frame, ToolbarPart::LiveTail));
+
+        let range_button = Popover::new("logs-toolbar-range")
+            .anchor(Anchor::TopLeft)
+            .open(self.range_open)
+            .on_open_change({
+                let controls = controls.clone();
+                move |open, _window, cx| {
+                    let open = *open;
+                    controls.update(cx, |controls, cx| controls.set_range_open(open, cx));
+                }
+            })
+            .trigger(
+                Button::new("logs-toolbar-range-button")
+                    .label(range.label())
+                    .outline()
+                    .dropdown_caret(true),
+            )
+            .p(px(4.0))
+            .content({
+                let logs = self.logs.clone();
+                let frame = Rc::clone(frame);
+                move |_state, _window, _cx| {
+                    let pick = {
+                        let logs = logs.clone();
+                        let controls = controls.clone();
+                        move |option: TimeRange, cx: &mut gpui::App| {
+                            logs.update(cx, |logs, cx| logs.set_range(option, cx));
+                            controls.update(cx, |controls, cx| controls.set_range_open(false, cx));
+                        }
+                    };
+                    range_menu(&theme, range, &frame, pick)
+                }
+            });
+        let range = div()
+            .relative()
+            .flex_none()
+            .child(range_button)
+            .child(measure(frame, ToolbarPart::Range));
+
+        let clear = div()
+            .relative()
+            .flex_none()
+            .child(
+                Button::new("logs-clear-all")
+                    .label(CLEAR_ALL_LABEL)
+                    .icon(IconName::Delete)
+                    .outline()
+                    .on_click(cx.listener(|controls, _, _, cx| {
+                        controls.logs.update(cx, |logs, cx| logs.clear_all(cx));
+                    })),
+            )
+            .child(measure(frame, ToolbarPart::ClearAll));
+
+        div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .child(live_tail)
+            .child(range)
+            .child(clear)
+    }
+}
+
 /// The toolbar's contents on `screen`, inside the glass frame the shell draws
-/// around it: the title, and on the home screen the controls at the right.
+/// around it: the title, and at the right the controls of the screen (the home
+/// screen's, or the Logs screen's; a trace and the rules screen have the title
+/// alone).
 pub(super) fn toolbar_contents(
     theme: &Theme,
     screen: &Screen,
     controls: &Entity<HomeControls>,
+    logs_controls: &Entity<LogsControls>,
 ) -> impl IntoElement {
     div()
         .size_full()
@@ -372,5 +571,8 @@ pub(super) fn toolbar_contents(
         )
         .when(matches!(screen, Screen::Home), |toolbar| {
             toolbar.child(div().flex_1()).child(controls.clone())
+        })
+        .when(matches!(screen, Screen::Logs { .. }), |toolbar| {
+            toolbar.child(div().flex_1()).child(logs_controls.clone())
         })
 }

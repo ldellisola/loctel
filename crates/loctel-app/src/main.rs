@@ -6,14 +6,17 @@
 //!
 //! Without `--headless` on macOS it is the product: a menu bar item and no
 //! window at launch, no Dock icon (`loctel_macos::install`), running until the
-//! menu's Quit. `Open loctel` in the menu opens the main window, and while it
-//! is open loctel shows in the Dock and in Cmd-Tab (`loctel_macos::open_or_focus`
-//! also runs when the Dock icon is clicked with no window open). It prints the
-//! same startup lines as headless mode.
+//! popover's `Quit loctel`. A click on the icon opens the popover (status, rates,
+//! endpoints, the rules line and the actions); its `Open loctel` opens the main
+//! window, and while that or the Settings window is open loctel shows in the Dock
+//! and in Cmd-Tab (`loctel_macos::open_or_focus` also runs when the Dock icon is
+//! clicked with no window open). It prints the same startup lines as headless
+//! mode.
 //!
 //! Without `--headless` on Linux it opens the main window
 //! (`loctel_ui::app::open_main_window`: the service map, the trace table and
-//! the trace view) and prints the same startup lines; closing the window
+//! the trace view, over a `loctel_ui::app::AppBackend` with no login item) and
+//! prints the same startup lines; closing the window
 //! quits, and so does SIGINT or SIGTERM, with the engine shut down and exit
 //! status 0. With no display to open it on, it says so and runs headless
 //! instead. That window is a development aid, and how an agent sees the app.
@@ -73,7 +76,7 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
     if !cli.headless {
         if display_available() {
-            return run_window(cli.engine_config(settings));
+            return run_window(cli.engine_config(settings), settings_path);
         }
         eprintln!(
             "loctel: no display (DISPLAY and WAYLAND_DISPLAY are unset), so there is no window; \
@@ -101,8 +104,9 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
 
 /// The macOS app: the engine, and the menu bar item over it. It starts as an
 /// accessory app (no Dock icon, no menu bar of its own, no window) and quits
-/// only when the menu says so, never because a window closed. `Open loctel`
-/// opens the main window and shows loctel in the Dock for as long as it is open
+/// only when the popover says so (`Quit loctel`, or command-Q in it), never
+/// because a window closed. The popover's `Open loctel` opens the main window and
+/// shows loctel in the Dock for as long as it is open
 /// (`loctel_macos::open_or_focus`); a click on the Dock icon with no window
 /// open does the same. Prints the listener lines like headless mode does, then
 /// runs until Quit.
@@ -122,7 +126,8 @@ fn run_menu_bar(config: EngineConfig, settings_path: std::path::PathBuf) -> anyh
     // GPUI calls this when the Dock icon is clicked while no window is open.
     app.on_reopen({
         let engine = engine.clone();
-        move |cx| loctel_macos::open_or_focus(cx, engine.clone())
+        let settings_path = settings_path.clone();
+        move |cx| loctel_macos::open_or_focus(cx, engine.clone(), settings_path.clone())
     });
     app.run({
         let engine = engine.clone();
@@ -149,9 +154,10 @@ fn display_available() -> bool {
 /// Prints the listener lines like headless mode does (so a script can find
 /// the ports when they were asked for as 0), then runs the window until it is
 /// closed, or until SIGINT or SIGTERM: either way the engine is shut down and
-/// the exit status is 0.
+/// the exit status is 0. `settings_path` is the file the window reads and
+/// writes the settings in (the `AppBackend`'s).
 #[cfg(target_os = "linux")]
-fn run_window(config: EngineConfig) -> anyhow::Result<()> {
+fn run_window(config: EngineConfig, settings_path: std::path::PathBuf) -> anyhow::Result<()> {
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -176,26 +182,30 @@ fn run_window(config: EngineConfig) -> anyhow::Result<()> {
         .run({
             let engine = engine.clone();
             let failure = Rc::clone(&failure);
-            move |cx| match loctel_ui::app::open_main_window(Rc::new(engine), cx, |_| None) {
-                Ok(_window) => {
-                    // It is the only window, so closing it ends the app.
-                    cx.on_window_closed(|cx, _| {
-                        if cx.windows().is_empty() {
-                            cx.quit();
-                        }
-                    })
-                    .detach();
-                    cx.spawn(async move |cx| {
-                        if signal.await.is_ok() {
-                            cx.update(|cx| cx.quit());
-                        }
-                    })
-                    .detach();
-                    cx.activate(true);
-                }
-                Err(error) => {
-                    *failure.borrow_mut() = Some(error);
-                    cx.quit();
+            move |cx| {
+                // Linux has no login item.
+                let backend = Rc::new(loctel_ui::app::AppBackend::new(engine, settings_path, None));
+                match loctel_ui::app::open_main_window(backend, cx, |_| None) {
+                    Ok(_window) => {
+                        // It is the only window, so closing it ends the app.
+                        cx.on_window_closed(|cx, _| {
+                            if cx.windows().is_empty() {
+                                cx.quit();
+                            }
+                        })
+                        .detach();
+                        cx.spawn(async move |cx| {
+                            if signal.await.is_ok() {
+                                cx.update(|cx| cx.quit());
+                            }
+                        })
+                        .detach();
+                        cx.activate(true);
+                    }
+                    Err(error) => {
+                        *failure.borrow_mut() = Some(error);
+                        cx.quit();
+                    }
                 }
             }
         });

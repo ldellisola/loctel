@@ -1,33 +1,38 @@
 # macOS shell (`loctel-macos`)
 
-The menu bar item, the main window's lifecycle (opening it, the Dock while it
-is open), the Liquid Glass behind its sidebar and toolbar, the accessory-app
-behaviour and start at login. Design
-references: §9.1 (app lifecycle), §9.2 (menu bar popover, which is Milestone 4;
-Milestone 1 has the plain menu below), §10.3 (macOS checks), §10.4 (the Mac
-checks), §11 (technology).
+The menu bar item and its popover (Milestone 4; Milestones 1 and 2 had a menu),
+the lifecycle of the main window and of the Settings window (opening them, the
+Dock while one is open), the Liquid Glass behind the main window's sidebar and
+toolbar and behind the popover, the accessory-app behaviour and start at login.
+Design references: §9.1 (app lifecycle), §9.2 (menu bar popover and Settings),
+§10.3 (macOS checks), §10.4 (the Mac checks), §11 (technology).
 
 Status: written and type-checked, **never run**. Everything in "Unverified
-until the M1 Mac check", "Unverified until the M2 Mac check" and "Unverified
-until the M3 Mac check" below is a claim from reading the crates, not something
-anyone has seen work.
+until the M1 Mac check", "Unverified until the M2 Mac check", "Unverified until
+the M3 Mac check" and "Unverified until the M4 Mac check" below is a claim from
+reading the crates, not something anyone has seen work.
 
 ## What is in the crate
 
 The crate is empty off macOS, except for plain-Rust parts that are compiled
-for tests on every OS (see decision 0009): `menu` (the menu's rows as values),
+for tests on every OS (see decision 0009): `popover` (`anchor` and
+`containing_screen`, the numbers of where the popover opens),
 `first_launch` (the once-only step), `icon` (the two PNG constants) and, in
 `glass`, `appkit_frame` (the y flip of the glass frames). Their tests run in
 the Linux gate. All `objc2` and `unsafe` code in the project lives here.
 
 | Item | What it is |
 |---|---|
-| `install(cx, engine, settings_path)` | `loctel-app` calls this once, inside `Application::run`. Runs the first-launch step, registers the actions, builds the status item and starts the 2 s refresh. Opens no window. If the item cannot be created it prints why and quits |
-| `window::open_or_focus(cx, engine)` (also `loctel_macos::open_or_focus`) | shows the main window: brings the open one to the front, or opens it with the Dock icon on. The menu's `Open loctel` and GPUI's reopen event call it. See "The main window's lifecycle" below |
+| `install(cx, engine, settings_path)` | `loctel-app` calls this once, inside `Application::run`. Runs the first-launch step, binds ⌘Q and ⌘O for the main window, gives the popover its engine and settings path and builds the status item (no menu; a click opens the popover). Opens no window. If the item cannot be created it prints why and quits |
+| `popover::toggle(cx)` | what a click on the status item runs: closes the popover if it is open, otherwise opens it under the click. See "The popover" below |
+| `popover::anchor(click_x, screen_frame, visible_frame, size)` | where the popover's top left goes, as plain numbers: tested on Linux |
+| `window::open_or_focus(cx, engine, settings_path)` (also `loctel_macos::open_or_focus`) | shows the main window: brings the open one to the front, or opens it with the Dock icon on, over a `loctel_ui::app::AppBackend` (the engine, `settings_path` and `login_item::SystemLoginItem`). GPUI's reopen event calls it, and so does `show_screen`. See "The main window's lifecycle" below |
+| `window::show_screen(cx, engine, settings_path, screen)` | `open_or_focus`, then `loctel_ui::app::show_screen`: the main window on a `Screen`. The popover's `Open loctel` (home) and its rules line (Discard rules) |
+| `window::open_settings(cx, engine, settings_path)` | the Settings window (`loctel_ui::app::open_settings_window`) with the Dock icon on while it is open. The popover's `Settings…` |
 | `glass::attach(window)` | puts Liquid Glass behind the main window's sidebar and toolbar and returns the `Backdrop` the shell reports their places to; `None` without `NSGlassEffectView`. `open_or_focus` passes it to `open_main_window`. See "Liquid Glass" below |
 | `login_item::is_enabled()` | `SMAppService.mainAppService().status() == Enabled`. Asked every time; nothing is cached |
 | `login_item::set_enabled(on)` | `registerAndReturnError` or `unregisterAndReturnError`; the system's `NSError` becomes an `anyhow` error |
-| `menu::rows(&MenuState)` | the rows below, as values: tested on Linux |
+| `login_item::SystemLoginItem` | the two above as `loctel_ui::app::LoginItem`, the hook every window's `AppBackend` is given (the main window, Settings and the popover: Milestone 4). It adds no behaviour of its own |
 | `first_launch::first_launch(path, enable)` | the once-only step, against a real settings file: tested on Linux |
 | `icon::template_icon()` | the two PNGs as one template `NSImage` |
 
@@ -39,36 +44,77 @@ the main window draws), sets `QuitMode::Explicit`, registers the reopen handler
 `Application::run`, `ActivationPolicy::Accessory`, calls `install` and opens no
 window at launch. `--headless` is unchanged.
 
-## The menu
+## The popover
 
-Built with `gpui-tray`: each entry is a GPUI action, and the crate rebuilds the
-menu after every click. The menu, in order:
+Milestone 4 Task 9; decision [0042](../decisions/0042-popover.md) has the reasons.
+It replaces the menu of Milestones 1 and 2 (the rows, the 2 s refresh and the
+`Edit discard rules…` item are gone; `rules.toml` can still be edited by hand, and
+the Discard rules screen shows the change). What it shows and does is
+`loctel_ui::views::PopoverView`, built and screenshotted on Linux (see
+[`ui.md`](ui.md), "The popover"): the title and status pill, four stats, the
+endpoints with `Copy` on MCP, the rules line (a click opens the main window on
+Discard rules), then `Open loctel` ⌘O, `Pause receiving` / `Resume receiving`,
+`Clear all data…` (asks first), `Start at login`, `Settings…` ⌘, and `Quit loctel`
+⌘Q. This section is about the part that is macOS's: where it opens, how it closes,
+and what its actions do.
 
-| # | Row | Does |
-|---|---|---|
-| 1 | header: `Receiving · 412 spans/s · 1.2k logs/s`, `Paused` or `Port problem: otlp-http (address in use)` | nothing; greyed out. The text is `loctel_ui::menu_text::status_line`, the same function the Linux window uses, so the words cannot drift |
-| 2 | rules header: `No discard rules on`, `1 discard rule on · 31% dropped`, `1 discard rule on · 1 has an error` or `Discard rules file has an error` | nothing; greyed out. The text is `loctel_ui::menu_text::rules_line` (the exact strings and their priority are in [`ui.md`](ui.md)), the same function the Linux window uses |
-| 3 | `Open loctel` | `window::open_or_focus`: opens the main window and shows loctel in the Dock, or brings the open window to the front. Never greyed out |
-| 4 | separator | |
-| 5 | `Copy MCP address` | puts `engine.mcp_url()` on the clipboard. Greyed out while the MCP server is not listening |
-| 6 | `Pause receiving`, or `Resume receiving` while paused | `engine.set_paused(!paused)` |
-| 7 | `Edit discard rules…` | opens `engine.rules_path()` (`rules.toml`) in the default text editor: `NSWorkspace` `openURL` with the file URL, and if no app handles `.toml`, `open -t <path>`. A failure is printed to stderr. Greyed out when `rules_path()` is `None` (the rules live in memory only; the app always passes a path). The file exists because the engine writes the defaults (no rules, a comment header) at start; saving it in the editor is picked up within about 2 seconds, with no restart |
-| 8 | separator | |
-| 9 | `Start at login` | checkmark from `login_item::is_enabled()`; choosing it flips the login item |
-| 10 | separator | |
-| 11 | `Quit loctel` | `engine.shutdown()`, removes the icon, quits |
-
-Every 2 seconds the state behind the menu (header text, rules line, paused,
-login item, MCP address, whether there is a rules file) is read again; only if it differs from what the menu was built from is
-the menu rebuilt. A rebuild also happens right after any click, so a toggled
-row is correct at once.
-
-**⌘Q and ⌘O are not in the menu.** `gpui-tray` 0.2.0 cannot set a key equivalent
-on its items. The shortcuts `cmd-q` and `cmd-o` are bound to the same Quit and
-`Open loctel` actions, which work only while a loctel window has the keyboard
-(the main window, Milestone 3; there ⌘O just brings the window to the front).
-So "⌘O while the menu is open" does nothing: the menu shows no shortcut and
-cannot answer one. Decision 0009 says what changing that would take.
+- **The status item has no menu.** `Tray::builder().icon(..).tooltip("loctel")
+  .on_activate_with(|_, cx| popover::toggle(cx))`. `gpui-tray` 0.2 calls the
+  activation callback on a primary click **only while no menu is attached**, and it
+  reports no frame for the item.
+- **`popover::toggle(cx)`**: if the popover is open it closes it. Otherwise it
+  opens it:
+  1. reads `NSEvent::mouseLocation()` and finds the `NSScreen` whose frame holds it
+     (`containing_screen`, with `NSMouseInRect`'s edges: the top edge counts, since
+     the mouse pushed against the menu bar reports it; the first screen, which has
+     the menu bar, if none does);
+  2. computes the window's origin with `anchor(click_x, screen_frame,
+     visible_frame, size)`;
+  3. opens a GPUI window with `WindowKind::PopUp`, no titlebar, not movable,
+     resizable or minimizable, 336 by `popover_height(true)` points, on that
+     screen's display (`display_id` is the screen's `NSScreenNumber`, which is
+     GPUI's `DisplayId` on a Mac), with `WindowBackgroundAppearance::Transparent`
+     and the glass of `glass::attach` behind the panel, or GPUI's `Blurred`
+     background and one stderr line when there is none (`window::attach_glass`,
+     the same as the main window's); the view is `PopoverView` in GPUI Kit's
+     `Root`, with the glass backdrop given to it (`with_backdrop`);
+  4. activates the app and the window.
+- **`anchor`** is a pure function (`popover.rs`, tested on Linux): the popover's
+  top sits 6 points under the top of `visible_frame` (the screen less the menu bar
+  and Dock, so 6 points under the menu bar, notch or not); it is centred on the
+  click and clamped so its whole width is inside `visible_frame` with 8 points to
+  spare at each side (a Dock at a side moves that edge). It returns the distance
+  from the left and the top of the **screen** it opens on, which is what GPUI's
+  window bounds are relative to when a `display_id` is given. The height does not
+  move it.
+- **Closing.** The popover closes when its window is deactivated
+  (`observe_window_activation`: a click anywhere else; only a deactivation that
+  follows an activation counts, since the window starts inactive), on Esc and after
+  an action that opens a window (`PopoverActions::close`), and by a second click on
+  the icon (`toggle`). A call to close a popover that is already closing does
+  nothing.
+- **The actions** (`MacActions`, `PopoverActions`): the view calls them from inside
+  its event handlers, with GPUI's `App` borrowed, so those that need the app run
+  later, on the foreground executor, in the order they were asked (an `AsyncApp`
+  held by the actions; decision 0041). `open_main` is `window::show_screen`;
+  `open_settings` is `window::open_settings`; `copy_mcp` writes
+  `engine.mcp_url()` to the clipboard; `quit` is `engine.shutdown()`, the icon out
+  of the menu bar and `cx.quit()` (the same as ⌘Q in the main window); `close` is
+  the close above. `toggle_pause` (`engine.set_paused`), `clear_all` (`store.clear()`)
+  and `set_start_at_login` (`login_item::set_enabled`, an error to stderr) run at
+  once, so that the view reads the result as soon as it has asked.
+- **Shortcuts.** ⌘Q and ⌘, work while the popover has the keyboard: they are the
+  view's own key bindings in its key context (`LoctelPopover`, bound by
+  `loctel_ui::app::init`), so they need no menu, and the popover takes the keyboard
+  when it opens. ⌘Q and ⌘O are also bound for the main window and Settings (no
+  context) to `Quit` and `Open loctel`.
+- **Fallback.** If the popover's window cannot be opened (no main thread, no screen,
+  the display of the screen unknown, GPUI refusing the window) the main window opens
+  instead (`open_or_focus`) and the reason is printed once. loctel never becomes
+  unreachable.
+- **Settings** opens in a window of its own (520 by 360, one at a time) with the
+  activation policy `Regular` while it is open, so that it gets the keyboard and a
+  Dock icon; see the next section for when the icon goes.
 
 ### The icon
 
@@ -92,18 +138,23 @@ bundle's `.icns` (see [`release.md`](release.md)). Change the glyph in both.
   also sets `LSUIElement` (`crates/loctel-app/bundle/info-plist-ext.xml`, which
   cargo-bundle copies into `Info.plist`, and `script/bundle-mac.sh` checks that
   it landed), which is what stops a Dock icon from flashing at launch.
-- While the main window is open loctel is a **regular app**: in the Dock and in
-  ⌘-Tab. See the next section.
+- While the main window or the Settings window is open loctel is a **regular
+  app**: in the Dock and in ⌘-Tab. See the next section. The popover does not
+  count: it opens and closes with the app staying an accessory.
 - **`QuitMode::Explicit`**: closing the last window never quits, because the
-  engine keeps receiving with no window open. Only `Quit loctel` does.
+  engine keeps receiving with no window open. Only `Quit loctel` (the popover's
+  row, or ⌘Q) does.
 
 ## The main window's lifecycle
 
-`window.rs` (Milestone 3, Task 9). The app opens no window at launch (as in
-Milestone 1); the menu's `Open loctel` is the way in.
+`window.rs` (Milestone 3, Task 9; the Settings window and the popover's way in,
+Milestone 4 Task 9). The app opens no window at launch (as in Milestone 1); the
+popover's `Open loctel` is the way in, and so is the Dock icon.
 
-- **`open_or_focus(cx, engine)`**, which the `Open loctel` action and the
-  reopen handler call:
+- **`open_or_focus(cx, engine, settings_path)`**, which `show_screen` (the
+  popover's `Open loctel` and rules line), the ⌘O action and the reopen handler
+  call (`loctel-app` hands the reopen handler the settings path; the window's
+  `AppBackend` reads and writes the settings there, Milestone 4):
   - If the main window exists (`MainWindowState`, a GPUI global holding its
     handle, checked against `cx.windows()`): `window.activate_window()` and
     `cx.activate(true)`. A second `Open loctel` never opens a second window.
@@ -115,13 +166,26 @@ Milestone 1); the menu's `Open loctel` is the way in.
        the `Blurred` window background and logs the fallback once (see "Liquid
        Glass").
     3. `cx.activate(true)`.
-  - If opening fails the reason goes to stderr and the policy goes back to
-    `Accessory`.
-- **Closing the window** (`cx.on_window_closed`, registered once, the first time
-  a window is opened; it ignores every window but the main one): the handle is
-  forgotten and `cx.set_activation_policy(ActivationPolicy::Accessory)` takes
-  the Dock icon away. loctel keeps running in the menu bar. The next
-  `Open loctel` opens a new window.
+  - If opening fails the reason goes to stderr and the policy is set again from
+    the windows that are open (`Accessory` if none is).
+- **`show_screen(cx, engine, settings_path, screen)`** is `open_or_focus` and then
+  `loctel_ui::app::show_screen(handle, screen, cx)`, which navigates the window's
+  `MainWindow` from its handle alone (tested on Linux). The popover's `Open loctel`
+  shows `Screen::Home` and its rules line `Screen::Rules { draft: None }`; asking
+  again for the screen that is showing changes nothing.
+- **`open_settings(cx, engine, settings_path)`** sets `Regular` and calls
+  `loctel_ui::app::open_settings_window` (which opens the one window of Settings, or
+  brings the open one forward, and activates the app). If it fails the reason goes
+  to stderr and the policy is set again from the windows that are open. The main
+  window's own ⌘, calls `open_settings_window` directly, and needs no policy change
+  (the main window is open, so the app is already `Regular`).
+- **Closing a window** (`cx.on_window_closed`, registered once, the first time a
+  main or Settings window is opened): if it is the main window its handle is
+  forgotten, and in every case the policy follows the windows that are left:
+  `Regular` while a loctel window other than the popover is open, `Accessory`
+  when none is (the Dock icon and the ⌘-Tab entry go). So closing the main window
+  while Settings is open keeps the Dock icon until Settings closes too. loctel keeps
+  running in the menu bar. The next `Open loctel` opens a new window.
 - **Reopen**: a click on the Dock icon reaches GPUI as
   `applicationShouldHandleReopen:hasVisibleWindows:`, and GPUI calls its reopen
   handler only when there are no visible windows. `Application::on_reopen` (it
@@ -175,9 +239,9 @@ transparent window.
 
 - `SMAppService.mainAppService`, macOS 13 and later (loctel needs 26). The
   system is the source of truth: the user may switch the item off in System
-  Settings > General > Login Items, so the checkmark is read from the system
-  every time, and `Settings::start_at_login` is not read or written by the
-  shell.
+  Settings > General > Login Items, so the popover's switch and the Settings
+  window's (`SystemLoginItem`) read it from the system every time, and
+  `Settings::start_at_login` is not read or written by the shell.
 - **First launch** (`first_launch_done` is false, which a missing
   `settings.toml` also means): turn the login item on, set `first_launch_done =
   true`, save. An error from either is printed to stderr, and the launch still
@@ -192,11 +256,9 @@ transparent window.
   (no bundle) it fails with the system's message, which is expected during
   development.
 
-The rules line is rebuilt with the rest: its percentage moves while data
-arrives, so an open menu may be replaced about every 2 s like the rates (see
-"The header keeps up" below). The rules header is read from the same
-`EngineStatus` as the Linux window, never from the file, so the two cannot
-disagree.
+The popover's rules line moves with the data like its rates (the view reads the
+engine again every second). It is read from the same `EngineStatus` as the Linux
+window (`menu_text::rules_line`), never from the file, so the two cannot disagree.
 
 ## Checking the macOS code from Linux
 
@@ -213,12 +275,19 @@ or run anything. A cold run takes about 50 s. Why it needs a wrapper script:
 [`decisions/0009-macos-check-from-linux.md`](../decisions/0009-macos-check-from-linux.md).
 
 The Linux gate does run the tests of the plain-Rust modules (`cargo test -p
-loctel-macos`): the menu's rows, the first-launch rules and the icon files.
+loctel-macos`): the popover's anchoring, the first-launch rules and the icon files.
 
 ## Unverified until the M1 Mac check
 
 Nobody has run any of this. The Mac checklist for Milestone 1 should confirm,
-and a failure goes in `docs/decisions/` or an issue:
+and a failure goes in `docs/decisions/` or an issue.
+
+*Since Milestone 4 the menu these items describe is the popover (see "The
+popover"): a build that has it has no menu to open, so its tester finds the same
+things in the popover (the status pill and the four stats instead of the header,
+`Copy` beside MCP instead of `Copy MCP address`, `Pause receiving`, `Start at
+login` as a switch, `Quit loctel`), and the M4 list below says what else to check
+there. What is about the icon, the Dock and the bundle is unchanged.*
 
 - **The menu bar icon** appears, is crisp on a Retina display, and is dark on a
   light menu bar and light on a dark one (the template image).
@@ -256,7 +325,11 @@ and a failure goes in `docs/decisions/` or an issue:
 
 Milestone 2 added the rules line and the edit item. Nobody has run them either;
 the Milestone 2 section of the Mac checklist (`docs/milestones/mac-checklist.md`,
-items 1 to 4) should confirm:
+items 1 to 4) should confirm.
+
+*Since Milestone 4 the menu rows below are the popover's rules line (a click opens
+the Discard rules screen) and the edit item is gone, replaced by that screen; the
+list stays as the record of what the menu claimed.*
 
 - **`Edit discard rules…`** opens `rules.toml` in a text editor: through
   `NSWorkspace` `openURL` when the Mac has an app for `.toml` (which app is the
@@ -327,14 +400,87 @@ it sees:
   `NSGlassEffectView`): the window gets the blurred background, the panels are
   opaque, and one line about it is printed to stderr.
 
+## Unverified until the M4 Mac check
+
+Milestone 4 Task 2 changed what the window is built over. Nobody has run it on a
+Mac. The Milestone 4 section of the Mac checklist (`docs/milestones/mac-checklist.md`) asks the tester to confirm:
+
+- **The window still opens and works** from the popover's `Open loctel` and from
+  the Dock icon after the change of `open_or_focus` (it takes the settings path now
+  and builds an `AppBackend` with `login_item::SystemLoginItem`).
+- **`SystemLoginItem`** asks `SMAppService` every time (`is_enabled`) and
+  registers or unregisters on `set_enabled`, exactly as the two functions it wraps
+  do: the "Start at login" item of the M1 list still stands.
+
+- **The main window's shortcuts** (M4 Task 7): ⌘1, ⌘2 and ⌘3 show Map & traces,
+  Logs and Discard rules, and ⌘, opens the Settings window, from anywhere in the
+  main window: with the focus in an input, on the trace screen, after a click on
+  nothing. They are GPUI key bindings in the window's own key context, and the
+  tests send them through GPUI's dispatch, not from a keyboard. Whether macOS or
+  GPUI takes ⌘, or the digit chords first (the app has no menu bar) is what a Mac
+  must say. They do nothing in the Settings window.
+- **The sidebar's icons** (a map, a list and a funnel, from Kit's Lucide icons)
+  draw in the real window: the list and the funnel come from `KitAssets`'s own
+  list on top of Kit's default bundle (decision 0040).
+
+Milestone 4 Task 9 added the popover and the Settings wiring (decision 0042).
+Nobody has run it. The Milestone 4 section of the Mac checklist should confirm,
+and report in words what it sees:
+
+- **The popover's position and glass.** A click on the icon opens a panel 336
+  points wide just under the menu bar (6 points below it, notch or not), centred
+  on the click, and kept 8 points inside the screen edge when the icon is near it.
+  It is Liquid Glass with rounded corners of 18 points, or (without
+  `NSGlassEffectView`) the blurred background with the opaque panel and one line on
+  stderr. Check it from an icon near the right edge, on a second display with its
+  own menu bar, with the Dock at a side, and in light and dark: the position comes
+  from `NSEvent.mouseLocation` and the clicked screen's `visibleFrame`
+  (`popover::anchor`), `display_id` from `NSScreenNumber`, and GPUI's own
+  conversion of the origin (from the top left of that display). Whether the click's
+  location is still the mouse's when the callback runs (it arrives through a
+  channel from `gpui-tray`), and whether a `NonactivatingPanel` window with no
+  titlebar shows no traffic lights, no shadow it should not have and no square
+  corner behind the round panel, are what a Mac must say.
+- **Closing on click-away.** A click anywhere outside the panel (another app, the
+  desktop, another menu bar item) closes it; Esc closes it; a second click on the
+  icon closes it and does **not** open it again; `Open loctel`, `Settings…` and the
+  rules line close it after they act. The panel must not close while the pointer is
+  merely moving or while `Clear all data…` asks. Whether the window counts as
+  active after it opens (so that the click-away observer can fire; it only reacts to
+  a deactivation that follows an activation) is the main thing to see. If it stays
+  open and cannot be dismissed but by clicking the icon, say so.
+- **⌘Q and ⌘,.** With the panel open and nothing clicked, ⌘Q quits loctel (the ports
+  are freed, the icon leaves the menu bar) and ⌘, opens Settings and closes the
+  panel; they come from the view's key bindings, and the panel has to have the
+  keyboard on its own (a `NonactivatingPanel` that the app activated). Esc, ⌘O
+  likewise.
+- **The fallback.** Only if you can force it (for instance by denying the window): the
+  main window opens instead, with one line on stderr, and loctel stays reachable.
+- **Settings window activation.** `Settings…` opens the window 520 by 360 at the
+  front and focused, with the Dock icon on, even when no other window was open (the
+  policy goes `Regular` before the window opens and back to `Accessory` when the last
+  loctel window closes; the popover's own window never counts). Asking again brings
+  the same window forward. Closing the main window while Settings is open keeps the
+  Dock icon until Settings closes. Typing in a port field works (the app is activated
+  after the switch to `Regular`, as for the main window).
+- **The popover's actions** are the plain ones: `Pause receiving` flips at once and
+  the pill says `Paused`; `Copy` puts `http://127.0.0.1:4319/mcp` on the clipboard;
+  `Clear all data…` asks, then empties the store; the `Start at login` switch agrees
+  with System Settings (and with Settings) and a refusal leaves it where it was;
+  `Open loctel` and the rules line open the main window on Map & traces and on
+  Discard rules, and bring an open window forward on that screen.
+- **`Edit discard rules…` is gone** from the macOS shell with the menu; the rules
+  are edited in the Discard rules screen, or in `rules.toml` by hand.
+
 ## Tests
 
 - `cargo test -p loctel-macos` (runs on Linux): `glass` (the y flip of the
-  frames: kept for a flipped parent, counted from the bottom otherwise), `menu` (the designed order with
-  `Open loctel` first after the headers, the rules header and the Edit item,
-  the Pause/Resume label, the checkmark, the greyed Copy and the greyed Edit,
-  the header text),
-  `first_launch` (once only, the login-item error, other settings survive, a
+  frames: kept for a flipped parent, counted from the bottom otherwise), `popover`
+  (`anchor_centres_under_click`, `anchor_clamps_at_right_edge`,
+  `anchor_clamps_at_left_edge` and `anchor_below_menu_bar` for the placement, and
+  tests for a Dock at a side, a second screen, a visible frame narrower than the
+  popover, the height not mattering, and which screen holds the mouse including the
+  top edge), `first_launch` (once only, the login-item error, other settings survive, a
   broken file left alone) and `icon` (18 and 36 pixels, black template ink, three
   rings at the mockup's positions).
 - `bash script/check-macos.sh --all-targets`: the macOS-only code type-checks
@@ -345,4 +491,8 @@ it sees:
 - `cargo test -p loctel-ui --test screens`: the shell's side of the glass (the
   see-through parts, the hairline and the highlight, and the `shell_glass_dark`
   and `shell_glass_light` references).
+- `cargo test -p loctel-ui --test interactions`: `show_screen` (what the popover's
+  `open_main` relies on: a screen shown in a window that `open_main_window` opened,
+  from its handle, and an error for the Settings window or a closed one). The popover
+  view itself is `tests/settings_popover.rs` (see [`ui.md`](ui.md), "The popover").
 - Nothing runs the AppKit parts. That is what the Mac check is for.

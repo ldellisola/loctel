@@ -439,10 +439,12 @@ fn the_status_box_follows_the_engine() {
     use loctel_ui::app::UiBackend as _;
     use std::cell::RefCell;
 
-    // A backend whose status can be changed from the test.
+    // A backend whose status can be changed from the test. What the window
+    // changes (rules, settings, pause, login item) is the fixed backend's.
     struct Changing {
         store: Store,
         paused: RefCell<bool>,
+        fixed: FixedBackend,
     }
     impl loctel_ui::app::UiBackend for Changing {
         fn store(&self) -> Store {
@@ -459,11 +461,48 @@ fn the_status_box_follows_the_engine() {
         fn utc_offset(&self) -> i32 {
             0
         }
+        fn rules(&self) -> Vec<loctel_rules::RuleStatus> {
+            self.fixed.rules()
+        }
+        fn set_rules(&self, specs: Vec<loctel_rules::RuleSpec>) -> anyhow::Result<()> {
+            self.fixed.set_rules(specs)
+        }
+        fn set_rule_enabled(&self, id: loctel_rules::RuleId, on: bool) -> anyhow::Result<()> {
+            self.fixed.set_rule_enabled(id, on)
+        }
+        fn preview_rule(
+            &self,
+            spec: &loctel_rules::RuleSpec,
+        ) -> Result<loctel_rules::Preview, loctel_query::QueryError> {
+            self.fixed.preview_rule(spec)
+        }
+        fn rules_generation(&self) -> u64 {
+            self.fixed.rules_generation()
+        }
+        fn settings(&self) -> loctel_engine::Settings {
+            self.fixed.settings()
+        }
+        fn apply_settings(
+            &self,
+            s: loctel_engine::Settings,
+        ) -> anyhow::Result<Vec<loctel_engine::ListenerStatus>> {
+            self.fixed.apply_settings(s)
+        }
+        fn login_item(&self) -> Option<Rc<dyn loctel_ui::app::LoginItem>> {
+            self.fixed.login_item()
+        }
+        fn set_paused(&self, on: bool) {
+            *self.paused.borrow_mut() = on;
+        }
+        fn mcp_url(&self) -> Option<String> {
+            self.fixed.mcp_url()
+        }
     }
 
     let changing = Rc::new(Changing {
         store: empty_store(),
         paused: RefCell::new(false),
+        fixed: FixedBackend::new(empty_store()),
     });
     assert!(!changing.status().paused);
     let mut driver = Driver::new(WINDOW, &Theme::dark(), {

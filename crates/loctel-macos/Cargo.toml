@@ -1,6 +1,6 @@
 [package]
 name = "loctel-macos"
-description = "The loctel macOS shell: menu bar status item, activation policy and start at login (empty on other operating systems)"
+description = "The loctel macOS shell: menu bar status item and its popover, activation policy and start at login (empty on other operating systems)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,6 +10,8 @@ publish = false
 # build never sees objc2 or the tray crate.
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui-pre.workspace = true
+# `Root`, which every loctel window sits in: the popover's window is opened here.
+gpui-kit.workspace = true
 gpui-tray.workspace = true
 objc2.workspace = true
 objc2-app-kit.workspace = true
@@ -21,8 +23,8 @@ loctel-engine.workspace = true
 loctel-ui.workspace = true
 anyhow.workspace = true
 
-# The parts that hold decisions (the menu's rows, the first-launch step, the
-# icon files) are plain Rust, compiled for the tests on every OS, so the Linux
+# The parts that hold decisions (the popover's anchoring, the first-launch step,
+# the icon files) are plain Rust, compiled for the tests on every OS, so the Linux
 # gate runs them. The macOS-only code that draws them is only type-checked
 # there (see `script/check-macos.sh`).
 [dev-dependencies]

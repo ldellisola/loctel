@@ -31,6 +31,9 @@ loctel-engine.workspace = true
 loctel-store.workspace = true
 loctel-query.workspace = true
 loctel-model.workspace = true
+# The rules the backend passes around (`RuleSpec`, `RuleStatus`, `RuleId`,
+# `Preview`) and the preview `FixedBackend` runs over its store.
+loctel-rules.workspace = true
 chrono = { workspace = true, features = ["clock"] }
 # `Copy span as JSON` (the inspector) serialises the span the way MCP does.
 serde_json.workspace = true

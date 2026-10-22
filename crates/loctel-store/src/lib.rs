@@ -8,8 +8,10 @@
 //! traces as one-row [`TraceSummary`] values, a page at a time.
 //!
 //! Log records are stored in time order, searched newest first and linked to
-//! their spans. The service map and the services list are computed from the
-//! traces held.
+//! their spans. Each held log has a stable [`LogId`], so a screen can read one
+//! log ([`Store::log`]), the lines around it ([`Store::logs_around`]) and a
+//! volume histogram of a search ([`Store::log_histogram`]). The service map and
+//! the services list are computed from the traces held.
 //!
 //! Searches can carry a parsed TraceQL or LogQL query
 //! ([`TraceFilter::query`], [`LogFilter::query`]); a matching trace lists the
@@ -38,7 +40,7 @@ mod trace;
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use config::StoreConfig;
 pub use failure::{FailedIn, TraceStatus, classify, trace_exception};
-pub use logs::LogFilter;
+pub use logs::{Around, HistogramBucket, LevelSet, LogFilter, LogId};
 pub use page::{Page, PageRequest};
 pub use service_map::{NodeKind, ServiceEdge, ServiceMap, ServiceNode, ServiceStats, TimeWindow};
 pub use store::{Removed, Store, StoreStats};

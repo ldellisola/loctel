@@ -7,16 +7,26 @@ feel), §10.3 (screenshot tests) and §10.5 (gotchas from the spike).
 Status: Milestone 3 is the main window. It has two screens (the home screen,
 the service map above the trace table, and the trace view) in a shell with a
 glass sidebar and toolbar, all in `src/app` and `src/views` over the pure models
-in `src/model`; "Screens and views at a glance" below is the map of them, and
+in `src/model`; Milestone 4 adds a third, the Logs screen (Task 4, see "The Logs
+screen"), and a fourth, the Discard rules screen (Task 5, see "The Discard rules
+screen"), all three reached from the sidebar (Task 7: `Map & traces`, `Logs` and
+`Discard rules`, ⌘1 to ⌘3, with ⌘, for Settings; see "Navigation" under "The main
+window") and from each other (the trace view's `Open in Logs`, the Logs screen's
+`Discard lines like this…`); "Screens and views at a glance" below is the map of
+them, and
 the sections after it say how each one works. The window opens from the Linux
 `loctel` and from the macOS menu bar item's `Open loctel` (see "The real window"
 below and [`macos.md`](macos.md)); the look of the glass parts is done and
 tested here, and Apple's glass behind them is `loctel-macos`'s and unverified.
 Milestones 1 and 2 had one view, the **status view**, which stays as a
 standalone view with its own screenshot tests (Milestone 2 added the discard
-rules line to it and to the macOS menu). The remaining screens (Logs, Discard
-rules, Settings) and the popover are Milestone 4. The macOS menu bar item is in
-`loctel-macos`; it only borrows the strings from `menu_text`.
+rules line to it and to the macOS menu). Milestone 4 adds two windows of their own:
+the Settings window (Task 6, see "The Settings window") and the menu bar popover's
+view (Task 8, see "The popover"), which is cross-platform and tested here; what
+opens it under the menu bar icon and what its actions do is `loctel-macos` (Task 9,
+[`macos.md`](macos.md), "The popover"). The macOS menu bar item is in `loctel-macos`;
+it has no menu since Milestone 4, and the strings of `menu_text` are the popover's
+status and rules lines.
 
 GPUI comes as the weekly `gpui-pre` snapshot, `gpui-pre`, `gpui-pre-platform`
 and `gpui-pre-wgpu`, all pinned to exactly `=0.3.9` (zed@93d7456), and GPUI Kit
@@ -35,13 +45,13 @@ are what shows you what moved (the `upgrade-gpui` skill has the steps; decision
 | `menu_text::status_line(&StatusModel)` | the one-line status: `Receiving · 412 spans/s · 1.2k logs/s`, `Paused` or `Port problem: otlp-http (address in use)`. A failed listener wins over paused, paused over receiving. The reason is `address in use` when the OS error contains "in use", otherwise the raw error cut to 40 characters. The first failed listener is the one named |
 | `menu_text::rules_line(&StatusModel)` | the discard rules in one line, the first that applies: `Discard rules file has an error`; `1 discard rule on · 1 has an error` (for more than one, `3 discard rules on · 2 have errors`); `No discard rules on`; `1 discard rule on · 31% dropped` or `3 discard rules on · 0% dropped`. The percentage is the share the rules dropped of what arrived since launch, rounded to a whole number; a value that is not a number reads `0%` and one outside 0 to 1 is cut to it. A file error wins over a rule error, a rule error over "no rules on" |
 | `menu_text::format_rate(f64)` | `412` is `412`, `1234` is `1.2k`, `0.4` is `0`. One decimal under ten thousand, none above, never `.0` (`1k`, `10k`, `1.3M`); NaN, infinity and negatives read `0` |
-| `model` | the pure models of the main window: `format`, `colors`, `trace_table`, `query_bar`, `map_layout`, `waterfall`, `inspector`, `trace_view` (see "Models" below) |
-| `app` | the main window's shell (see "The main window"): `MainWindow`, `Screen`, `UiBackend`, `open_main_window`, `Backdrop`/`GlassRegion`, `kit_theme`; the home screen's live data (see "Live data"): `HomeModel`, `HomeData`, `TimeRange`; and the open trace's (see "The trace view"): `TraceModel` |
-| `views` | the views of the main window's screens (see "The service map", "The trace table" and "The trace view"): `MapView`, with its `Camera`, `TraceTableView`, and `TraceView` with its `WaterfallView`, `InspectorView` and `SpanLogsView` |
+| `model` | the pure models of the main window: `format`, `colors`, `trace_table`, `query_bar`, `map_layout`, `waterfall`, `inspector`, `trace_view`, and (Milestone 4) `logs`, `histogram`, `rules`, `settings`, `popover` (see "Models" below) |
+| `app` | the main window's shell (see "The main window"): `MainWindow`, `Screen`, `UiBackend`, `open_main_window`, `show_screen`, `Backdrop`/`GlassRegion`, `kit_theme`; the home screen's live data (see "Live data"): `HomeModel`, `HomeData`, `TimeRange`; the open trace's (see "The trace view"): `TraceModel`; the Logs screen's (see "The Logs screen"): `LogsModel`, `LogsControls`; and the Discard rules screen's (see "The Discard rules screen"): `RulesModel`, `RuleEditor`, `PreviewState`; and `open_settings_window` (see "The Settings window") |
+| `views` | the views of the main window's screens (see "The service map", "The trace table", "The trace view", "The Logs screen" and "The Discard rules screen"): `MapView`, with its `Camera`, `TraceTableView`, `TraceView` with its `WaterfallView`, `InspectorView` and `SpanLogsView`, `LogsView` with its `HistogramView`, `RulesView` with its `RuleEditorView`, and (see "The Settings window" and "The popover") `SettingsView` and `PopoverView` with its `PopoverActions` |
 | `Theme` | the colours below. `Theme::dark()`, `Theme::light()` and `Theme::for_appearance(WindowAppearance)`. It is also a GPUI global once `kit_theme::apply` has run |
-| `KitAssets` | GPUI Kit's bundled icons, to register with `Application::with_assets` |
+| `KitAssets` | the icons to register with `Application::with_assets`: GPUI Kit's default bundle (what its components draw) plus the list and the funnel, which the sidebar uses and the default bundle leaves out (decision 0040). `testing::headless_app` registers it too |
 | `register_fonts(cx)`, `FONT_FAMILY` | the bundled typeface (below) |
-| `testing` (feature `screenshot`) | `render_png` and `assert_snapshot`; for the main window `render_window_png`, `Driver` (click, drag, scroll, pinch, type), `headless_app`, `FixedBackend`, `RecordingBackdrop` (see "Screenshot tests") |
+| `testing` (feature `screenshot`) | `render_png` and `assert_snapshot`; for the main window `render_window_png`, `Driver` (click, drag, scroll, pinch, type), `headless_app`, `FixedBackend` (with `rule_set()`, the rules in memory, for a test that wants them to have dropped something, and `fail_bind` and `fail_save`, which make `apply_settings` report a listener `Failed` or fail to write), `RecordingBackdrop` (see "Screenshot tests") |
 
 The strings in `menu_text` are the contract: the macOS menu header and the
 status view's pill both use `status_line`, the macOS menu's rules header and the
@@ -60,8 +70,8 @@ has its own section further down, which is where the rules are.
 status box) and the toolbar are on every screen.
 
 ```
- sidebar:  Map & traces  (the one entry; Logs and Discard rules are Milestone 4)
-              |
+ sidebar:  Map & traces (⌘1)  |  Logs (⌘2)  |  Discard rules (⌘3)      ⌘,  opens the Settings window
+              |  Map & traces:
               v
  Screen::Home ---------------------------------------------------------------.
    MapView        (top panel)     click a service  -> its filter in the query bar
@@ -74,18 +84,54 @@ status box) and the toolbar are on every screen.
    WaterfallView + SpanLogsView   (left)
    InspectorView                  (right)
               |
-              | Esc, the `Traces` button, or the sidebar entry  -> Screen::Home
+              | Esc, the `Back` button -> the screen the trace was opened from (Home, or Logs)
+              | the sidebar entry, or ⌘1 to ⌘3 -> that screen
               | `Traces through this span name` -> Screen::Home with
               |   { name = "..." } written into the query bar
+              | `Open in Logs` -> Screen::Logs { query: Some(`{service_name=..} | span_id = ..`) }
               '--------------------------------------------------------------'
+
+ Screen::Logs { query }  (Milestone 4; sidebar `Logs`, ⌘2)
+   LogsView   LogQL bar, level toggles, histogram, the list; toolbar: Live tail, range, Clear all
+              |  expand a row, then:
+              |    `Open trace` (or the trace link of a row) -> Screen::Trace(id), the log's span selected
+              |    `Discard lines like this…`                -> Screen::Rules { draft: Some(..) }
+              |    `Show lines around this one`              -> context mode, `Back to search` returns
+ Screen::Rules { draft }  (Milestone 4; sidebar `Discard rules`, ⌘3)
+   RulesView  header and `New rule`, banners, a card per rule (switch, name, chip, count, query);
+              |  beside it, while a rule is open: RuleEditorView (fields, live validation, preview)
+              |    click a card -> the editor opens on it; the switch toggles it and nothing else
+              |    `Save` / `Cancel` / `Delete` (asks first); a file edited meanwhile -> the banner
+              |    arriving with a draft (`Discard lines like this…`) -> the editor opens on it, unsaved
+
+ The Settings window  (Milestone 4 Task 6: not a screen but a window of its own, 520 by 360;
+                       ⌘, in the main window opens it (Task 7), and so does the popover's
+                       `Settings…` (Task 9: `loctel_macos::window::open_settings`))
+   SettingsView   three port inputs with the state of their endpoints, the login switch (macOS),
+                  `Apply` and `Close`;  app::open_settings_window opens it or focuses the open one
+
+ The menu bar popover  (Milestone 4 Task 8: a panel of its own, 336 wide, that `loctel-macos`
+                        opens under the menu bar icon (Task 9, `popover::toggle`); it replaces the
+                        M1 and M2 menu)
+   PopoverView    title and status pill, four stats, the endpoints (`Copy` on MCP), the rules line,
+                  |    the rules line         -> PopoverActions::open_main(Screen::Rules { draft: None })
+                  |    `Open loctel`, ⌘O      -> open_main(Screen::Home)
+                  |    `Settings…`, ⌘,        -> open_settings()      (both then close())
+                  `Pause receiving`, `Clear all data…` (asks inline), `Start at login` (macOS),
+                  `Quit loctel` ⌘Q;  every action goes through PopoverActions, so the view runs
+                  and is tested without a Mac
 ```
 
 | From | The user does | To |
 |---|---|---|
-| any | clicks `Map & traces` in the sidebar | `Home` |
+| any | clicks `Map & traces`, `Logs` or `Discard rules` in the sidebar, or presses ⌘1, ⌘2 or ⌘3 | `Home`, `Logs { query: None }` or `Rules { draft: None }`: each as it was left |
+| any | presses ⌘, | the Settings window opens, or comes forward; the screen stays |
 | `Home` | clicks a row of the table | `Trace(id)` |
-| `Trace` | Esc, or `Traces` | `Home`, as it was left (query, toggles, rows, the map's camera) |
+| `Trace` | Esc, or `Back` | the screen the trace was opened from: `Home` as it was left (query, toggles, rows, the map's camera), or `Logs` as it was left (its query, levels, tail, the line that was open) |
 | `Trace` | `Traces through this span name` | `Home`, with `span_name_filter(name)` in the bar |
+| `Trace` | `Open in Logs` | `Logs { query: Some(span_logs_query(service, span)) }` |
+| `Logs` | `Open trace`, or a click on a row's trace link | `Trace(id)` with the log's span selected (`MainWindow::open_trace_at`) |
+| `Logs` | `Discard lines like this…` | `Rules { draft: Some(suggest_from_log(record)) }`: the editor opens on it, unsaved |
 
 The home screen's views and its `HomeModel` live as long as the window, so the
 map keeps its camera and the table its query, toggles and rows while a trace is
@@ -112,17 +158,26 @@ the choices; decision 0031 has the two gaps of Milestone 3 that remain.
 | `WaterfallView` | `views/waterfall_view.rs` | `TraceModel`: the `Waterfall` | `model::waterfall` | "The trace view" |
 | `InspectorView` | `views/inspector_view.rs` | `TraceModel`: the span's details | `model::inspector` | "The trace view" |
 | `SpanLogsView` | `views/span_logs_view.rs` | `TraceModel`: the span's logs | `model::trace_view` (`log_lines`) | "The trace view" |
+| `LogsView` | `views/logs_view.rs` | `LogsModel`: rows, query state, levels, tail | `model::logs` | "The Logs screen" |
+| `HistogramView` | `views/histogram_view.rs` | `LogsModel`: the bars | `model::histogram` | "The Logs screen" |
+| `LogsControls` | `app/toolbar.rs` | `LogsModel`: tail, range | | "The Logs screen" |
+| `RulesView` | `views/rules_view.rs` | `RulesModel`: cards, banners, the share dropped | `model::rules` (`rows`, `dropped_line`, `file_error_line`) | "The Discard rules screen" |
+| `RuleEditorView` | `views/rule_editor_view.rs` | `RulesModel`: the editor session (draft, preview, banner) | `model::rules` (`Draft`, `draft_error_line`, `preview_text`) | "The Discard rules screen" |
+| `SettingsView` | `views/settings_view.rs` | `UiBackend`: `settings()`, `status()` listeners once a second, `login_item()` | `model::settings` (`Form`, `endpoint_state`, `failures`) | "The Settings window" |
 | `StatusView` | `status_view.rs` | `StatusModel` | `menu_text` | "What is in the crate" |
 
-`HomeModel` (`app/data.rs`) and `TraceModel` (`app/trace_data.rs`) are the two
-entities that read the store: one for the home screen, one for the open trace.
+`HomeModel` (`app/data.rs`), `TraceModel` (`app/trace_data.rs`) and `LogsModel`
+(`app/logs_data.rs`) are the three entities that read the store: one for the home
+screen, one for the open trace, one for the Logs screen. `RulesModel`
+(`app/rules_data.rs`) reads the engine's rules (in memory, once a second) and
+reads the store only for the editor's preview.
 
 ### The data flow
 
 ```
- Engine (EngineHandle) --- impl UiBackend ---> store() / status() / clear_all() / utc_offset()
+ Engine (EngineHandle) --- AppBackend: UiBackend ---> store() / status() / clear_all() / utc_offset() / rules / settings
                                                    |
-        HomeModel / TraceModel   read the Store on GPUI's background executor
+        HomeModel / TraceModel / LogsModel   read the Store on GPUI's background executor
         (every 500 ms; the trace every 2 s once complete), then on the foreground:
                                                    |
         model::*   pure: strings, rows, positions, colour indices (no GPUI)
@@ -146,8 +201,26 @@ and the TraceQL parser, with no GPUI in them: a colour is an index into
 `Theme::service_palette`, and a view only lays out the strings and numbers it
 is given. The rules of the design (the formats, the failure display of §9.4,
 the colours of §9.3) are therefore tested with plain `assert_eq!`s, in
-`tests/model_format.rs`, `tests/model_table.rs`, `tests/model_map.rs` and
-`tests/model_waterfall.rs`.
+`tests/model_format.rs`, `tests/model_table.rs`, `tests/model_map.rs`,
+`tests/model_waterfall.rs`, `tests/model_trace_view.rs` and, for the Milestone 4
+screens, `tests/model_logs.rs`, `tests/model_rules.rs` and `tests/model_misc.rs`
+(the Settings form and the popover).
+
+| Model | What it is for | Entry points | Test file |
+|---|---|---|---|
+| `format` | durations, clock times, rates, error shares, cut-off text | `duration`, `clock`, `rate`, `error_pct`, `truncate_*` | `model_format.rs` |
+| `colors` | the colour a service keeps for the run | `ServiceColors::index` | `model_table.rs` |
+| `trace_table` | the trace table's rows and `Failed in` text | `rows`, `failed_in_text`, `count_line` | `model_table.rs` |
+| `query_bar` | the TraceQL bar's state and the queries a click writes | `validate`, `service_filter`, `span_name_filter` | `model_table.rs` |
+| `map_layout` | where each node and edge of the service map goes | `layout` | `model_map.rs` |
+| `waterfall` | the trace view's rows, folding, find, errors path | `Waterfall` | `model_waterfall.rs` |
+| `inspector` | the selected span's panel and what its buttons copy | `span_details`, `span_json` | `model_trace_view.rs` |
+| `trace_view` | the trace header, the find count, a span's log lines | `header`, `find_status`, `log_lines` | `model_trace_view.rs` |
+| `logs` | the Logs list's rows, an expanded line's details, the LogQL bar and its error line, `Open in Logs`, the level toggles' state, the count line, the context banner, how the live tail joins a page | `rows`, `details`, `validate`, `error_line`, `span_logs_query`, `level_is_on`, `levels_with`, `count_line`, `context_banner`, `merge_head` | `model_logs.rs` |
+| `histogram` | the log volume bars and their four time labels | `bars` | `model_logs.rs` |
+| `rules` | the rule cards and their counts, the total dropped, the editor's draft, the log suggestion | `rows`, `dropped_line`, `Draft`, `suggest_from_log` | `model_rules.rs` |
+| `settings` | the Settings form's port validation | `Form::from`, `Form::validate` | `model_misc.rs` |
+| `popover` | the menu bar popover's pill, stats, endpoints and rows | `from_status` | `model_misc.rs` |
 
 ### Formats (`model::format`)
 
@@ -444,6 +517,131 @@ strings pinned in `tests/model_trace_view.rs`:
   space). `logs_title(name)` is `Logs from POST /charges` and `logs_count(n)`
   `4 logs`.
 
+### Logs screen models (`model::logs`, `model::histogram`)
+
+Pinned in `tests/model_logs.rs`, over the fixed fake mesh's seven checkout logs.
+
+- `rows(&[(LogId, LogRecord)], &mut ServiceColors, utc_offset)` are the list's
+  rows in the order given (the store gives newest first). A `LogRow` holds `id`
+  (the store's `LogId`), `time` (`format::clock` of the log's time, or of its
+  observed time when it has none), `level` (a `LevelBadge`: `Err`, `Wrn`, `Inf` or
+  `Dbg`, with `label()` `ERR`, `WRN`, `INF`, `DBG`), `service` and its colour
+  index `color`, `message`, `trace_short` (the first 8 hex digits of the trace ID),
+  `trace_id` and `span_id` (the last three are `None` for a log outside a trace).
+- The badge groups the severities as the level toggles do: `ERR` is error and
+  fatal, `WRN` warn, `INF` info and unspecified, `DBG` debug and trace.
+- `message` is the body on one line: every line break (`\n`, `\r\n`, a lone `\r`)
+  becomes ` ⏎ ` and breaks at the very end are dropped. The plan says "the first
+  line only, newlines become ` ⏎ `"; the two cannot both hold, and the test
+  "a multi-line body shown on one line" settles it: the whole body, flattened, so
+  the mark has something to separate. The view cuts it to the width it has.
+- `details(&LogRecord)` is the expanded line's grid: `("body", <the whole body>)`
+  first, then `loctel_query::logql::labels` (sorted by name: the attributes with
+  Loki's label names, `service_name`, `level`, `scope_name`, `trace_id`,
+  `span_id`).
+- `validate(text)` is a `LogQueryState`: `Empty` for blanks, `Valid(Arc<LogQuery>)`
+  or `Invalid { column, message }` (the column counts from 1 in characters as
+  typed, like the TraceQL bar's).
+- `span_logs_query(service, span)` is `{service_name="payments-api"} | span_id =
+  "00f067aa0ba902b7"`, what the trace view's `Open in Logs` writes into the bar;
+  `"` and `\` in the service name are escaped.
+- Task 4 added the rest of what the screen shows that is not a pixel:
+  `PAGE_SIZE` 500, `MAX_ROWS` 20,000, `PREFETCH_ROWS` 50, `EXAMPLE_QUERY` (the
+  bar's placeholder, pinned to parse), `error_line` (`at column N: message`, like
+  the TraceQL bar's), `level_is_on(LevelSet, LevelBadge)` and `levels_with(set,
+  badge, on)` (a toggle flips its own group of severities and nothing else),
+  `count_line(loaded, more, capped)` (`1,204 lines · newest first`, `500+ lines ·
+  newest first`, `20,000+ lines`), `context_count_line` (`51 lines · oldest
+  first`), `footer(capped)` (`Showing the newest 20,000 matching lines`),
+  `context_banner(target, held, utc_offset)` (`Lines around 08:00:01.440`, or `This
+  line is no longer held`), `BACK_TO_SEARCH`, `NEW_LINES_PILL` and
+  `merge_head(held, id, fresh)`, which says how the live tail's newest page joins
+  the rows held (below, "The live tail").
+- `histogram::bars(&[HistogramBucket], since, until, utc_offset)` is `Bars`:
+  `bars` holds `(total, errors)` per bucket as fractions of the tallest bar's
+  total (so the error stack is on the same scale, and never above its bar; all 0
+  when no bucket has a log), and `labels` are the clock times at the start, a
+  third, two thirds and the end of the range (cut to a millisecond, not rounded).
+
+### Rules models (`model::rules`)
+
+Pinned in `tests/model_rules.rs`.
+
+- `rows(&[RuleStatus])` are the cards, in the file's order. A `RuleRow` holds
+  `id`, `enabled`, `name`, `chip` (`TRACEQL` or `LOGQL`), `query`, `counts` and
+  `error`. `counts` is the text on the right of the card, the first that applies:
+
+  | Case | `counts` | `error` |
+  |---|---|---|
+  | switched off | `Off` | `None` |
+  | on, query does not parse | `Error: <message>` (in `error_text`) | `Some(message)` |
+  | trace rule | `48,210 spans dropped` | `None` |
+  | trace rule, scope trace, whole traces dropped | `48,210 spans dropped in 602 traces` | `None` |
+  | log rule | `96,433 lines dropped` | `None` |
+
+  Counts have a thousands separator, are singular for one (`1 span dropped in 1
+  trace`, `1 line dropped`) and plural for none (`0 spans dropped`). A rule that is
+  off reads `Off` even with a bad query (as in the menu's rules line, an error only
+  counts for a rule that is on), so `error` is set exactly when `counts` shows it.
+  A span-scope rule never names traces.
+- `dropped_line(fraction)` is `31% of incoming data dropped` (a whole percent,
+  cut to 100), `Nothing dropped yet` for 0 (and for NaN, infinity and negatives,
+  as `menu_text::rules_line` reads them) and `<1% of incoming data dropped` for a
+  share that rounds to 0% but is more than nothing.
+- `Draft` is the editor's fields (`name`, `language`, `query`, `scope`,
+  `enabled`). `from_spec` and `to_spec` round-trip exactly (nothing is trimmed, so
+  saving an unchanged rule keeps its identity). `validate()` is a `DraftCheck`:
+  `name_ok` (the name has something in it) and `query` (`Ok(())`, or `Err((column,
+  message))` from the draft's language's parser, the column counted from 1; an
+  empty query is an error, as the rules engine says). `can_save()` is `name_ok`:
+  a query that does not parse can be saved, per M2.
+- `suggest_from_log(&LogRecord)` is the rule `Discard lines like this…` opens
+  unsaved: name `Lines like "<first 40 characters of the body>…"` (no `…` when the
+  body fits), LogQL, query `{service_name="<service>"} |= "<body text>"` where the
+  body text is the first 60 characters cut back to the last whitespace if the cut
+  falls inside a word (a single longer word is cut at 60), `"` and `\` escaped
+  (also in the service name), and on. The body is its first line with any text,
+  so a stack trace after the message does not end up in a filter no other line
+  matches; a body with no text gives the selector alone. Lengths count characters.
+
+### Settings form and popover (`model::settings`, `model::popover`)
+
+Pinned in `tests/model_misc.rs`.
+
+- `settings::Form` holds the text of the three port fields (`grpc`, `http`,
+  `mcp`) and `start_at_login: Option<bool>`. `Form::from(&Settings, login)` fills
+  the ports from the saved settings and the switch from what the system says
+  (`login`, `None` where there is no login item: the settings file's own
+  `start_at_login` is never read).
+- `Form::validate()` gives the `Ports` or the problems per `Field` (`Grpc`,
+  `Http`, `Mcp`, in that order). A field is digits only, 1 to 65535, blanks around
+  it ignored, else `Enter a port from 1 to 65535`. Fields that are ports and share
+  a number (as numbers: `4318` and `04318` are the same) each get `Each endpoint
+  needs its own port`.
+- `popover::from_status(&EngineStatus, login)` is the `Popover` (drawn by
+  `views::PopoverView`, see "The popover"). `pill` is the
+  first that applies, as in the status line: a failed listener `Port problem`
+  (`Tone::Error`), paused `Paused` (`Tone::Warn`), else `Receiving` (`Tone::Ok`).
+  `stats` are `(value, label)` for `spans per second` and `log lines per second`
+  (`menu_text::format_rate`: `413`, `1.2k`) and `traces held` and `log lines held`
+  (thousands separator: `1,200,000`). `endpoints` are `(name, address, ok)` for
+  `OTLP gRPC` and `OTLP HTTP` (`127.0.0.1:4317`) and `MCP` (the URL
+  `http://127.0.0.1:4319/mcp`, which the Copy button copies); a failed listener
+  shows the address it was asked for with `ok` false. `rules_line` is
+  `menu_text::rules_line`. `paused` and `start_at_login` pass through.
+- The Settings window's endpoint lines (Task 6; in `tests/model_misc.rs` too).
+  `Field::ALL` is the three fields in order, `Field::label()` the caption of
+  the input (`OTLP gRPC port`, `OTLP HTTP port`, `MCP port`) and
+  `Field::listener()` the engine's name for what it moves (`otlp-grpc`,
+  `otlp-http`, `mcp`). `endpoint_state(&listeners, field)` is `listening` (ok) or
+  `failed: <reason>` (not ok) for that field's listener, or `None` when the engine
+  does not report it; the reason is `menu_text`'s: `address in use` when the OS
+  error says "in use", otherwise the error cut to 40 characters. `failures(&listeners)`
+  is one `otlp-http: address in use` line per failed listener, in the engine's
+  order, empty when all are up.
+
+Decision 0036 has the choices these models make where the plan is silent.
+
 ## The main window
 
 `loctel_ui::app` is the shell of the main window (Milestone 3, Task 4): the
@@ -457,10 +655,11 @@ screens of Tasks 6 to 8 go into its content area. Decision 0024 has the choices.
   and between the panels, and `PANEL_RADIUS` = 16 on each.
   - The **sidebar** is `SIDEBAR_WIDTH` = 220 wide, the window's full height less
     the inset. From the top it has `TRAFFIC_LIGHT_SPACE` (52, where the macOS
-    traffic lights sit; plain room on Linux), the navigation (one entry,
-    `Map & traces`, `NAV_ITEM_HEIGHT` 34, lit with the accent at 18%; Logs and
-    Discard rules arrive in Milestone 4) and, at the bottom, the **status
-    box**.
+    traffic lights sit; plain room on Linux), the navigation (three entries,
+    `Map & traces`, `Logs` and `Discard rules`, each `NAV_ITEM_HEIGHT` 34 high with
+    `NAV_ITEM_GAP` 2 between; an icon (16 px) and the text; the one that is lit has
+    the accent at 18% behind it, the text in semibold and the icon in the accent
+    colour; see "Navigation" below) and, at the bottom, the **status box**.
   - The status box shows `status_line` and `rules_line` (the words of the macOS
     menu) and a row per endpoint (`OTLP gRPC`, `OTLP HTTP`, `MCP`) with its
     address, a red dot and address when it failed. It reads a `StatusModel` from
@@ -497,11 +696,80 @@ receiving and `Resume` catches up, the range menu lists the four ranges and each
 choice changes the rows, a click outside closes the menu, Clear all empties the
 map, the table and the store (and works while frozen).
 
-**Screens.** `Screen` is `Home` or `Trace(TraceId)`; `MainWindow::screen()` and
-`navigate(screen, cx)` read and change it, and clicking the navigation entry
-shows `Home`. The home screen's views live as long as the window; the trace
-screen is made when it is first drawn and dropped when the window leaves it
-(see "The trace view").
+**Screens.** `Screen` is `Home`, `Trace(TraceId)`, `Logs { query: Option<String> }`
+or `Rules { draft: Option<Draft> }` (the last two are Milestone 4's);
+`MainWindow::screen()` and `navigate(screen, cx)` read and change it, and
+clicking a navigation entry shows its screen (see "Navigation"). The home screen's views live as long
+as the window; the trace screen is made when it is first drawn and dropped when
+the window leaves it (see "The trace view"). The Logs screen's model and view
+live as long as the window too (`main.logs()`, `main.logs_view()`, made in
+`MainWindow::new`), so its query, toggles and tail stay while another screen
+shows; the model reads the store only while `Screen::Logs` is the one showing
+(`navigate` tells it). `navigate(Screen::Logs { query: Some(q) })` puts `q` in the
+LogQL bar every time, even when the Logs screen is already showing and the user
+typed something else since. `open_trace_at(id, Some(span), cx)` is `navigate` to
+the trace of `id` with `span` selected once the trace has it
+(`TraceModel::prefer_selection`). The Discard rules screen's model and view live
+as long as the window as well (`main.rules()`, `main.rules_view()`), so an
+editor with a draft in it stays while another screen shows; the model reads only
+while `Screen::Rules` is the one showing, and reads at once when it comes back.
+`navigate(Screen::Rules { draft: Some(d) })` opens the editor on `d`, unsaved,
+every time (a draft that was open is replaced); `draft: None` shows the screen as
+it was left. The toolbar's title is `toolbar_title`:
+`Logs` and `Discard rules` join the two above, and on the Logs screen the
+controls at its right are `LogsControls`.
+
+**Navigation** (`app/nav.rs`, `app/sidebar.rs`; M4 Task 7, decision 0040).
+
+| Entry | Icon (Lucide, `gpui_kit::assets::IconName`) | Key | Screen a click shows | Lit on |
+|---|---|---|---|---|
+| `Map & traces` | `Map` | ⌘1 (`cmd-1`) | `Home` | `Home` and every `Trace(_)` |
+| `Logs` | `List` | ⌘2 | `Logs { query: None }` | `Logs { .. }` |
+| `Discard rules` | `Funnel` | ⌘3 | `Rules { draft: None }` | `Rules { .. }` |
+
+`NavItem` (`ALL`, `label`, `icon`, `shortcut`, `screen`, `is_active`) is the one
+list the sidebar, the keys and the tests read. A trace stays under `Map & traces`
+even when it was opened from a log (the toolbar says `Map & traces › <id>` there
+too); only `Back` knows where it came from.
+
+- **State is kept.** Every screen's views and model live as long as the window
+  (the trace screen apart), so switching screens loses nothing for the session:
+  the home query, toggles and camera, the Logs query, levels, range, tail and
+  expanded line, and an open rules editor with its draft. An entry's `screen`
+  carries no query and no draft, which is what makes it "as it was left";
+  `Screen::Logs { query: Some(..) }` and `Screen::Rules { draft: Some(..) }` are
+  the ways to arrive *with* something, and they replace what was there.
+  (`sidebar_switches_screens_and_keeps_state`)
+- **Keys.** ⌘1, ⌘2, ⌘3 and ⌘, are GPUI actions (`ShowMapAndTraces`, `ShowLogs`,
+  `ShowRules`, `OpenSettings`) bound by `app::init` in the key context
+  `MainWindow`, which the shell's root element carries, so they work in the main
+  window and nowhere else (the Settings window has no such context). They are
+  `cmd-…` on every platform (the Super key on Linux, where
+  `xdotool key super+2` sends one). Chords with the command key are not typed
+  into an input. The root takes the keyboard at creation, and back whenever what
+  had it leaves the frame (`Context::on_focus_lost`: GPUI calls it after a frame
+  in which nothing is focused any more, for instance after a click in the table's
+  empty area and a switch to Logs, or the dropped trace screen); a click on bare
+  window gives it to the root too, since the root tracks focus. So the keys do not
+  depend on where the last click was.
+  (`keyboard_shortcuts_switch_screens`, `shortcuts_work_after_a_click_in_a_part_of_a_screen_that_goes_away`,
+  `the_settings_shortcut_opens_one_settings_window`)
+- **Back.** The trace screen's back button says `Back` (`BACK_LABEL`) and so does
+  Esc: it returns to the screen the trace was opened *from*, which the shell notes
+  when a trace opens from another screen (`trace_origin()`): `Home` for a click on
+  a row of the table, `Logs` for `Open trace` or the trace link of a log. What
+  comes back is `NavItem::screen()`, so the user's own query in the Logs bar is not
+  replaced. A trace opened from Logs, then left by the sidebar, then another trace
+  opened from the table, goes back to the table: the origin is noted at each
+  opening. (`trace_back_returns_to_logs_when_opened_from_logs`,
+  `trace_back_returns_home_when_opened_from_home`)
+- **For tests.** `MainWindow::nav_bounds(item)` is where an entry was drawn in
+  the latest frame (like the other views' `bounds_of`), `trace_origin()` the
+  screen `Back` returns to.
+- **Not verified on a Mac:** that ⌘1 to ⌘3 and ⌘, reach the shell from a real
+  keyboard (the tests send the keystrokes through GPUI's own dispatch) and do
+  not collide with something the system does with them (macos.md, "Unverified
+  until the M4 Mac check").
 
 **Lifecycle.** The window is opened by `loctel-app`, not by the shell. On Linux
 `loctel` without `--headless` opens it at launch; on macOS the menu's `Open
@@ -509,14 +777,53 @@ loctel` does (`loctel_macos::open_or_focus`), which also puts loctel in the Dock
 for as long as the window is open. See "The real window" below and
 [`macos.md`](macos.md).
 
-**The backend.** Views never name the engine: they hold an `Rc<dyn UiBackend>`
-with `store() -> Store`, `status() -> EngineStatus`, `clear_all()` and
-`utc_offset() -> i32` (the system zone's offset in seconds for the clock times;
-tests use 0). `impl UiBackend for EngineHandle` is the real one.
-`testing::FixedBackend { store, status, utc_offset }` is the test one;
-`FixedBackend::new(store)` gives the status of a healthy engine
-(`testing::listening_status()`: three listening endpoints, nothing received, no
-rules). Store reads that take time go through `store()` clones onto the
+**The backend.** Views never name the engine: they hold an `Rc<dyn UiBackend>`.
+Its methods:
+
+| Method | What it is |
+|---|---|
+| `store() -> Store` | the store the receivers fill (a clone is the same store) |
+| `status() -> EngineStatus` | pause, endpoints, rates, what is held and the rules |
+| `clear_all()` | empties the store |
+| `utc_offset() -> i32` | the system zone's offset in seconds for the clock times; tests use 0 |
+| `rules() -> Vec<RuleStatus>` | the discard rules in file order, with errors and counts |
+| `set_rules(Vec<RuleSpec>)`, `set_rule_enabled(RuleId, bool)` | replace or switch, saved to `rules.toml`; an invalid query is allowed and shows as that rule's error |
+| `preview_rule(&RuleSpec) -> Result<Preview, QueryError>` | what the rule would have dropped of the last 5 minutes |
+| `rules_generation() -> u64` | how many times the rules were replaced (a save, a switch or a reload of an edited file); the rules editor compares it to notice a change made behind its back |
+| `settings() -> Settings` | the saved `settings.toml` (defaults when there is none) |
+| `apply_settings(Settings) -> Result<Vec<ListenerStatus>>` | saves, then rebinds the listeners (`EngineHandle::rebind`); a port that cannot be bound is saved and shows `Failed` in the statuses that come back, an `Err` is a file that could not be written (and then nothing moved) |
+| `login_item() -> Option<Rc<dyn LoginItem>>` | start at login: `Some` on macOS, `None` on Linux (no switch in Settings) |
+| `set_paused(bool)`, `mcp_url() -> Option<String>` | pause and resume; where agents reach MCP |
+
+`AppBackend::new(engine, settings_path, login)` is the real one (the old
+`impl UiBackend for EngineHandle` is gone: every caller uses it). `loctel-app`
+builds it for the Linux window with no login item, and `loctel-macos`
+(`window::open_or_focus`) with `login_item::SystemLoginItem`. Its `settings()`
+reads `settings.toml` and lays the ports the listeners use now over it: a
+command-line port flag (`--http-port 0`) changes what the engine listens on, not
+the file, and the Settings window shows the real ports so Apply moves only the
+one that was changed (`EngineHandle::rebind` leaves a listener that already
+answers on its port alone; decision 0043).
+
+`testing::FixedBackend` is the test one; `FixedBackend::new(store)` gives the
+status of a healthy engine (`testing::listening_status()`: three listening
+endpoints, nothing received, no rules). Everything the window can change is
+kept in memory: the rules in a `RuleSet` (so IDs, query errors and
+`rules_generation` behave as in the engine, and `preview_rule` runs
+`loctel_rules::preview` over its store), the settings (`apply_settings` makes up
+three listening listeners at the ports it is given and binds nothing), the pause,
+and `pub login` for a test that wants the Start at login switch. `rule_set()` is
+the `RuleSet` itself, for a test that wants the rules to have dropped something
+(pass data through `filter_spans` and `filter_logs` as the engine's sink does, and
+the cards' counts move; the share in `status.dropped_fraction` does not: it is the
+`status` field's). A change of the rules behind a view's back is `set_rules`,
+which moves `rules_generation` as a reload of the file does. `status()` is
+its `status` field with the rules, the pause and the listeners of those calls
+laid over it. `tests/app_backend.rs` pins both (`AppBackend` over a real engine
+on port 0: saving settings and rebinding, a busy port, a file that cannot be
+written, the rules calls, pause and the login item; `FixedBackend` in memory),
+and `crates/loctel-engine/tests/rebind.rs` pins `rebind` and `rules_generation`
+underneath. Store reads that take time go through `store()` clones onto the
 background executor, never on the frame.
 
 **Opening it.** `open_main_window(backend, cx, attach_backdrop)` calls
@@ -526,6 +833,14 @@ the window with the options above and builds `MainWindow` inside GPUI Kit's
 platform's `Backdrop` (macOS Liquid Glass, `loctel_macos::glass::attach`) or `None`. It leaves
 `reduce_motion` at the system's value. The app must register `KitAssets` with
 `Application::with_assets` for Kit's icons to draw.
+
+**Showing a screen from outside.** `app::show_screen(window: AnyWindowHandle,
+screen, cx)` is `MainWindow::navigate` reached from the handle of a window that
+`open_main_window` opened (the root's `Root` view, then the `MainWindow` in it): the
+macOS shell keeps only the handle, and the popover's `Open loctel` and rules line
+open the main window on a `Screen` through it. It is an error for a window that has
+closed and for one that is not a main window (Settings). `tests/interactions.rs`
+(`show_screen_*`) pins both.
 
 **Theme.** `Theme::for_appearance` picks dark for `Dark` and `VibrantDark`,
 light for the others. `MainWindow` applies it at creation and from the
@@ -888,8 +1203,11 @@ view and a store whose clock the test moves.
   debug build, a fraction of that in release); decision 0028 has why.
 - **Selection** starts at `initial_selection` (the failed-in span, else the root)
   as soon as there is one, and the list scrolls to it
-  (`TraceModelEvent::Reveal`). After that it is the user's: a click on a row, or
-  Enter in the find box. The selected span's logs are read from the store
+  (`TraceModelEvent::Reveal`). `prefer_selection(span)` (what `Open trace` of a
+  log calls on a model just made) puts a span of the caller's choice in its place
+  once the trace has it, and waits for it while the trace is still arriving
+  (the failed-in span stands in meanwhile). After that it is the user's: a click
+  on a row, or Enter in the find box, which also ends a pending preference. The selected span's logs are read from the store
   (`logs_for_span`) when the selection moves and with every refresh.
 - A trace the store does not have says `This trace is not in the store`
   (`LoadState::Missing`) and keeps polling, so one that arrives shows up.
@@ -899,7 +1217,7 @@ default window):
 
 | Part | What |
 |---|---|
-| header, first line | the `Traces` back button (Esc does the same), the root span's name (semibold, cut), the badge and, on the right, the indicator |
+| header, first line | the `Back` button (Esc does the same; it returns to the screen the trace was opened from), the root span's name (semibold, cut), the badge and, on the right, the indicator |
 | header, second line | `1.84 s · 15 spans · 5 services · 14:32:07.412`, the trace ID in the monospace face cut in the middle (`c7aad7a8…77315102`) and a `Copy ID` button |
 | badge | red `Failed in service · span name peer +N` with a `!` for a failed trace, amber `Errors inside` for one with errors under a fine root; none otherwise |
 | indicator | `Receiving spans…` in the accent colour while the trace may still get spans, `Complete` in green |
@@ -942,10 +1260,17 @@ and `Copy span as JSON`. Another span starts with every value cut. Nothing
 selected: `Select a span to see its details`.
 
 **The span's logs** (`SpanLogsView`, `span_logs_view.rs`) are the 200 px under the
-waterfall: `Logs from POST /charges` and `4 logs`, then a row per log (the time
-in the monospace face, the level in a badge, the message on one line cut with an
-ellipsis and whole in a tooltip) in a `uniform_list`. `No logs from this span`
-when it has none, `Select a span to see its logs` with no selection.
+waterfall: `Logs from POST /charges` and `4 logs`, and at the right of that line
+an `Open in Logs` button (a ghost button; only with a span selected), then a row
+per log (the time in the monospace face, the level in a badge, the message on one
+line cut with an ellipsis and whole in a tooltip) in a `uniform_list`. `No logs
+from this span` when it has none, `Select a span to see its logs` with no
+selection. `Open in Logs` emits `SpanLogsEvent::OpenInLogs(query)`, which
+`TraceView` re-emits as `TraceViewEvent::OpenLogs(query)` and the shell turns into
+`navigate(Screen::Logs { query: Some(query) })`; the query is
+`span_logs_query(service, span)`, `{service_name="payments-api"} | span_id =
+"03feb5f65e799604"`, so the Logs screen lists exactly that span's logs
+(`open_in_logs_from_trace_view_sets_query`).
 
 **Keys.** The screen takes the keyboard when it opens. **Esc** goes back (the home
 screen as it was left: its query, its toggles, its rows), except that with the
@@ -957,7 +1282,7 @@ back to the screen.
 `logs_view()` and `split()` reach the parts; `bounds_of(TracePart, cx)` and
 `center_of` give where a part (`Back`, `CopyId`, `Find`, `ErrorsPath`,
 `ToggleAll`, `List`, `Inspector`, `TracesThrough`, `CopyJson`, `CopyException`,
-`ShowAll`) is in the window in the latest frame (`None` while it is not
+`ShowAll`, `OpenInLogs`) is in the window in the latest frame (`None` while it is not
 there); `WaterfallView::row_center(row)` and `chevron_center` find a row with
 the scroll taken into account, `scroll_to_row` and `top_row` scroll it, and
 `tests/common/mod.rs` has the helpers the tests share (`open_trace`: navigate
@@ -972,11 +1297,441 @@ selected and in the inspector), `trace_charges_selected_dark.png` (a click on
 `huge_trace_middle_dark.png` (`HugeTrace` of 100,000 spans scrolled to row
 50,000), `long_values_dark.png` (a 300-character name, a 20 KB attribute, a
 600-character token, a long exception) and `long_values_shown_whole_dark.png`
-(the same with the long value shown whole). The colours of the services are the
+(the same with the long value shown whole). All seven were regenerated in
+Milestone 4 Task 4 for one visible change, the `Open in Logs` button at the right
+of the span-logs header. The colours of the services are the
 session's, in the order the home screen first met them (the health checks of
 `home_store` come first, so `web-bff` is not blue). The monospace face is Inter
 on Linux, as in the table. How the screen looks and scrolls on a Mac is
 unverified.
+
+## The Logs screen
+
+`views::LogsView` (`src/views/logs_view.rs`, Milestone 4 Task 4) is the content of
+`Screen::Logs { query }`: the LogQL bar, the level toggles, the volume histogram
+and the list of lines, over the live data of `app::LogsModel`
+(`src/app/logs_data.rs`). Decision 0037 has the choices the plan left open.
+
+**Top to bottom** (two floating panels like the home screen's, the content
+width):
+
+| Part | What |
+|---|---|
+| toolbar (the shell's glass strip, `LogsControls`) | the title `Logs`; at the right a `Live tail` pill (green dot and an accent tint while the tail runs, an amber dot while scrolling away or the lines around a log have stopped it, a hollow ring and no tint when it is off; a click toggles it), the range button (`Last 15 minutes` and its menu: the same menu as the home toolbar's) and `Clear all` (empties the store, as the home one) |
+| search | a `LogQL` chip, the input (placeholder `EXAMPLE_QUERY`, a clear button), `Run`; under them `at column N: message` in red while the text does not parse. Typing validates and searches live; an invalid text changes nothing but the error line, and the list keeps the last good query's rows |
+| toggles | `ERR` (`error_text`), `WRN` (`warn`), `INF` (`text_secondary`), `DBG` (`text_tertiary`): the letters in the group's colour, a tint and a ring when on, no fill when off (all four on at first). Each is its group of severities (`ERR` error and fatal, `INF` info and unspecified, `DBG` debug and trace). At the right the count (`207 lines · newest first`, `500+ lines · newest first` while more pages wait, `20,000+ lines` at the cap) |
+| histogram | `HistogramView`: 48 bars 64 px high with 2 px between them, the errors stacked at the bottom of each bar in `error` and the rest in `border` (a bucket with a line is at least 2 px, an empty one a 1 px stub), and four clock labels under them at the start, a third, two thirds and the end of the window (the window ends now) |
+| list | 30 px rows: the time (mono, 96 px), the level badge (44 px column), the service with its colour dot (112 px), the message (mono, one line, an ellipsis), the first 8 hex digits of the trace ID as a link (96 px; none for a log outside a trace) |
+| banner | context mode only: `Lines around 08:00:01.440 · Back to search`, or `This line is no longer held · Back to search` |
+| pill | while the tail is paused by scrolling: `New lines · Jump to newest`, floating at the top of the list |
+| footer | once the list stopped at 20,000 rows: `Showing the newest 20,000 matching lines` |
+| empty | `No logs yet`, or `No lines match` when a query or a toggle narrows the list |
+
+**A click on a row expands it** where it stands (one row at a time: another click
+moves the expansion, a click on the same row folds it). The row is taller by the
+details grid, which is the whole body first (wrapped, line breaks kept: a stack
+trace stays a stack trace) and then the labels LogQL sees (`model::logs::details`),
+and three buttons: `Open trace` (a log in a trace), `Show lines around this one`
+and `Discard lines like this…`. The trace link of a row opens the trace without
+expanding the row. The list is GPUI's variable-height `list` (an expanded row is
+taller than 30 px, which a `uniform_list` cannot hold); the view owns its
+`ListState` and keeps it in step with the rows through the model's events, with a
+check in every frame that the list's count is the model's.
+
+**The data** is `LogsModel`. What the user sets (the call, then what it does):
+
+| Call | Effect |
+|---|---|
+| `set_query(text)` | validates at once (`state()` is new when it returns); an empty bar or a query that parses searches again from the first page, an invalid text only changes the state |
+| `set_levels(LevelSet)`, `set_range(TimeRange)` | search again from the first page; `None` levels to the store when all four are on |
+| `set_tail(bool)` | the live tail switch; on, it catches up at once |
+| `load_more()` | read the next page and append it |
+| `expand(Option<LogId>)` | expand or fold a row (an ID not in the list is `None`) |
+| `show_around(LogId)`, `back_to_search()` | context mode and back |
+| `set_at_top(bool)` | what the view tells it (below) |
+| `jump_to_newest()` | the pill: the first page again, the list at the top |
+| `refresh_now()` | what Enter and `Run` do: the first page again |
+| `clear_all()` | empties the store through the backend and reads again |
+| `set_active(bool)` | what the shell tells it; nothing is read while it is `false` |
+
+and what it holds: `rows()`, `record(index)`, `histogram()`, `state()` (the LogQL
+bar's `LogQueryState`), `query_text()`, `levels()`, `range()`, `tail()`,
+`tail_paused()`, `expanded()`, `expanded_record()`, `expanded_details()`,
+`context()` (`ContextInfo { target, held, index }`), `context_target()`,
+`banner()`, `loaded()`, `more()`, `capped()`, `footer()`, `count_line()` and
+`has_filters()`. Every store read runs on GPUI's background executor on a copy of
+its inputs, and a result that a newer read replaced is dropped when it arrives.
+
+- **Paging.** The first page is 500 lines (`PAGE_SIZE`), newest first. A row drawn
+  within 50 rows (`PREFETCH_ROWS`) of the end of the loaded rows asks for the next
+  page as it is drawn, so a scroll to the end reads one more page; a list with nothing more to load
+  ignores the asking. The list holds
+  at most 20,000 rows (`MAX_ROWS`); past that it stops, `capped()` is true and the
+  footer shows. The count line counts the rows **loaded**, with a `+` while more
+  are waiting: the store has no cheap count of what matches, and the histogram
+  (which is a pass over the window) is not asked to give one.
+- **The live tail** (design 9.2; plan Review Focus 1). While the tail is on, the
+  list is at the top and no read of the list is out, the newest page (500) is read
+  every 500 ms (`TAIL_REFRESH`) and joined to the rows by `model::logs::merge_head`:
+  new lines go on top, once. The join is the fresh page followed by the held rows
+  older than it, so every row is strictly older than the one before and **no line
+  can be in the list twice**. A page that cannot be joined without a gap (a flood
+  that outran a page: the page ends newer than the newest row held) or an empty
+  one (the store was cleared) starts the list over from the page. A late line that
+  arrived inside the page's range shows once, in its place. The histogram is read
+  every 2 s (`HISTOGRAM_REFRESH`) while the tail is on.
+- **Scrolling away pauses the tail.** The view reports whether the list is at its
+  top (`set_at_top`, after each frame in which that changed); away from the top
+  nothing is ever put above the rows being looked at, the pill shows, and a head
+  read that was already out when the user scrolled is dropped when it arrives.
+  Clicking the pill (`jump_to_newest`), or scrolling back to the top, resumes: the
+  first brings the first page, the second joins what came meanwhile. With the tail
+  off the list and the histogram stand still. Tests:
+  `tail_dedupes_and_paused_tail_keeps_position`,
+  `the_tail_toggle_stops_the_list_and_the_histogram`.
+- **Lines around** (design 9.2; plan Review Focus 5). `show_around(id)` reads
+  `Store::logs_around(id, 25, 25)` (`CONTEXT_BEFORE`, `CONTEXT_AFTER`): the store's
+  lines around the log, unfiltered, **oldest first** like a file, with the target
+  row highlighted and scrolled into view. The tail and the paging stand still. A
+  log that is gone gives `This line is no longer held` and the lines nearest to
+  where it was (`lines_around_a_line_that_is_gone_say_so_and_show_what_remains`).
+  Changing the query, the levels or the range, or `Back to search`, leaves context
+  mode and searches again from the first page (the list does not remember where it
+  was).
+- **The histogram** is `Store::log_histogram` over the window that ends now: 48
+  buckets over the range (`Everything` starts at `Store::oldest_log_unix_nano`),
+  for the lines that match the query and the toggles, turned into bars by
+  `model::histogram::bars`.
+- **The range is the Logs screen's own**: the home screen's range and this one are
+  separate settings, both `Last 15 minutes` at first, with the same menu.
+
+**For tests.** `main.logs()` and `main.logs_view()` reach the model and the view;
+`LogsView::bounds_of(LogsPart)` and `center_of` give where a part (`QueryInput`,
+`Run`, `Level(badge)`, `Histogram`, `List`, `Pill`, `Banner`, `BackToSearch`,
+`Footer`, and for an expanded row `OpenTrace`, `ShowAround`, `Discard`) is in the
+latest frame, `row_center(index)` and `trace_link_center(index)` find a row,
+`scroll_offset()` says where the list is scrolled, and `input_text`, `error_line`,
+`banner` and `empty_state` read what it says; `LogsView::controls()` reaches the
+toolbar's `LogsControls` (`bounds_of(ToolbarPart::LiveTail | Range | ClearAll)`).
+`tests/logs_screen.rs` has the data (`logs_store`: the failing checkout's seven
+logs at `BASE` and 200 lines of `LogFlood` spread over the ten minutes before them,
+on a clock 30 s after `BASE`) and every test below.
+
+**References** (1440 by 900, at 2x, over that store, with the three-entry sidebar
+of Task 7, `Logs` lit): `logs_dark.png` and
+`logs_light.png` (the list at the top, newest first, with the checkout's three
+errors, the warning and three infos over the flood's `INF` and `DBG` lines; the
+histogram with the checkout's bar last, its three errors in red at the bottom),
+`logs_expanded_dark.png` (the `Charge failed…` line expanded: the body, the
+labels with the stack trace on three lines, and the three buttons),
+`logs_query_error_dark.png` (an unclosed selector typed: `at column 29: expected
+`,` or `}`` in red under the focused input, the rows the last good query's) and
+`logs_context_dark.png` (the lines around the `card-gateway did not answer` error:
+the banner, the target highlighted, `28 lines · oldest first`). The monospace face
+is Inter on Linux, as in the table. How the screen looks and scrolls on a Mac is
+unverified.
+
+## The Discard rules screen
+
+`views::RulesView` (`src/views/rules_view.rs`, Milestone 4 Task 5) is the content
+of `Screen::Rules { draft }`: the rules as cards, and beside them the
+`views::RuleEditorView` (`src/views/rule_editor_view.rs`) of the one that is open,
+over the live data of `app::RulesModel` (`src/app/rules_data.rs`). Design §7 and
+`docs/areas/rules.md` say what a rule is and what it does to the data; decision
+0038 has the choices the plan left open.
+
+**The list** (one floating panel; the editor panel is beside it while a rule is
+open, so the list gives up 380 px + `INSET`):
+
+| Part | What |
+|---|---|
+| header | the title `Discard rules` (20 px), under it the subtitle `Anything a rule matches is dropped as it arrives and never stored. Rules are kept when loctel restarts.`; on the right `rules::dropped_line` (`31% of incoming data dropped`, `Nothing dropped yet`) and `New rule` |
+| banners | the rules file's error, in the error colour: `The rules file has an error: <msg>. loctel keeps using the rules it had.` (`file_error_line`: the message on one line, no double full stop); `Could not save the rules: <reason>` when a switch could not be written; with no rules, `No discard rules. Nothing is dropped unless you add one.` in a neutral box |
+| cards | one per rule in the file's order (`rules::rows`): the switch, the name (semibold; dimmer while the rule is off), a `TRACEQL` or `LOGQL` chip and, at the right, the count text (`48,210 spans dropped in 602 traces`, `96,433 lines dropped`, `Off`, or `Error: <message>` in `error_text`), and the query in the monospace face on one line under them. The card of the open rule has an accent ring and tint |
+
+A click on a card opens that rule in the editor (`RulesModel::edit`). The switch
+swallows its own click: it calls `set_enabled` (the backend's `set_rule_enabled`,
+which saves) and does not open the card.
+
+**The editor** (380 px wide, `PANEL_RADIUS` corners, the panel fill with the glass
+hairline and the highlight ring just inside it; the fields scroll, the buttons
+are pinned under them):
+
+| Part | What |
+|---|---|
+| title | `Edit rule`, or `New rule` for one that is not saved yet |
+| banner | only while the rules file changed behind the editor: `The rules file changed while you were editing.` with `Keep my draft` and `Discard my draft` |
+| `Name` | an input; `Save` needs something in it |
+| `Applies to` | a segmented control: `Traces (TraceQL)` or `Logs (LogQL)`; the chosen side is tinted with the accent. The query keeps its text when the side changes: it is read by the other parser from then on |
+| `Query` | a multi-line input in the monospace face, with `at column N: message` in `error_text` under it while the text does not parse (nothing while it is blank: a rule that has just been started is not an error yet) |
+| scope | traces only: the radio `When a span matches, drop` with `the whole trace it belongs to` and `only the matching span and its children` (`DropScope::Trace` and `Span`). A log rule has none |
+| preview box | `Tried on the last 5 minutes` and a sentence, below |
+| buttons | `Save`, `Cancel`, and for a saved rule `Delete`, which asks (`Delete this rule?`, `Delete rule`, `Keep rule`) before it removes anything |
+
+**The preview** is `loctel_rules::preview` of the draft over the last five minutes
+of the store (`PREVIEW_WINDOW`), as `model::rules::preview_text` words it:
+
+| State | The box says |
+|---|---|
+| the query does not parse | `Fix the query to see what it would drop.` (at once, no read) |
+| a trace rule | `Would have dropped 1,204 spans in 602 traces. None of those traces had errors.` or `... 3 of those traces had errors.` (`1 span in 1 trace. That trace had no errors.` / `That trace had errors.` for one) |
+| a log rule | `Would have dropped 96 lines. 2 were errors.` (`None were errors.`, `1 was an error.`, `1 line. It was an error.` / `It was not an error.`) |
+| it would have dropped nothing | `Would have dropped nothing.` |
+| blank query, or the first result is not back | nothing (the box keeps its height) |
+
+A change of the name or query text waits 300 ms (`PREVIEW_DEBOUNCE`) after the
+last keystroke; opening a rule, and a click on the language or the scope, run at
+once. The pass runs on GPUI's background executor over a clone of the store, and a
+result that a newer edit replaced is dropped when it arrives (a result that is
+there stays until the next replaces it, so the box does not flicker while typing).
+
+**Saving.** The editor remembers the rules as they were when it opened (their
+IDs and specs). `Save` builds the full list from that snapshot with the draft in
+the place of its rule (at the end for a new one) and calls `UiBackend::set_rules`;
+the editor closes when it worked and stays, with `Could not save the rules:
+<reason>` above the buttons, when it did not. Opening a rule and saving it
+unchanged changes nothing (the rule keeps its ID and counters: the engine keeps a
+rule's identity by name, language, query and scope). A query that does not parse
+is saved (a draft, per M2): its card shows `Error: <message>` and it drops
+nothing (plan Review Focus 3; `invalid_rule_saved_shows_error_and_no_preview`).
+`Delete` asks, and the yes saves the snapshot less that rule. `Cancel` closes the
+editor and saves nothing.
+
+**A rule edited behind the editor's back** (plan Review Focus 2;
+`external_change_during_edit_warns`). The editor keeps `rules_generation` from
+when it opened. When the number has moved and the editor did not move it (a
+reload of the edited file, `set_rules` from elsewhere), the banner shows, the
+draft is left exactly as it is, the list shows what the file has now, and `Save`
+and `Delete` do nothing until the user decides: `Keep my draft` turns the banner
+off, and `Save` then writes the snapshot with the draft over the file, which
+**overwrites** what the file got meanwhile (the banner's whole point);
+`Discard my draft` closes the editor and leaves the file as it is. The editor's
+own writes are not external: a switch on a card (this window's doing) re-takes the
+snapshot and the generation (and the draft of that very rule follows its switch,
+or saving it would turn the rule back on), so no banner appears for them and the
+list saved over is never older than the user's last action.
+
+**Refresh.** The model reads `UiBackend::rules` and `status` (the share dropped,
+the file's error) once a second (`RULES_REFRESH`) while the screen shows, and at
+once after anything it does and when the screen comes back; it redraws only when
+something changed. These are in-memory reads of the engine's rules, not store
+reads, so they run on the foreground like the shell's status refresh. The first
+frame of a screen that was hidden shows what it read as it came back.
+
+**For tests.** `main.rules()` and `main.rules_view()` reach the model and the view;
+`RulesView::bounds_of(RulesPart, cx)` and `center_of` say where a part is in the
+latest frame (`NewRule`, `Card(i)`, `Switch(i)`, `Editor`, `NameInput`,
+`LanguageTraces`, `LanguageLogs`, `QueryInput`, `ScopeTrace`, `ScopeSpan`,
+`Preview`, `Save`, `Cancel`, `Delete`, `ConfirmDelete`, `KeepRule`, `KeepDraft`,
+`DiscardDraft`); `banners`, `dropped_line`, `preview_text`, `query_error_line`,
+`editor_banner`, `name_text` and `query_text` read what it says. The model's
+`rows()`, `selected()`, `editor()` (a `RuleEditor`: `draft()`, `target()`,
+`is_new()`, `external_change()`, `confirming_delete()`, `error()`, `preview()`,
+`preview_text()`, `can_save()`) and `file_error_line()` read what it holds.
+`tests/rules_screen.rs` has the data (`rules_store`: the failing checkout, the
+successful one and 600 health checks, on a clock 140 s after the checkout; three
+rules; `counted_backend`, which sends 1,500 health checks and 40,000 log lines
+through the rules with `FixedBackend::rule_set()` so the cards have counts) and
+every test; a change of the file behind the editor is `FixedBackend::set_rules`,
+which moves the generation as a reload does.
+
+**References** (1440 by 900, at 2x, with the three-entry sidebar of Task 7,
+`Discard rules` lit): `rules_dark.png` and
+`rules_light.png` (the three rules, no editor: the 1,500 spans in 1,500 traces of
+the health checks, `1,217 lines dropped` for the log rule, the third `Off` with
+its switch off, `31% of incoming data dropped`), `rules_editor_dark.png` (the first
+rule open: its fields, the whole-trace radio, the preview `Would have dropped 600
+spans in 600 traces. None of those traces had errors.`, and `Save`, `Cancel` and
+`Delete`), `rules_empty_dark.png` (`No discard rules...` and `Nothing dropped
+yet`), `rules_file_error_dark.png` (the red banner over the rules it kept),
+`rules_editor_invalid_dark.png` (a new rule with `{ name = ` typed: `at column 10:
+expected a value` under the query and `Fix the query to see what it would drop.`
+in the preview, no `Delete`) and `rules_editor_changed_dark.png` (the banner with
+its two buttons over the fields, `Save` dimmed, and the list showing the fourth
+rule the file got). The monospace face is Inter on Linux, as in the table. How
+the screen looks and behaves on a Mac is unverified.
+
+## The Settings window
+
+`views::SettingsView` (`src/views/settings_view.rs`, Milestone 4 Task 6) is the
+form of the Settings window, and `app::open_settings_window(backend, cx)`
+(`src/app/settings_window.rs`) opens it: 520 by 360 logical pixels, centred, not
+resizable, titled `Settings`, the view in GPUI Kit's `Root` like the main window.
+If a Settings window is already open it focuses that one and returns its handle
+(the handle is kept in a GPUI global and checked against `cx.windows()`, so a
+window that was closed is forgotten and the next call opens a new one). The view
+takes the theme from the window's appearance and follows it, as `MainWindow`
+does. The disk cap is not on the form until M5 (nothing enforces it). The form's
+rules are `model::settings::Form` (see "Models"); decision 0039 has the choices
+the plan left open.
+
+**Layout** (the fields scroll, the buttons are pinned under them; all of it fits
+the 360 px even with all three messages showing, which `settings_invalid_dark`
+checks):
+
+| Part | What |
+|---|---|
+| title | `Settings` (18 px, semibold) |
+| `Endpoints` | a panel with a row per field: the caption (`OTLP gRPC port`, `OTLP HTTP port`, `MCP port`), a 96 px input, and how that endpoint is doing: a green dot and `listening` in `ok`, or a red dot and `failed: <reason>` in `error_text`. A text that is not a port, or a port two fields share, gets its message (`Enter a port from 1 to 65535`, `Each endpoint needs its own port`) in `error_text` under its input |
+| `Startup` | only where `UiBackend::login_item()` is `Some` (macOS): a panel with the `Start loctel at login` switch, set from `LoginItem::is_enabled()` when the window opens |
+| buttons | `Apply` (primary; on while the form differs from what was saved and every field is valid) and `Close` (closes the window); beside them, in `error_text`, what the last Apply could not do |
+
+**Apply** (`SettingsView::apply`, the button; nothing happens while it is off):
+
+1. It takes the settings the backend has (`UiBackend::settings()`), puts the three
+   ports in them and calls `UiBackend::apply_settings`. That saves `settings.toml`
+   and rebinds the listeners whose port changed (`EngineHandle::rebind`). Every
+   other setting stays as it was; the login switch is not written to the file (the
+   system is the source of truth, see `login_item.rs`).
+2. **A port that cannot be bound is not an error of Apply.** It is saved; the
+   listener comes back `Failed`; the row says `failed: address in use`; the line
+   beside the buttons says `otlp-http: address in use` (`failures`); the other
+   listeners are untouched (plan Review Focus 4;
+   `apply_rebinds_and_shows_failure`). The form counts as saved, so `Apply`
+   goes off again.
+3. **A settings file that cannot be written is an error**: `Could not save the
+   settings: <reason>` beside the buttons, nothing moved, the form and the switch
+   as they were, `Apply` still on to try again. The login item is not touched
+   then.
+4. **The login switch** takes effect here, not when it is clicked: if it differs
+   from what was loaded, `LoginItem::set_enabled(on)` is called after the ports
+   are saved. If the system refuses, `Could not change Start at login: <reason>`
+   is shown (the ports stay applied) and the switch shows what
+   `LoginItem::is_enabled()` says now, whatever was asked.
+5. The inputs are rewritten to the ports as saved (`" 4500 "` reads `4500`).
+
+What the last Apply could not do goes away when the form is edited again.
+
+**Refresh.** Once a second (`SETTINGS_REFRESH`) the view reads
+`UiBackend::status().listeners` for the row states, and, while the switch is as
+loaded (the user has not clicked it), asks the system's login item again, so a
+change made in System Settings shows. It never rewrites what is typed in an input,
+and a switch the user has clicked stays theirs until Apply. The row states are the
+engine's, so while a port is edited and not applied a row still says what is true
+of the port it listens on.
+
+**For tests.** `SettingsView` reads: `form()`, `can_apply()`, `endpoint(field)`,
+`message(field)`, `notice()`, `sections()`, `input_text(field, cx)` and
+`bounds_of(SettingsPart, cx)` / `center_of` (`Input(field)`, `Status(field)`,
+`Message(field)`, `LoginSwitch`, `Apply`, `Close`). `tests/settings_popover.rs`
+(the popover's tests are in the same file, see "The popover") drives it in a `Driver<SettingsView>` at
+520 by 360 over a `FixedBackend`: `fail_bind` makes the HTTP listener `Failed`
+the way a port in use does, `fail_save` makes `apply_settings` an error, and the
+login item is a `FakeLogin` the test can move behind the window's back. `Driver`
+gained `is_open()` for `Close` (a click that closes the window leaves nothing to
+draw).
+
+**References** (520 by 360, at 2x: 1040 by 720): `settings_dark.png` and
+`settings_light.png` (all three listening, the login switch on, `Apply` dimmed),
+`settings_edited_dark.png` (HTTP typed as 4400 and the switch clicked, not applied:
+`Apply` lit and the HTTP row still `listening`), `settings_failed_dark.png` (HTTP applied to a port that is in use: the red
+row and `otlp-http: address in use` beside the buttons) and
+`settings_invalid_dark.png` (the worst case: two fields with the same port and a
+third out of range, each with its message, and everything still in view). How the
+window looks and behaves on a Mac (its chrome, that it is not resizable, how it
+takes the focus from a menu bar app) is unverified.
+
+## The popover
+
+`views::PopoverView` (`src/views/popover_view.rs`, Milestone 4 Task 8) is the menu
+bar popover: the panel that replaces the M1 and M2 menu. It is cross-platform on
+purpose. The view, its content (`model::popover`) and everything it asks of the
+app (`PopoverActions`) are built and screenshotted on Linux; what `loctel-macos`
+(Task 9, decision 0042) does is put it in a window under the menu bar icon and
+implement `PopoverActions`. The popover on a Mac is unverified (see "Unverified").
+Decision 0041 has the choices the plan left open.
+
+**The panel** is `POPOVER_WIDTH` (336) wide, with corners of `POPOVER_RADIUS` (18),
+and as tall as its rows: every row has a fixed height, so `popover_height(login_item)`
+is the sum (504 with the `Start at login` row, 476 without, in logical pixels) and
+the popover's window is made that size. Swapping `Clear all data…` for its question
+changes no height (`the_height_does_not_change_while_it_asks_to_clear`). From the
+top:
+
+| Row | What |
+|---|---|
+| title and pill | `loctel` (16 px, semibold) and the pill: a dot and the words `Receiving` (green), `Paused` (amber) or `Port problem` (red, in `error_text`), as `popover::from_status` says (a failed listener over paused over receiving) |
+| stats | four tiles, two by two (56 px high): the value (20 px, semibold) over its label: `412` `spans per second`, `1.2k` `log lines per second`, `1,204` `traces held`, `96,433` `log lines held` |
+| endpoints | a group of three 28 px rows: a dot (green, or red for a listener that is not listening), the name (`OTLP gRPC`, `OTLP HTTP`, `MCP`), and the address in the mono face: `127.0.0.1:4317`, and for MCP the URL without its scheme, `127.0.0.1:4319/mcp`. A listener that could not be bound is red and says `127.0.0.1:4318 · failed` (the colour is not the only sign). `Copy` ends the MCP row, only while MCP is listening: there is no address to copy otherwise |
+| rules line | a dot, `menu_text::rules_line` (`1 discard rule on · 31% dropped`) and a chevron; red for a rule or a file with an error, grey for none on, green otherwise (the status view's rules row). A click opens the main window on Discard rules |
+| divider | |
+| actions | `Open loctel` ⌘O, `Pause receiving` or `Resume receiving`, `Clear all data…`, and where `UiBackend::login_item()` is `Some` (macOS) `Start at login` with a switch |
+| `Settings…` | ⌘, |
+| divider | |
+| `Quit loctel` | ⌘Q |
+
+**What it does.** Every action is a call on the `PopoverActions` the view was
+given (`Rc<dyn PopoverActions>`): `open_main(Screen)`, `open_settings()`,
+`toggle_pause()`, `clear_all()`, `copy_mcp()`, `set_start_at_login(bool)`, `quit()`
+and `close()`. The view never opens a window, writes a setting or touches the
+clipboard itself.
+
+| The user | The view calls |
+|---|---|
+| `Open loctel`, ⌘O | `open_main(Screen::Home)`, then `close()` |
+| the rules line | `open_main(Screen::Rules { draft: None })`, then `close()` |
+| `Settings…`, ⌘, | `open_settings()`, then `close()` |
+| `Pause receiving` / `Resume receiving` | `toggle_pause()` (the popover stays open) |
+| `Copy` | `copy_mcp()` (stays open) |
+| the `Start at login` switch (or its row) | `set_start_at_login(!shown)` (stays open) |
+| `Clear all data…` | nothing yet: the row turns into `Clear all traces and logs?` with `Clear` and `Cancel`. `Clear` calls `clear_all()` once (stays open); `Cancel` puts the row back |
+| `Quit loctel`, ⌘Q | `quit()` |
+| Esc | `close()` (a question that is open is forgotten) |
+
+The popover closes when it loses focus (Task 9: the window's deactivation, in
+`loctel-macos`), on Esc,
+and after an action that opens a window, which is the `close()` after those three
+rows. It does not close for pause, `Copy`, the switch or a confirmed clear.
+
+**Refreshing.** The popover reads `UiBackend::status()` and the login item when it
+opens and every second (`POPOVER_REFRESH`), and **at once after an action that
+changes what it shows** (pause, the switch, a confirmed clear), so `Pause receiving`
+reads `Resume receiving` as soon as it is clicked. The switch always shows what the
+system holds: after `set_start_at_login` the view asks the login item again, so a
+refusal leaves it as it was (`the_login_switch_follows_the_system`).
+
+**Keys.** The panel is a key context of its own, `LoctelPopover` (not `Popover`,
+which GPUI Kit's popover binds Esc in), with Esc, ⌘O, ⌘, and ⌘Q bound by
+`app::init` to the same things as the rows. They work wherever in the panel the
+keyboard is: the view takes the focus when it is first drawn and takes it back
+whenever what had it leaves the frame (the same as the main window's shell,
+decision 0040; GPUI Kit's buttons do not take focus on a click, so a stray focus
+is simulated in `the_popover_takes_the_keyboard_back_when_what_had_it_is_gone`).
+
+**Glass.** `PopoverView::with_backdrop(Some(backdrop))` (`loctel_macos::glass::attach`
+returns one; it is `None` on Linux and in most tests) makes the panel glass, as the
+sidebar and the toolbar of the main window are: no fill, so the platform's glass
+shows, with a hairline round it (`Theme::glass_hairline`) and a highlight just
+inside (`glass_highlight`), the tiles and the endpoint group translucent
+(`Theme::panel` at 45% in the dark look and 55% in the light one) and the window
+colour that Kit's `Root` paints over the window cleared on the first frame. The
+view then reports **one** `GlassRegion` (the panel's border box, radius 18) to the
+backdrop whenever it changes, and never otherwise (`popover_reports_one_glass_region`).
+Without a backdrop the panel is opaque: `Theme::bg` with the tiles in `Theme::panel`
+and `Theme::border` hairlines. The first frame also takes the theme from the window's
+appearance and follows it, as `SettingsView` does: the popover is the first window
+of a menu bar app, so no other window has set `Theme` yet.
+
+**For tests.** `PopoverView` reads: `popover()` (the model it draws),
+`action_rows()` (the rows as `(words, shortcut)`, top to bottom),
+`endpoint_lines()`, `confirming_clear()` and `bounds_of(PopoverPart)` /
+`center_of` (`Panel`, `Pill`, `Stat(i)`, `Endpoint(i)`, `CopyMcp`, `RulesLine`,
+`OpenMain`, `Pause`, `ClearAll`, `ConfirmClear`, `CancelClear`, `LoginSwitch`,
+`Settings`, `Quit`). `tests/settings_popover.rs` (the popover half) drives it in a
+`Driver<PopoverView>` at 336 by `popover_height` over a `FixedBackend`, with a
+`Recorder` for the `PopoverActions`: it writes each call down and, as the app's
+actions do, flips the backend's pause, clears its store and asks the login item
+(the `FakeLogin` of the Settings tests, which can refuse), so the tests see the
+view read the result back.
+
+**References** (336 by 504, at 2x: 672 by 1008): `popover_dark.png` and
+`popover_light.png` (receiving with 412 spans and 1.2k lines per second, one rule on
+with 31% dropped, the login switch on), `popover_paused_dark.png` (paused, zeros, `Resume
+receiving`, no rules, the switch off), `popover_port_problem_dark.png` (`otlp-http`
+failed and a rule with an error), `popover_clear_asks_dark.png` (the row asking) and
+`popover_glass_dark.png` / `popover_glass_light.png` (a `RecordingBackdrop` over a flat
+stand-in for the desktop: the panel clear, tiles translucent, corners outside the
+radius showing the desktop; on a Mac the stand-in is Apple's glass).
 
 ## Theme tokens
 
@@ -1098,7 +1853,9 @@ assert_snapshot("shell_dark", &image);   // 2880 by 1800, about 220 KB
   released), `scroll_with(point, dy, modifiers)` (`Modifiers::control()` for a
   ctrl-scroll), `pinch(point, delta)`,
   `resize((w, h))`, `draw()`, `capture()`, `update_root(|view, window, cx| ..)`,
-  `read_root(|view| ..)` and `read(|app| ..)` (globals such as Kit's theme).
+  `read_root(|view| ..)` and `read(|app| ..)` (globals such as Kit's theme), and
+  `is_open()` (false once something in the window closed it: a click on the
+  Settings window's `Close`; `draw` then has nothing to draw and does not panic).
   Points are logical pixels from the top left of the window. Every input goes
   through `Window::dispatch_event`, the path a real event takes, so hit testing,
   hover and focus behave as they do for a user. Each call runs what is pending
@@ -1109,7 +1866,9 @@ assert_snapshot("shell_dark", &image);   // 2880 by 1800, about 220 KB
   in entities and are tested by moving the clock (`tests/live.rs`); it returns
   the `HeadlessAppContext` itself.
 - **`FixedBackend`** (a `UiBackend` over a store you load, with
-  `listening_status()` and UTC), and **`RecordingBackdrop`** (every
+  `listening_status()` and UTC, and the rules, settings, pause and login item
+  in memory; `fail_bind` and `fail_save` make `apply_settings` report a listener
+  `Failed` or fail to write), and **`RecordingBackdrop`** (every
   `set_regions` call, `calls()`).
 - The clock is the test dispatcher's, not the store's: a `ManualClock` store
   moves only when the test advances that clock too.
@@ -1145,10 +1904,12 @@ repo skill `update-screenshots` has the steps, and how to read a CI failure.
 
 Every reference of `crates/loctel-ui/tests/snapshots/`, with the test that
 owns it, the data it is drawn from and what it shows. All of them were opened
-and checked when Milestone 3 was finished: legible text, the forced theme, and
+and checked when they were made (Milestone 3, and the Logs, Discard rules, Settings and popover ones in Milestone 4 Tasks 4, 5, 6 and 8): legible text, the forced theme, and
 nothing clipped other than the table and the lists that scroll. The main
 window's are 1440 by 900 logical pixels (2880 by 1800, 220 to 740 KB each, all
-under the 1.5 MB the plan allows, so the capture stays at 2x). "Home store" is
+under the 1.5 MB the plan allows, so the capture stays at 2x); the Settings
+window's are 520 by 360 (1040 by 720, 60 to 90 KB), and the popover's 336 by 504
+(672 by 1008, 110 to 130 KB). "Home store" is
 `common::home_store()`: the failing checkout, the successful one 5 s later and
 one health check of each service, on a store clock 70 s later, so every trace is
 complete; "empty store" has nothing in it.
@@ -1157,7 +1918,7 @@ complete; "empty store" has nothing in it.
 |---|---|---|---|
 | `status_view_dark` | `screenshots.rs` | a fixed `StatusModel`: `otlp-http` failed, 412 spans/s, 2 rules, 31% dropped | the standalone status view (900 by 600): the red `Port problem` pill, the four numbers, the rules line, the three endpoints with the failure in words |
 | `status_view_light` | `screenshots.rs` | the same model, paused, no failed listener, one rule with an error | the same view in the light theme, with the pill `Paused` and the red rules line. It is not the dark picture re-coloured: it covers the other readings of the pill and the rules row |
-| `shell_dark`, `shell_light` | `screens.rs` | empty store, healthy engine status | the window shell and the home screen with nothing in it: the sidebar with the entry lit and the status box, the toolbar with its title and controls, `Waiting for telemetry` over the map and `No traces yet` in the table (`0 traces · newest first`) |
+| `shell_dark`, `shell_light` | `screens.rs` | empty store, healthy engine status | the window shell and the home screen with nothing in it: the sidebar with its three entries (icon and text) and `Map & traces` lit, and the status box, the toolbar with its title and controls, `Waiting for telemetry` over the map and `No traces yet` in the table (`0 traces · newest first`) |
 | `shell_glass_dark`, `shell_glass_light` | `screens.rs` | the same, with a `RecordingBackdrop`, over a flat stand-in for the desktop | the glass look: the sidebar and the toolbar clear (the stand-in colour shows through, with a hairline and a highlight ring), the panels solid. On a Mac the stand-in is Apple's glass |
 | `home_dark`, `home_light` | `screens.rs` | home store | the whole home screen: the toolbar with its four controls, the checkout's nine nodes in four columns with `web-bff`, `orders-api` and `payments-api` and the edges between them in red, `card-gateway` dashed, `orders-api` to `postgresql` along the lane between `inventory-api` and `payments-api` (not behind them), the `Fit` button, the TraceQL bar, the seven traces newest first with the failed one's `Failed in payments-api · POST card-gateway +1`, the service dots and the duration bars |
 | `home_payments_selected_dark` | `interactions.rs` | home store, a click on `payments-api` | the 3 px accent ring on the node, `{ resource.service.name = "payments-api" }` in the bar (with its clear button), and the table filtered to three traces |
@@ -1167,14 +1928,33 @@ complete; "empty store" has nothing in it.
 | `toolbar_dark`, `toolbar_light` | `screens.rs` | home store | a crop (2420 by 136) of the toolbar strip: the title, and at the right the green `Live` pill, `Last 15 minutes` with its caret, `Pause` with its icon and `Clear all` |
 | `toolbar_menu_dark`, `toolbar_menu_light` | `screens.rs` | home store, a click on the range button | the same strip with the range menu open under it (`Last 5 minutes`, `Last 15 minutes` lit, `Last hour`, `Everything`) over the map, where the long edge `orders-api` to `postgresql` runs through its lane |
 | `toolbar_paused_dark`, `toolbar_paused_light` | `screens.rs` | home store, a click on `Pause` | the strip with the amber dot and `Paused` and the accent-filled `Resume` |
-| `trace_dark`, `trace_light` | `screens.rs` | home store, the failing checkout opened | the trace view: the `Traces` button, the root name, the red `Failed in` badge, `Complete`, `1.84 s · 15 spans · 5 services · 08:00:00.000`, the ruler, 15 waterfall rows in tree order with the failed-in `POST` to `card-gateway` (236 ms) selected, the inspector with its attributes and resource, and `No logs from this span` |
+| `trace_dark`, `trace_light` | `screens.rs` | home store, the failing checkout opened | the trace view: the `Back` button, the root name, the red `Failed in` badge, `Complete`, `1.84 s · 15 spans · 5 services · 08:00:00.000`, the ruler, 15 waterfall rows in tree order with the failed-in `POST` to `card-gateway` (236 ms) selected, the inspector with its attributes and resource, and `No logs from this span` |
 | `trace_charges_selected_dark` | `screens.rs` | the same, a click on `POST /charges` | the inspector's exception card (type, message, stack trace, `Copy`) and the span's four logs with their `INF`, `WRN` and `ERR` badges |
 | `trace_errors_path_only_dark` | `screens.rs` | the same, `Errors path only` on | the toggle lit and the seven erroring spans only, the selection kept |
 | `huge_trace_middle_dark` | `screens.rs` | meshgen `HugeTrace`, 100,000 spans, scrolled to row 50,000 | `36 ms · 100,000 spans · 4 services`, rows `work item 56102` and on at the middle of the list with the Kit scrollbar there, and no blank rows |
 | `long_values_dark` | `screens.rs` | one trace with a 300-character span name, a 20 KB attribute, a 600-character token and a long exception | the name cut with an ellipsis in the header, the badge, the row and the logs title; wrapped in the inspector; every long value cut; the layout unchanged (inspector 340 wide at the panel's edge) |
 | `long_values_shown_whole_dark` | `screens.rs` | the same, the inspector scrolled and `… (show all)` pressed on the 20 KB payload | the pane scrolled and the value shown in full, the pane longer and never wider |
+| `logs_dark`, `logs_light` | `logs_screen.rs` | the failing checkout's 7 logs and 200 lines of `LogFlood` spread over 10 minutes | the Logs screen: the `Live tail` pill, the range and `Clear all` in the toolbar, the LogQL bar with its placeholder, the four toggles (all on), `207 lines · newest first`, the histogram (48 bars, the checkout's with three red errors at the bottom) and the first rows of the list |
+| `logs_expanded_dark` | `logs_screen.rs` | the same, a click on the `Charge failed…` row | that row expanded: the whole body, the labels (the stack trace on three lines), `Open trace`, `Show lines around this one`, `Discard lines like this…` |
+| `logs_query_error_dark` | `logs_screen.rs` | the same, `{service_name="payments-api"` typed | the focused input, `at column 29: expected `,` or `}`` in red under it, the rows kept |
+| `logs_context_dark` | `logs_screen.rs` | the same, the lines around the 600 ms error | the banner `Lines around 08:00:01.440 · Back to search`, `28 lines · oldest first`, the target highlighted, a scrollbar |
+| `rules_dark`, `rules_light` | `rules_screen.rs` | the rules store (failing and successful checkout, 600 health checks), three rules, 1,500 health checks and 40,000 log lines sent through them, 31% dropped | the Discard rules screen: header, subtitle and `New rule`, three cards (`1,500 spans dropped in 1,500 traces`, `1,217 lines dropped`, `Off` with its switch off) |
+| `rules_editor_dark` | `rules_screen.rs` | the same rules (only the health checks counted), a click on the first card | that card with its accent ring and the editor beside it: name, `Traces (TraceQL)` chosen, the query, the whole-trace radio, the preview with 600 spans in 600 traces, `Save`, `Cancel`, `Delete` |
+| `rules_empty_dark` | `rules_screen.rs` | no rules | `No discard rules. Nothing is dropped unless you add one.` and `Nothing dropped yet` |
+| `rules_file_error_dark` | `rules_screen.rs` | three rules, a file error | the red banner `The rules file has an error: ... loctel keeps using the rules it had.` over the three cards |
+| `rules_editor_invalid_dark` | `rules_screen.rs` | `New rule`, a name and `{ name = ` typed | the focused query with `at column 10: expected a value` in red under it, `Fix the query to see what it would drop.` in the preview, `Save` and `Cancel` only |
+| `rules_editor_changed_dark` | `rules_screen.rs` | the first rule open with a new name typed, the file then changed (its query, a fourth rule) and a second passed | the amber banner `The rules file changed while you were editing.` with `Keep my draft` and `Discard my draft`, the dimmed `Save`, the draft kept, four cards |
+| `settings_dark`, `settings_light` | `settings_popover.rs` | a `FixedBackend` with a login item that is on, the default ports (4317, 4318, 4319) | the Settings window (520 by 360): `Settings`, the three ports with a green dot and `listening`, `Startup` with the `Start loctel at login` switch on, `Apply` dimmed and `Close` |
+| `settings_edited_dark` | `settings_popover.rs` | the same with the login item off, HTTP typed as `4400` and the switch clicked | the edit not applied: `Apply` lit, the switch on, the HTTP row still `listening` (the old port) |
+| `settings_failed_dark` | `settings_popover.rs` | the login item off, HTTP typed as `4400` and `Apply` clicked, with `fail_bind` on `otlp-http` | the red dot and `failed: address in use` on the HTTP row (the input still shows `4400`), `otlp-http: address in use` beside the buttons, `Apply` dimmed again |
+| `settings_invalid_dark` | `settings_popover.rs` | the login item on, HTTP typed as `4317` and MCP as `70000` | `Each endpoint needs its own port` under the first two inputs and `Enter a port from 1 to 65535` under the third, the rows still `listening`, `Apply` dimmed, the `Startup` panel still in view above the buttons |
+| `popover_dark`, `popover_light` | `settings_popover.rs` | a `FixedBackend` with a login item that is on, 412 spans and 1,234 log lines per second, 1,204 traces and 96,433 log lines held, one rule on with 31% dropped | the popover (336 by 504): `loctel` and the green `Receiving` pill, the four tiles, the three endpoints with `Copy` on MCP (`127.0.0.1:4319/mcp`), `1 discard rule on · 31% dropped` with its chevron, `Open loctel ⌘O`, `Pause receiving`, `Clear all data…`, `Start at login` with its switch on, `Settings… ⌘,` and `Quit loctel ⌘Q` |
+| `popover_paused_dark` | `settings_popover.rs` | paused, nothing flowing, no rules, the login item off | the amber `Paused` pill, the zeros, `Resume receiving`, the grey `No discard rules on`, the switch off |
+| `popover_port_problem_dark` | `settings_popover.rs` | `otlp-http` failed to bind, one rule on with a query that does not parse | the red `Port problem` pill, the HTTP row red with `127.0.0.1:4318 · failed`, and the red `1 discard rule on · 1 has an error` |
+| `popover_clear_asks_dark` | `settings_popover.rs` | the first popover, a click on `Clear all data…` | the row replaced by `Clear all traces and logs?` with the red `Clear` and the outlined `Cancel`, everything else and the height unchanged |
+| `popover_glass_dark`, `popover_glass_light` | `settings_popover.rs` | the first popover with a `RecordingBackdrop`, over a flat stand-in for the desktop | the glass look: no fill, the stand-in colour showing in the padding and outside the rounded corners, the hairline and highlight, translucent tiles and endpoint group. On a Mac the stand-in is Apple's glass |
 
-`shell_light`, `shell_glass_light`, `home_light`, `trace_light` and the `toolbar_*_light` ones are the same
+`shell_light`, `shell_glass_light`, `home_light`, `trace_light`, the `toolbar_*_light` ones, `logs_light`, `rules_light`, `settings_light`, `popover_light` and `popover_glass_light` are the same
 picture as their dark twins with the light `Theme`: the same data and the same
 layout, so a difference other than colour between a pair is a bug (the
 status view's pair differs on purpose, see above). A new screen needs a pair of
@@ -1185,7 +1965,12 @@ one.
 
 A screen is a `Screen` variant, a view in `src/views`, the model behind it in
 `src/model` (and, when it reads the store over time, an entity in `src/app`),
-and a pair of screenshots. In this order, which keeps the tests first:
+a sidebar entry with its shortcut when it is one of the main places, and a pair
+of screenshots. The repo skill `add-screen` (`.claude/skills/add-screen/SKILL.md`)
+is the step-by-step procedure, with what bites; this is the list it follows. `Logs`
+(reads the store over time) and `Rules` (edits, and takes a draft from another
+screen) are the two to copy from, `Trace` the one that is reached from another
+screen and is not a sidebar entry. In this order, which keeps the tests first:
 
 1. **The model, test first.** Put every rule that is not a pixel in
    `src/model/<name>.rs` (a plain function over the store's types: the strings,
@@ -1196,8 +1981,11 @@ and a pair of screenshots. In this order, which keeps the tests first:
    `HomeModel` or `TraceModel` (`src/app`): build it over `Rc<dyn UiBackend>`,
    read on `cx.background_executor()` and apply the result on the foreground,
    refresh on a timer that stops when the entity is dropped, notify only when
-   something changed. Test it in `tests/live.rs` with `testing::headless_app()`
-   and a store on a `ManualClock`, moving the clock to fire the timer.
+   something changed, and read **only while its screen shows** (`set_active`, which
+   `MainWindow::navigate` calls: `a_hidden_logs_screen_reads_nothing` is the test to
+   copy). Test it in `tests/live.rs` with `testing::headless_app()` (or, for an
+   entity that lives in the window, with `Driver` in the screen's own test file) and a
+   store on a `ManualClock`, moving the clock to fire the timer.
 3. **The view.** A GPUI view in `src/views/<name>.rs` that holds no rules: it
    reads the model, lays it out with GPUI Kit's components, and writes what the
    user does back into the model (or emits an event the shell turns into a
@@ -1207,16 +1995,23 @@ and a pair of screenshots. In this order, which keeps the tests first:
    of the existing views, so a test can click it without guessing pixels.
 4. **The shell.** Add the `Screen` variant (`app/shell.rs`), draw it in
    `MainWindow::render`, give it a `toolbar_title` (`app/toolbar.rs`), and, when
-   it is a sidebar entry, a `NavItem` (`app/nav.rs`: `ALL`, `label`, `screen`,
-   `is_active`). A screen reached from another one (as a trace is from the
+   it is a sidebar entry, a `NavItem` (`app/nav.rs`: `ALL`, `label`, `icon`,
+   `shortcut`, `screen`, `is_active`), with its action, its binding in
+   `nav::bind_keys` and its handler on the shell's root element; the icon comes
+   from Kit's Lucide catalog (`gpui_kit::assets::IconName`), and one that the
+   default bundle lacks goes into `src/assets.rs` too (the list and the funnel
+   did). A screen reached from another one (as a trace is from the
    table) is not an entry: it stays lit under its parent through `is_active`.
    Decide whether its views live for the window (like the home screen's) or are
    made on arrival and dropped on leaving (like the trace's), and say which in
    `ui.md`.
-5. **The screenshots, test first.** In `tests/screens.rs` (`interactions.rs`
-   when the state needs input, `live.rs` when time passes) render it with
-   `render_window_png` or `Driver` over a `FixedBackend`, in `Theme::dark()` and
-   `Theme::light()` at `WINDOW` (1440 by 900). Generate the references with
+5. **The screenshots, test first.** In a test file of the screen's own
+   (`tests/logs_screen.rs` and `rules_screen.rs` are the examples; `screens.rs` is
+   for the shell, `interactions.rs` for the home screen's input and `live.rs` for
+   time passing) render it with `render_window_png` or `Driver` over a
+   `FixedBackend`, in `Theme::dark()` and `Theme::light()` at `WINDOW` (1440 by 900),
+   and a dark one for each other state that matters (empty, an error, an open
+   editor). Generate the references with
    `cargo xtask screenshots --update` and **open every PNG** before committing
    it; the `update-screenshots` skill has the steps.
 6. **The docs, in the same change.** A section in this file (the view, its
@@ -1270,7 +2065,10 @@ wake-up bug of crates.io GPUI (§10.5); the script then nudges the window with
 `gpui-pre` the window was not black on its first try, so the nudge is a safety
 net. Open the PNG with the Read tool.
 
-The repo skill `run-and-screenshot` covers running with meshgen data.
+The repo skill `run-and-screenshot` covers running with meshgen data, and how to
+reach the other screens of the real window under Xvfb: `xdotool key super+2` is ⌘2
+(Logs) and `super+3` is ⌘3 (Discard rules), because GPUI's `cmd` is the Super key on
+Linux.
 
 ## Unverified
 
@@ -1315,6 +2113,20 @@ The repo skill `run-and-screenshot` covers running with meshgen data.
   parts in whatever face Kit's `mono_font_family` finds there (see "The font").
   Whether that looks right next to a Mac's own windows is for the M3 check to
   say.
+- The Settings window on a Mac (Milestone 4 Task 6): that the window opens at 520
+  by 360 and cannot be resized, that asking for it twice brings the open one to
+  the front, how Kit's inputs and switch look and behave in it, and that the
+  `Start loctel at login` switch (`SMAppService`) follows System Settings and
+  reports a refusal. The tests run Linux's headless platform with a fake login
+  item.
+- The popover on a Mac (Milestone 4 Task 8, the view; Task 9 hosts it): how the
+  panel looks with Apple's glass behind it (the translucent tiles over real
+  glass, the hairline and highlight, the clear window colour), that Esc, ⌘O, ⌘, and
+  ⌘Q reach the view when the popover is the key window of an app that has no
+  menu, and how Kit's switch and buttons look and behave in a panel that is not
+  a normal window. The tests run Linux's headless platform with a recording
+  `PopoverActions` and a flat stand-in for the glass; where the popover opens, how
+  it closes on a click away, and what its actions do on a Mac are `macos.md`'s.
 - Everything here was checked on Linux with software rendering. How the status
   view looks and behaves on macOS (fonts, scale, window chrome) is unverified
   until a milestone check on a real Mac.

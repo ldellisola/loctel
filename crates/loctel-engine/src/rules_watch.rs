@@ -11,6 +11,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use anyhow::bail;
@@ -57,6 +58,9 @@ pub(crate) struct Rules {
     /// `None`: the rules live in memory only (tests).
     path: Option<PathBuf>,
     file: Mutex<FileState>,
+    /// How many times the rules have been replaced since the engine started
+    /// (see [`Rules::generation`]).
+    generation: AtomicU64,
 }
 
 impl Rules {
@@ -92,6 +96,7 @@ impl Rules {
             set: Arc::new(RuleSet::new(specs, clock)),
             path,
             file: Mutex::new(file),
+            generation: AtomicU64::new(0),
         }
     }
 
@@ -102,6 +107,14 @@ impl Rules {
 
     pub(crate) fn path(&self) -> Option<PathBuf> {
         self.path.clone()
+    }
+
+    /// How many times the rules have been replaced: a reload of an edited file
+    /// and every save through the handle count, a file that could not be used
+    /// does not. It goes up after the new rules are in force, so whoever sees a
+    /// new number reads the new rules.
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
     }
 
     /// The error of the rules file, as of the last time it was read.
@@ -137,6 +150,7 @@ impl Rules {
         match RulesFile::load(path) {
             Ok(Some(specs)) => {
                 self.set.replace(specs);
+                self.generation.fetch_add(1, Ordering::Release);
                 file.error = None;
             }
             // Gone again since the stat: the next poll sees that.
@@ -188,6 +202,7 @@ impl Rules {
             file.error = None;
         }
         self.set.replace(specs);
+        self.generation.fetch_add(1, Ordering::Release);
         Ok(())
     }
 }

@@ -4456,6 +4456,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "dispatch2",
+ "gpui-kit",
  "gpui-pre",
  "gpui-tray",
  "image",
@@ -4575,6 +4576,7 @@ dependencies = [
  "loctel-meshgen",
  "loctel-model",
  "loctel-query",
+ "loctel-rules",
  "loctel-store",
  "loctel-ui",
  "serde_json",

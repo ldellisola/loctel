@@ -13,21 +13,39 @@
 //!   service keeps, the trace table's rows, the query bar's state, the
 //!   place of every node of the service map, the rows of a trace's waterfall,
 //!   the text of the span inspector and of the trace header, the find count
-//!   and a span's logs. No GPUI in them, so plain tests pin every string and
-//!   every place.
+//!   and a span's logs; and (Milestone 4) the Logs screen's rows, histogram and
+//!   LogQL bar, the Discard rules screen's cards and draft, the Settings form
+//!   and the menu bar popover's content. No GPUI in them, so plain tests pin
+//!   every string and every place.
 //! - [`app`] is the main window's shell (Milestone 3): the floating sidebar, the
 //!   toolbar and the content area, the [`UiBackend`](app::UiBackend) that gives
 //!   views the store and the engine's status, the bridge from [`Theme`] to GPUI
 //!   Kit's theme, [`open_main_window`](app::open_main_window), and
 //!   [`HomeModel`](app::HomeModel), the home screen's live data (the map and
 //!   the table's rows, read every 500 ms behind a time range, two toggles and
-//!   the query bar), and [`TraceModel`](app::TraceModel), an open trace's (read
-//!   every 500 ms while it arrives, then every 2 s).
+//!   the query bar), [`TraceModel`](app::TraceModel), an open trace's (read
+//!   every 500 ms while it arrives, then every 2 s), and
+//!   [`LogsModel`](app::LogsModel), the Logs screen's (the rows of the list in
+//!   pages, kept fresh by the live tail, and the histogram), and
+//!   [`RulesModel`](app::RulesModel), the Discard rules screen's (the rules read
+//!   every second, and the editor session with its preview), and
+//!   [`open_settings_window`](app::open_settings_window), the Settings window
+//!   (Milestone 4): 520 by 360, not resizable, one at a time.
 //! - [`views`] holds the views of the main window's screens: the live
 //!   [`MapView`](views::MapView) and the [`TraceTableView`](views::TraceTableView)
 //!   (the TraceQL bar, the two toggles and the table) of the home screen, and
 //!   the [`TraceView`](views::TraceView) (the waterfall, the inspector and the
-//!   selected span's logs).
+//!   selected span's logs), and (Milestone 4) the Logs screen's
+//!   [`LogsView`](views::LogsView) (the LogQL bar, the level toggles, the
+//!   histogram and the list of lines) and the Discard rules screen's
+//!   [`RulesView`](views::RulesView) (the cards of the rules, and beside them the
+//!   [`RuleEditorView`](views::RuleEditorView) with its preview), and the
+//!   Settings window's [`SettingsView`](views::SettingsView) (the three ports
+//!   with the state of their endpoints, the login switch, `Apply` and `Close`)
+//!   and the menu bar popover's [`PopoverView`](views::PopoverView) (the status
+//!   pill, four stats, the endpoints, the rules line and the actions, all of which
+//!   it asks of a [`PopoverActions`](views::PopoverActions); glass through an
+//!   optional [`Backdrop`](app::Backdrop)).
 //! - [`menu_text`] holds the exact strings for the status line, the discard
 //!   rules line and the rates, so the macOS menu and the view cannot drift apart.
 //! - [`Theme`] holds the colours; [`register_fonts`] the bundled typeface.
@@ -37,6 +55,7 @@
 //! See `docs/areas/ui.md` for the theme tokens and the screenshot workflow.
 
 pub mod app;
+mod assets;
 pub mod menu_text;
 pub mod model;
 mod status_view;
@@ -46,9 +65,6 @@ pub mod views;
 #[cfg(feature = "screenshot")]
 pub mod testing;
 
-/// The icons GPUI Kit's components draw (chevrons, a clear button, sort
-/// arrows). An app registers them with `Application::with_assets`, or its
-/// components draw no icons; the screenshot harness does.
-pub use gpui_kit::assets::Assets as KitAssets;
+pub use assets::KitAssets;
 pub use status_view::{ListenerLine, StatusModel, StatusView, open_status_window};
 pub use theme::{FONT_FAMILY, Theme, register_fonts};

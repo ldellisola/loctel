@@ -11,7 +11,10 @@ use std::time::Duration;
 
 use flate2::Compression;
 use flate2::write::GzEncoder;
-use loctel_ingest::{IngestConfig, IngestServers, ListenerState, Sink, start};
+use loctel_ingest::{
+    DEFAULT_MAX_MESSAGE_BYTES, IngestConfig, IngestServers, ListenerState, Sink, start, start_grpc,
+    start_http,
+};
 use loctel_model::{AttrValue, LogRecord, Severity, Span, StatusCode, TraceId, attr};
 use opentelemetry_proto::tonic::collector::logs::v1::logs_service_client::LogsServiceClient;
 use opentelemetry_proto::tonic::collector::logs::v1::{
@@ -1062,4 +1065,82 @@ async fn shutdown_closes_idle_keep_alive_connections() {
         .await
         .expect("the idle connection was not closed");
     assert!(matches!(closed, Ok(0) | Err(_)), "{closed:?}");
+}
+
+// --- one receiver at a time ---------------------------------------------------
+
+/// Waits (up to 5 s) for `addr` to stop accepting connections.
+async fn wait_until_closed(addr: SocketAddr) {
+    for _ in 0..100 {
+        if TcpStream::connect(addr).await.is_err() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("{addr} still accepts connections");
+}
+
+#[tokio::test]
+async fn one_receiver_stops_while_the_other_keeps_serving() {
+    let sink = Arc::new(RecordingSink::default());
+    let (grpc, grpc_stop) = start_grpc(loopback(0), sink.clone(), DEFAULT_MAX_MESSAGE_BYTES).await;
+    let (http, http_stop) = start_http(loopback(0), sink.clone(), DEFAULT_MAX_MESSAGE_BYTES).await;
+    assert_eq!((grpc.name, http.name), ("otlp-grpc", "otlp-http"));
+    let (ListenerState::Listening(grpc), ListenerState::Listening(http)) = (grpc.state, http.state)
+    else {
+        panic!("both receivers should be listening");
+    };
+
+    // Each serves OTLP on its own.
+    let mut traces = TraceServiceClient::connect(grpc_url(grpc)).await.unwrap();
+    traces.export(one_span_request()).await.unwrap();
+    let reply = post(
+        http,
+        "/v1/traces",
+        &[("Content-Type", PROTOBUF)],
+        &one_span_request().encode_to_vec(),
+    )
+    .await;
+    assert_eq!(reply.status, 200);
+    assert_eq!(sink.spans().len(), 2);
+
+    // Stopping the gRPC receiver leaves HTTP up.
+    grpc_stop.shutdown();
+    wait_until_closed(grpc).await;
+    let reply = post(
+        http,
+        "/v1/traces",
+        &[("Content-Type", PROTOBUF)],
+        &one_span_request().encode_to_vec(),
+    )
+    .await;
+    assert_eq!(reply.status, 200);
+    assert_eq!(sink.spans().len(), 3);
+
+    // Dropping the handle stops a receiver too.
+    drop(http_stop);
+    wait_until_closed(http).await;
+}
+
+#[tokio::test]
+async fn a_receiver_on_a_busy_port_reports_failed() {
+    let blocker = std::net::TcpListener::bind(loopback(0)).unwrap();
+    let taken = blocker.local_addr().unwrap();
+    let sink = Arc::new(RecordingSink::default());
+
+    let (grpc, grpc_stop) = start_grpc(taken, sink.clone(), DEFAULT_MAX_MESSAGE_BYTES).await;
+    let (http, http_stop) = start_http(taken, sink, DEFAULT_MAX_MESSAGE_BYTES).await;
+
+    for (status, name) in [(grpc, "otlp-grpc"), (http, "otlp-http")] {
+        assert_eq!(status.name, name);
+        assert_eq!(status.requested, taken);
+        assert!(
+            matches!(&status.state, ListenerState::Failed(why) if !why.is_empty()),
+            "{status:?}"
+        );
+    }
+    // The handles are inert: stopping them is harmless.
+    grpc_stop.shutdown();
+    http_stop.shutdown();
+    drop(blocker);
 }

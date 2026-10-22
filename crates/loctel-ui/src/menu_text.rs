@@ -79,7 +79,11 @@ fn percent(fraction: f64) -> u32 {
     }
 }
 
-fn reason(error: Option<&str>) -> String {
+/// Why a listener failed, in a few words: `address in use` when the operating
+/// system's error says "in use", the raw error cut to 40 characters otherwise,
+/// `unknown error` when there is none. The status line and the Settings
+/// window's endpoint lines share it.
+pub(crate) fn reason(error: Option<&str>) -> String {
     match error {
         None => "unknown error".to_owned(),
         Some(error) if error.to_lowercase().contains("in use") => "address in use".to_owned(),

@@ -1,13 +1,16 @@
 Each section below is one milestone whose Mac side nobody has confirmed yet;
 a section leaves this list once you have. Do Milestone 1 first: Milestones 2
-and 3 build on a loctel that is installed (Milestone 1, item 1), and Milestone 2
+to 4 build on a loctel that is installed (Milestone 1, item 1), and Milestone 2
 on one that Claude Code is connected to (Milestone 1, items 1 and 5). This
-release is Milestone 3's, so its menu has more rows than Milestone 1, item 2 and
-Milestone 2, item 1 list: besides the rules row and **Edit discard rules…** it
-has **Open loctel** (Milestone 3, item 1 gives the current order), and loctel
-shows in the Dock and in ⌘-Tab for as long as its window is open (with no window
-open it still has no Dock icon, as Milestone 1, item 1 says). Those are not
-differences to report.
+release is Milestone 4's, so **the menu of Milestones 1 to 3 is gone**: a click
+on the menu bar icon opens the popover (Milestone 4, items 1 and 2), and the
+items of the earlier sections that say "the menu" mean its rows (the note at the
+start of Milestone 1 maps them). There is no `Edit discard rules…` any more
+(Milestone 2's text that mentions it: open `rules.toml` in an editor yourself, or
+use the Discard rules screen, Milestone 4, item 4). Loctel shows in the Dock and
+in ⌘-Tab for as long as its main window or its Settings window is open (with
+neither open it still has no Dock icon, as Milestone 1, item 1 says). Those are
+not differences to report.
 
 ### Milestone 1
 
@@ -17,6 +20,27 @@ look. Try each item on a real Mac (macOS 26, Apple Silicon), compare with what
 "right" says, and report the results in a new chat, the items that pass too.
 That session records the findings in `docs/decisions/` (or as GitHub issues)
 and fixes what is wrong. Small oddities are worth reporting.
+
+**A note for v0.1.3 and later:** since Milestone 4 the menu that this section
+describes is the **popover** (Milestone 4, item 1 says what it looks like). A
+tester on v0.1.3 or later uses the popover for every item below that says "the
+menu":
+
+- the first row, `Receiving · 12 spans/s · 3 logs/s`, is the pill (`Receiving`,
+  `Paused` or `Port problem`) next to the title, and the rates are the first two
+  of the four tiles (`spans per second` and `log lines per second`), which
+  refresh every second while the popover is open;
+- `Copy MCP address` is the `Copy` button at the end of the MCP row, and it still
+  puts `http://127.0.0.1:4319/mcp` on the clipboard;
+- `Pause receiving` / `Resume receiving` and `Quit loctel` keep their names, and
+  `Start at login` is a switch (on means the checkmark);
+- ⌘Q now quits from the popover (item 2 says the menu had none; that no longer
+  holds);
+- the popover closes when you click anywhere else, so item 3's "keep the menu open
+  for ten seconds" is "keep the popover open", and its "does not close by itself"
+  still stands;
+- the rows are not in the order the items list: Milestone 4, item 1 gives the
+  popover's order, which is the one to compare with.
 
 1. **Install and first launch.** Download the `.dmg` of this release and open
    it. Drag `loctel` onto the `Applications` shortcut, then open `loctel` from
@@ -147,11 +171,11 @@ This is Milestone 3: the main window. The window, its screens and its colours
 are tested on Linux with software rendering; what nobody has seen is any of it
 on a Mac: the window opening from the menu bar, loctel in the Dock while it is
 open, Apple's Liquid Glass behind the sidebar and the toolbar, and the trackpad
-and the fast scrolling. Some things are not in this release, so do not report
-their absence: the sidebar has the one entry `Map & traces` (Logs and Discard
-rules come later), the span logs under the waterfall have no `Open in Logs`
-button yet (it comes with the Logs screen), and the text is the bundled Inter font, not San Francisco
-(say if it looks out of place). Items 4 to 8 need data: from a
+and the fast scrolling. Some things were not in Milestone 3's own release and are
+in this one (Milestone 4): the sidebar has `Logs` and `Discard rules` besides
+`Map & traces`, and the span logs under the waterfall have an `Open in Logs`
+button; those are Milestone 4's items. The text is the bundled Inter font, not
+San Francisco (say if it looks out of place). Items 4 to 8 need data: from a
 checkout of this repository, the commands in Milestone 1, item 3 send it, and
 each item says which scenario to use. Report what you see, and say which item
 it is.
@@ -252,3 +276,111 @@ it is.
    once (there is no confirmation), and new traces show up again within a
    second. Report whether the buttons look right on the glass (they are solid,
    not glass) and whether every click lands where you aimed it.
+
+### Milestone 4
+
+This is Milestone 4: the Logs screen, the Discard rules screen, the menu bar
+popover (which replaces the menu of Milestones 1 to 3) and the Settings window.
+All of it is tested on Linux with software rendering, with screenshots of every
+screen in both themes; what nobody has seen is any of it on a Mac: where the
+popover opens and how it closes, Apple's glass behind it, the keys in a window of
+a menu bar app that has no menu, and the Settings window and the login switch.
+The text is the bundled Inter font, not San Francisco, as in Milestone 3. There
+is no `Edit discard rules…` row any more: the rules are edited in the Discard rules
+screen (item 4), or by hand in `~/Library/Application Support/loctel/rules.toml`.
+The disk cap is not in Settings yet (Milestone 5). Items 3 to 5 need data: from a
+checkout of this repository, the commands in Milestone 1, item 3 send it, and each
+item says which scenario to use. Report what you see, and say which item it is.
+
+1. **The popover.** Click the menu bar icon.
+   *Right:* a glass panel, 336 points wide with rounded corners, opens just under
+   the icon (a few points below the menu bar), centred on where you clicked, and
+   kept inside the screen if the icon is near its edge. Top to bottom it has: the
+   title `loctel` with a pill (`Receiving`, green); four tiles (`spans per second`,
+   `log lines per second`, `traces held`, `log lines held`); the three endpoints
+   (OTLP gRPC `127.0.0.1:4317`, OTLP HTTP `127.0.0.1:4318`, MCP `127.0.0.1:4319/mcp`
+   with a `Copy` button) with green dots; the rules line (`No discard rules on`);
+   a line; `Open loctel` ⌘O, `Pause receiving`, `Clear all data…`, `Start at login`
+   with a switch; `Settings…` ⌘,; a line; `Quit loctel` ⌘Q. Clicking anywhere else
+   (the desktop, another app, another menu bar item) closes it. Esc closes it. Click
+   the icon again while it is open: it closes and does not open again. Open it and
+   press ⌘Q: loctel quits (the icon goes and `pgrep -x loctel` prints nothing).
+   Say whether the glass looks like Liquid Glass or like plain blur, whether there
+   is a square corner or a shadow behind the round panel, and, with a second
+   display or the Dock at a side or an icon near the right edge, whether it still
+   opens under the icon.
+2. **The popover actions.** Open the popover again and try each action. `Pause
+   receiving` becomes `Resume receiving` and the pill `Paused` at once (the
+   panel stays open); send some traffic (Milestone 1, item 3) and see that nothing
+   arrives, then `Resume receiving`. `Copy` beside MCP puts
+   `http://127.0.0.1:4319/mcp` on the clipboard (paste it). `Clear all data…` asks
+   `Clear all traces and logs?` first: `Cancel` puts the row back, and `Clear` empties
+   the data (the `traces held` and `log lines held` tiles go to 0). The rules line
+   opens the main window on Discard rules. `Open loctel` opens the window on
+   Map & traces, and the popover closes. `Settings…` opens the Settings window.
+   *Right* for the last three: the panel closes, and loctel is in the Dock and ⌘-Tab
+   while a window is open.
+3. **Logs.** With the failing checkout once and then a log flood on repeat (`cargo
+   run -p loctel-meshgen -- --scenario checkout-failure --transport http-json
+   --endpoint http://127.0.0.1:4318`, then `cargo run -p loctel-meshgen --
+   --scenario log-flood --size 500 --transport http-json --endpoint
+   http://127.0.0.1:4318 --repeat 120 --interval-ms 500`), open Logs: ⌘2 or the
+   sidebar. *Right:* new lines appear at the top of the list about twice a second
+   and the list does not jump; the histogram above it grows its last bars; the
+   `Live tail` pill in the toolbar is green. Scroll down the list a little: the tail
+   stops (the pill goes amber) and a `New lines · Jump to newest` pill appears over
+   the list, and the lines you are looking at stay put while more arrive. Click the
+   pill (or scroll back to the top): the tail resumes. Type
+   `{service_name="payments-api"} | level = "error"` in the search bar: the list
+   shows the checkout's two errors from `payments-api` and nothing else, and the
+   counts and the histogram follow. Type something broken (`{service_name=`): a red
+   line says where, and the list keeps its rows. Click `ERR`, `WRN`, `INF` and `DBG`
+   to turn levels off and on. Click the error line to expand it: the whole body (the
+   stack trace on several lines), the labels and three buttons; `Open trace` opens
+   the trace view with that log's span selected, and Esc comes back to Logs with the
+   query and the open line as you left them. `Show lines around this one` shows the
+   neighbouring lines with `Back to search`. Try ⌘1, ⌘2 and ⌘3 from the trace view
+   and from an input.
+4. **Discard rules** (⌘3). Send health checks (`--scenario health-checks`, from
+   Milestone 2, item 2) a few times, then press `New rule`. Name it, choose
+   `Traces (TraceQL)`, type the query `{ span.url.path = "/health" }` (adjust to your
+   data) and watch the box under it: `Tried on the last 5 minutes` and what the rule
+   would have dropped, which follows your typing about a third of a second after you
+   stop. Break the query: a red `at column N: ...` line appears and the preview asks
+   you to fix it. Fix it and `Save`: a card appears with a switch, the name, a
+   `TRACEQL` chip and the query. Send health checks again: the card's count (`N
+   spans dropped in M traces`) grows and the header says how much of the incoming
+   data is dropped. Toggle the switch off (`Off`, and the checks arrive again) and on
+   again. Click the card to open it in the editor and type something into its name; with
+   it open, edit `rules.toml` in a text editor (change the name of a rule there)
+   and save the file: within a few seconds the amber banner `The rules file changed
+   while you were editing.` appears with `Keep my draft` and `Discard my draft`, your
+   typing stays, and `Save` waits for your choice. Try
+   `Delete` (it asks first) and `Cancel`. Check that the popover's rules line agrees
+   with the screen.
+5. **"Discard lines like this…"** From Logs, expand any line (a flood line will
+   do) and click `Discard lines like this…`. *Right:* the Discard rules screen
+   opens with the editor on a new, unsaved rule: the name `Lines like "<the start
+   of the message>…"`, `Logs (LogQL)` chosen, and the query `{service_name="..."} |=
+   "<the message>"`, and the preview shows how many of the last five minutes' lines
+   it would have dropped. `Cancel` leaves nothing behind (check `rules.toml`).
+6. **Settings.** Choose `Settings…` in the popover (or ⌘, in the main window). *Right:*
+   a window 520 by 360 points that cannot be resized, with the three ports (4317,
+   4318, 4319) each with a green dot and `listening`, a `Start loctel at login`
+   switch and `Apply` and `Close`; choosing `Settings…` again brings the same window
+   forward. Change the OTLP HTTP port to a free one (such as 4400) and `Apply`: the
+   row stays `listening` and a service pointed at the new port arrives (send meshgen
+   to `http://127.0.0.1:4400`; the old port 4318 is free again). Change it to a port
+   that is in use (start `python3 -m http.server 4500 --bind 127.0.0.1` first): the
+   row turns red and says `failed: address in use`, `otlp-http: address in use`
+   appears by the buttons, the popover shows `Port problem`, the other two
+   endpoints keep working, and the setting is kept. Give two endpoints the same
+   port, or a port such as 70000: the window refuses before applying, in words under
+   the field. Change the port back. Quit and start loctel: the ports are the ones you
+   left.
+7. **Start at login** from the popover and from Settings agree. Switch it off in
+   the popover: Settings shows it off (close and open it again if it is open) and
+   System Settings, General, Login Items & Extensions shows loctel off. Switch it on
+   in Settings: the popover shows it on. Switch it off in System Settings: the next
+   time the popover or Settings opens it shows off. (Milestone 1, item 7 has the
+   rest: that it is on after the first launch, and that a login starts loctel.)

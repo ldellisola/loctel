@@ -69,6 +69,25 @@ impl IngestServers {
     }
 }
 
+/// One running receiver, from [`start_grpc`] or [`start_http`]. Dropping this
+/// stops it, as does [`ReceiverShutdown::shutdown`]; the other receiver is
+/// not affected. That is what lets the engine move one port while the other
+/// keeps serving.
+#[derive(Debug)]
+pub struct ReceiverShutdown {
+    // Dropping the sender, or sending `true`, stops the server.
+    stop: watch::Sender<bool>,
+}
+
+impl ReceiverShutdown {
+    /// Stops accepting and lets requests already in flight finish. The server
+    /// winds down in the background; this does not wait for it, so the port may
+    /// be taken for a moment longer.
+    pub fn shutdown(self) {
+        let _ = self.stop.send(true);
+    }
+}
+
 /// Binds both listeners and serves OTLP on them until the returned
 /// [`IngestServers`] is shut down or dropped.
 ///
@@ -78,33 +97,79 @@ impl IngestServers {
 pub async fn start(config: IngestConfig, sink: Arc<dyn Sink>) -> IngestServers {
     let (stop, stopped) = watch::channel(false);
     let max = config.max_message_bytes;
+    let grpc = bind_grpc(config.grpc_addr, Arc::clone(&sink), max, stopped.clone()).await;
+    let http = bind_http(config.http_addr, sink, max, stopped).await;
+    IngestServers { grpc, http, stop }
+}
 
-    let grpc = match listener::bind("otlp-grpc", config.grpc_addr).await {
+/// Binds the gRPC receiver alone and serves it until the returned
+/// [`ReceiverShutdown`] is shut down or dropped. Like [`start`] for one
+/// listener: a port that cannot be bound is reported as
+/// [`ListenerState::Failed`] (and the handle is inert). Must be called inside
+/// a tokio runtime.
+pub async fn start_grpc(
+    addr: SocketAddr,
+    sink: Arc<dyn Sink>,
+    max_message_bytes: usize,
+) -> (ListenerStatus, ReceiverShutdown) {
+    let (stop, stopped) = watch::channel(false);
+    let status = bind_grpc(addr, sink, max_message_bytes, stopped).await;
+    (status, ReceiverShutdown { stop })
+}
+
+/// Binds the HTTP receiver alone: [`start_grpc`] for `otlp-http`.
+pub async fn start_http(
+    addr: SocketAddr,
+    sink: Arc<dyn Sink>,
+    max_message_bytes: usize,
+) -> (ListenerStatus, ReceiverShutdown) {
+    let (stop, stopped) = watch::channel(false);
+    let status = bind_http(addr, sink, max_message_bytes, stopped).await;
+    (status, ReceiverShutdown { stop })
+}
+
+async fn bind_grpc(
+    addr: SocketAddr,
+    sink: Arc<dyn Sink>,
+    max_message_bytes: usize,
+    stopped: watch::Receiver<bool>,
+) -> ListenerStatus {
+    match listener::bind("otlp-grpc", addr).await {
         Ok((listener, status)) => {
             tokio::spawn(grpc::serve(
                 listener,
-                Arc::clone(&sink),
-                max,
-                wait_for_stop(stopped.clone()),
+                sink,
+                max_message_bytes,
+                wait_for_stop(stopped),
             ));
             status
         }
         Err(status) => status,
-    };
+    }
+}
 
-    let http = match listener::bind("otlp-http", config.http_addr).await {
+async fn bind_http(
+    addr: SocketAddr,
+    sink: Arc<dyn Sink>,
+    max_message_bytes: usize,
+    stopped: watch::Receiver<bool>,
+) -> ListenerStatus {
+    match listener::bind("otlp-http", addr).await {
         Ok((listener, status)) => {
-            tokio::spawn(http::serve(listener, sink, max, wait_for_stop(stopped)));
+            tokio::spawn(http::serve(
+                listener,
+                sink,
+                max_message_bytes,
+                wait_for_stop(stopped),
+            ));
             status
         }
         Err(status) => status,
-    };
-
-    IngestServers { grpc, http, stop }
+    }
 }
 
-/// Completes when shutdown is requested, or when the [`IngestServers`] that
-/// owns the sender is dropped.
+/// Completes when shutdown is requested, or when the sender that owns the
+/// signal is dropped.
 async fn wait_for_stop(mut stopped: watch::Receiver<bool>) {
     let _ = stopped.wait_for(|stop| *stop).await;
 }

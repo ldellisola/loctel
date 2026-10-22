@@ -127,10 +127,12 @@ command in the table. It prints the listener lines like headless mode, so the
 ports are in them, and it runs until SIGTERM (or until the window closes). Send
 meshgen to the OTLP HTTP address, wait about 2 seconds (the window reads the
 store every 500 ms) and capture the screen with `import -window root out.png`;
-the `run-and-screenshot` skill has the whole script. The main window has two
-screens: the home screen (the service map over the trace table) and the trace
-view, which a click on a table row opens. [`docs/areas/ui.md`](docs/areas/ui.md)
-has the map of them, and how to add a screen.
+the `run-and-screenshot` skill has the whole script. The main window has four
+screens, three of them in the sidebar: the home screen (the service map over the
+trace table, ⌘1), Logs (⌘2), Discard rules (⌘3) and the trace view, which a
+click on a table row opens. Settings is a window of its own (⌘,), and on a Mac
+the menu bar icon opens a popover. [`docs/areas/ui.md`](docs/areas/ui.md) has
+the map of them, and the `add-screen` skill the steps to add one.
 
 The macOS code (`crates/loctel-macos`, and the macOS half of `crates/loctel-app`)
 is compiled out of the Linux build, so the gate never sees it. Type-check and
@@ -165,6 +167,7 @@ that matches before you start:
 |---|---|
 | `run-and-screenshot` | you need to see loctel run: headless with meshgen data, or the real window under Xvfb with a PNG |
 | `update-screenshots` | a view's pixels change on purpose, you add a screenshot test, or one fails locally or in CI |
+| `add-screen` | the main window gains a screen: the `Screen` variant, sidebar item and shortcut, model, data entity, view, screenshots and docs |
 | `add-mcp-tool` | an agent-facing capability changes: a new tool, argument or result field |
 | `add-query-feature` | TraceQL or LogQL gains syntax or semantics, a feature leaves the "not supported yet" list, or a query pasted from Grafana behaves differently from Grafana |
 | `upgrade-gpui` | the pinned GPUI snapshot (`gpui-pre`) or GPUI Kit has to move: one upgrade per pull request, with the screenshots as the guide |

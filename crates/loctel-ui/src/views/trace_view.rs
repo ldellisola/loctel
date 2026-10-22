@@ -4,8 +4,8 @@
 //!
 //! [`TraceView`] puts the screen together and holds none of its data:
 //!
-//! - a **header** in two lines. First the `Traces` back button (Esc does the
-//!   same), the root span's name, the red `Failed in …` badge (or the amber
+//! - a **header** in two lines. First the `Back` button (Esc does the same; it
+//!   returns to the screen the trace was opened from), the root span's name, the red `Failed in …` badge (or the amber
 //!   `Errors inside`) and, on the right, the completeness indicator
 //!   (`Receiving spans…` in the accent colour, `Complete` in green). Then the
 //!   line `1.84 s · 15 spans · 5 services · 14:32:07.412`, the trace ID in the
@@ -42,7 +42,7 @@ use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _};
 use loctel_model::TraceId;
 
 use super::inspector_view::{InspectorEvent, InspectorView};
-use super::span_logs_view::{PANEL_HEIGHT as LOGS_HEIGHT, SpanLogsView};
+use super::span_logs_view::{PANEL_HEIGHT as LOGS_HEIGHT, SpanLogsEvent, SpanLogsView};
 use super::waterfall_view::WaterfallView;
 use crate::Theme;
 use crate::app::{LoadState, TraceModel, UiBackend};
@@ -63,6 +63,10 @@ const TRACE_ID_CHARS: usize = 17;
 /// The padding of the header's sides.
 const PAD_X: f32 = 16.0;
 
+/// The label of the header's back button. It returns to the screen the trace was
+/// opened from (the home screen or the Logs screen), so it does not name one.
+pub const BACK_LABEL: &str = "Back";
+
 /// What the screen says while the first read is out.
 pub const LOADING: &str = "Loading trace\u{2026}";
 /// What it says when the store has no such trace.
@@ -77,7 +81,7 @@ fn rgba(color: Rgba, alpha: f32) -> Rgba {
 /// The parts of the trace screen a test can ask the place of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TracePart {
-    /// The `Traces` back button.
+    /// The `Back` button.
     Back,
     /// The `Copy ID` button.
     CopyId,
@@ -101,6 +105,9 @@ pub enum TracePart {
     /// The `… (show all)` (or `(show less)`) link of the last long value of the
     /// inspector; present only when there is one.
     ShowAll,
+    /// The span-logs header's `Open in Logs` button; present only with a span
+    /// selected.
+    OpenInLogs,
 }
 
 /// Where the parts of the latest frame are, in window coordinates.
@@ -126,11 +133,15 @@ pub(super) fn measure(frame: &Rc<Frame>, part: TracePart) -> impl IntoElement {
 /// What the trace screen asks of the window.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TraceViewEvent {
-    /// Leave the trace: show the home screen as it was.
+    /// Leave the trace: show the screen it was opened from (the home screen, or
+    /// the Logs screen) as it was.
     Back,
     /// Show the home screen with this TraceQL query in the bar (the query of
     /// `Traces through this span name`).
     Query(String),
+    /// Show the Logs screen with this LogQL query in the bar (the query of
+    /// `Open in Logs`: the selected span's logs).
+    OpenLogs(String),
 }
 
 /// The trace screen. Make it with
@@ -143,8 +154,9 @@ pub struct TraceView {
     split: Entity<ResizableState>,
     focus: FocusHandle,
     frame: Rc<Frame>,
-    /// Keeps the observation of the model and of the inspector alive.
-    _subscriptions: [Subscription; 2],
+    /// Keeps the observation of the model, of the inspector and of the span
+    /// logs alive.
+    _subscriptions: [Subscription; 3],
 }
 
 impl EventEmitter<TraceViewEvent> for TraceView {}
@@ -192,6 +204,10 @@ impl TraceView {
                 let InspectorEvent::TracesThrough(name) = event;
                 cx.emit(TraceViewEvent::Query(span_name_filter(name)));
             }),
+            cx.subscribe(&logs, |_, _, event: &SpanLogsEvent, cx| {
+                let SpanLogsEvent::OpenInLogs(query) = event;
+                cx.emit(TraceViewEvent::OpenLogs(query.clone()));
+            }),
         ];
         TraceView {
             model,
@@ -238,6 +254,7 @@ impl TraceView {
             TracePart::Find | TracePart::ErrorsPath | TracePart::ToggleAll | TracePart::List => {
                 self.waterfall.read(cx).bounds_of(part)
             }
+            TracePart::OpenInLogs => self.logs.read(cx).bounds_of(part),
             TracePart::Inspector
             | TracePart::TracesThrough
             | TracePart::CopyJson
@@ -337,7 +354,7 @@ impl TraceView {
             .flex_none()
             .child(
                 Button::new("trace-back")
-                    .label("Traces")
+                    .label(BACK_LABEL)
                     .icon(IconName::ArrowLeft)
                     .small()
                     .ghost()

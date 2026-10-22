@@ -20,6 +20,7 @@ pub const SECOND: u64 = 1_000_000_000;
 pub const SEED: u64 = 7;
 
 /// The size the plan fixes for the window, in logical pixels.
+#[allow(dead_code)] // the Settings window has a size of its own
 pub const WINDOW: (u32, u32) = (1440, 900);
 
 /// Puts a generated scenario into `store`, whole.
@@ -44,6 +45,7 @@ pub fn feed(store: &Store, generated: &Generated) {
 /// minute and ten seconds later when this returns, so every trace is complete
 /// (the quiet period is 10 s: until then a trace's `card-gateway` is not a node
 /// of the map) and inside the default range of 15 minutes.
+#[allow(dead_code)] // not every test file shows the home screen
 pub fn home_store() -> Store {
     let clock = Arc::new(ManualClock::new(BASE));
     let store = Store::new(StoreConfig::default(), clock.clone());

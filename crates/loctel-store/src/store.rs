@@ -10,7 +10,7 @@ use parking_lot::RwLock;
 use crate::clock::{Clock, saturating_nanos};
 use crate::config::StoreConfig;
 use crate::failure::{TraceStatus, classify};
-use crate::logs::{LogFilter, LogStore};
+use crate::logs::{Around, HistogramBucket, LogFilter, LogId, LogStore};
 use crate::page::{Page, PageRequest};
 use crate::service_map::{Aggregate, ServiceMap, ServiceStats, TimeWindow};
 use crate::summary::{TraceFilter, TraceSummary, decode_cursor, encode_cursor};
@@ -123,7 +123,73 @@ impl Store {
     /// ones are evicted meanwhile. `next_cursor` is `None` on the last page.
     /// A cursor that this method did not produce gives an empty page.
     pub fn search_logs(&self, filter: &LogFilter, page: &PageRequest) -> Page<LogRecord> {
+        let Page { items, next_cursor } = self.search_logs_keyed(filter, page);
+        Page {
+            items: items.into_iter().map(|(_, record)| record).collect(),
+            next_cursor,
+        }
+    }
+
+    /// [`search_logs`](Self::search_logs) with each log's [`LogId`]: the same
+    /// logs in the same order, and the same cursor. The ID names the log for
+    /// [`log`](Self::log) and [`logs_around`](Self::logs_around) for as long
+    /// as the log is held.
+    pub fn search_logs_keyed(
+        &self,
+        filter: &LogFilter,
+        page: &PageRequest,
+    ) -> Page<(LogId, LogRecord)> {
         self.shared.inner.read().logs.search(filter, page)
+    }
+
+    /// The log held under `id`, or `None` if it was evicted, removed or
+    /// cleared (or never existed). An ID is never given to a second log.
+    pub fn log(&self, id: LogId) -> Option<LogRecord> {
+        self.shared.inner.read().logs.get(id)
+    }
+
+    /// The time of the oldest log held (its own timestamp, or its observed time
+    /// when it has none), in nanoseconds since the Unix epoch, or `None` when
+    /// the store holds no log. The Logs screen's histogram starts here when it
+    /// shows everything stored. A lookup, not a pass over the logs.
+    pub fn oldest_log_unix_nano(&self) -> Option<u64> {
+        self.shared.inner.read().logs.oldest_time()
+    }
+
+    /// A histogram of the logs in `[since, until)` (nanoseconds since the
+    /// Unix epoch, by the log's time as for `since_unix_nano` of
+    /// [`LogFilter`]) that match `f`: `buckets` buckets of equal width,
+    /// oldest first, each with the number of logs and how many of them are
+    /// errors (error or fatal). The result is always `buckets` long. `f`'s
+    /// own `since_unix_nano` and `until_unix_nano` are ignored; the window is
+    /// the arguments. An empty or backwards window, or no buckets, counts
+    /// nothing.
+    ///
+    /// It is a pass over the logs inside the window, which the Logs screen
+    /// asks for every 2 s: see `docs/areas/store.md` for the cost.
+    pub fn log_histogram(
+        &self,
+        f: &LogFilter,
+        since: u64,
+        until: u64,
+        buckets: usize,
+    ) -> Vec<HistogramBucket> {
+        self.shared
+            .inner
+            .read()
+            .logs
+            .histogram(f, since, until, buckets)
+    }
+
+    /// Up to `before` of the logs held just before `id`, the log itself, and
+    /// up to `after` of the logs just after it, oldest first, with every log
+    /// counted whatever its service or level (no filter). `target` is the
+    /// index of `id` in the result when the log is still held. When it is
+    /// not (evicted, removed or cleared), `target` is `None` and the lines
+    /// are the ones nearest to where it was: the `before` just older than its
+    /// time and the `after` just newer.
+    pub fn logs_around(&self, id: LogId, before: usize, after: usize) -> Around {
+        self.shared.inner.read().logs.around(id, before, after)
     }
 
     /// The logs emitted in span `span` of trace `trace`, oldest first. Logs

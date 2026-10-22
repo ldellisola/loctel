@@ -23,6 +23,11 @@ let servers = loctel_ingest::start(IngestConfig::default(), sink).await;
 servers.grpc;   // ListenerStatus, name "otlp-grpc"
 servers.http;   // ListenerStatus, name "otlp-http"
 servers.shutdown();
+
+// One receiver on its own (what the engine uses, so it can move one port
+// while the other keeps serving):
+let (status, stop) = loctel_ingest::start_http(addr, sink, DEFAULT_MAX_MESSAGE_BYTES).await;
+stop.shutdown();
 ```
 
 - `Sink` is `trait Sink: Send + Sync + 'static { fn spans(&self, Vec<Span>);
@@ -45,6 +50,13 @@ servers.shutdown();
   a runtime. Dropping the `IngestServers` stops the servers, as does
   `shutdown(self)`. Either stops accepting, lets requests in flight finish and
   returns without waiting for that.
+- `start_grpc(addr, sink, max_message_bytes)` and `start_http(..)` start **one**
+  receiver and return its `ListenerStatus` with a `ReceiverShutdown`. The handle
+  stops that receiver alone (dropping it does too, `shutdown(self)` is the same
+  without waiting), and a port that cannot be bound is a `Failed` status with an
+  inert handle, like `start`. `start` is these two over one shared stop signal.
+  The engine starts its receivers this way so that `EngineHandle::rebind` can move
+  the HTTP port without touching the gRPC one (decision 0035).
 - `ListenerStatus { name, requested, state }` with
   `ListenerState::{Listening(SocketAddr), Failed(String)}`. The same types are
   used by the MCP server and the engine, so the status box lists every

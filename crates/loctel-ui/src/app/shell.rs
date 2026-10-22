@@ -15,20 +15,30 @@ use std::time::Duration;
 
 use gpui::{
     AnyElement, App, AppContext as _, Bounds, Context, Div, Entity, FillOptions, FillRule,
-    InteractiveElement as _, IntoElement, ParentElement, PathBuilder, PathStyle, Pixels, Point,
-    Render, Rgba, Styled, Subscription, Window, WindowAppearance, canvas, div, point, px, relative,
-    transparent_black,
+    FocusHandle, InteractiveElement as _, IntoElement, ParentElement, PathBuilder, PathStyle,
+    Pixels, Point, Render, Rgba, Styled, Subscription, Window, WindowAppearance, canvas, div,
+    point, px, relative, transparent_black,
 };
 use gpui_kit::base::Root;
-use loctel_model::TraceId;
+use loctel_model::{SpanId, TraceId};
 
 use super::backend::UiBackend;
 use super::data::HomeModel;
 use super::kit_theme;
-use super::sidebar::sidebar_contents;
+use super::logs_data::LogsModel;
+use super::nav::{
+    CONTEXT as KEY_CONTEXT, NavItem, OpenSettings, ShowLogs, ShowMapAndTraces, ShowRules,
+};
+use super::rules_data::RulesModel;
+use super::settings_window::open_settings_window;
+use super::sidebar::{NavFrame, sidebar_contents};
 use super::toolbar::{HomeControls, toolbar_contents};
+use crate::model::rules::Draft;
 use crate::theme::FONT_FAMILY;
-use crate::views::{MapView, TraceTableEvent, TraceTableView, TraceView, TraceViewEvent};
+use crate::views::{
+    LogsView, LogsViewEvent, MapView, RulesView, TraceTableEvent, TraceTableView, TraceView,
+    TraceViewEvent,
+};
 use crate::{StatusModel, Theme};
 
 /// The gap between the window's edge and the panels, and between the panels,
@@ -68,6 +78,13 @@ pub enum Screen {
     Home,
     /// One trace: the waterfall, the inspector and the selected span's logs.
     Trace(TraceId),
+    /// The log list. With `query` the LogQL bar takes that text when the
+    /// screen is shown (and the list searches it): `Open in Logs` of the trace
+    /// view. `None` shows the screen as it was left.
+    Logs { query: Option<String> },
+    /// The discard rules. With `draft` the rules editor opens on it, unsaved:
+    /// `Discard lines like this…` of the Logs screen. `None` shows the list.
+    Rules { draft: Option<Draft> },
 }
 
 /// A part of the window that can have a platform backdrop behind it: where it
@@ -123,11 +140,43 @@ pub struct MainWindow {
     /// screen is first drawn and dropped when the window goes to another screen
     /// (its refresh stops with it).
     trace: Option<OpenTrace>,
+    /// The span the next trace screen opens with selected, asked for by
+    /// [`open_trace_at`](Self::open_trace_at) and taken when the screen is made.
+    pending_span: Option<SpanId>,
+    /// The Logs screen's live data. It lives as long as the window, like the
+    /// home screen's, so the query, the toggles and the tail stay while another
+    /// screen shows; it reads only while the Logs screen is the one showing.
+    logs: Entity<LogsModel>,
+    /// The Logs screen.
+    logs_view: Entity<LogsView>,
+    /// The Discard rules screen's live data and editor session. Like the Logs
+    /// screen's it lives as long as the window, so a draft in the editor stays
+    /// while another screen shows; it reads only while its screen is showing.
+    rules: Entity<RulesModel>,
+    /// The Discard rules screen.
+    rules_view: Entity<RulesView>,
+    /// The screen the trace screen was opened from, and so the one its `Back`
+    /// returns to (see [`navigate`](Self::navigate)). Only meaningful while a
+    /// trace is showing; `Home` until the first one opens.
+    trace_origin: Screen,
+    /// Takes the keyboard at the start, and back whenever what had it leaves the
+    /// frame (a click gave it to part of a screen, and the window went to another
+    /// screen), so the shortcuts of the sidebar (⌘1 to ⌘3, ⌘,) work from anywhere
+    /// in the window: GPUI looks for their key context from the focused element
+    /// up, and from the root when there is none.
+    focus: FocusHandle,
+    /// Where the sidebar's entries were laid out in the latest frame.
+    nav_frame: Rc<NavFrame>,
     regions: Rc<RegionReport>,
     /// Keeps the appearance observer alive.
     _appearance: Subscription,
     /// Keeps the table's "open this trace" subscription alive.
     _open: Subscription,
+    /// Keeps the Logs screen's requests (a trace to open, a rule to suggest)
+    /// heard.
+    _logs_events: Subscription,
+    /// Keeps the window taking the keyboard back (see `focus`) alive.
+    _focus_lost: Subscription,
 }
 
 impl MainWindow {
@@ -181,6 +230,35 @@ impl MainWindow {
             let TraceTableEvent::Open(id) = event;
             main.navigate(Screen::Trace(*id), cx);
         });
+        // The Logs screen colours services the way the home screen does.
+        let logs =
+            cx.new(|cx| LogsModel::with_colors(Rc::clone(&backend), home.read(cx).colors(), cx));
+        let logs_view = cx.new(|cx| LogsView::new(logs.clone(), window, cx));
+        let logs_events =
+            cx.subscribe(
+                &logs_view,
+                |main, _view, event: &LogsViewEvent, cx| match event {
+                    LogsViewEvent::OpenTrace { trace, span } => {
+                        main.open_trace_at(*trace, *span, cx)
+                    }
+                    LogsViewEvent::Discard(draft) => main.navigate(
+                        Screen::Rules {
+                            draft: Some(draft.clone()),
+                        },
+                        cx,
+                    ),
+                },
+            );
+        let rules = cx.new(|cx| RulesModel::new(Rc::clone(&backend), cx));
+        let rules_view = cx.new(|cx| RulesView::new(rules.clone(), window, cx));
+        let focus = cx.focus_handle();
+        // So that the shortcuts work before any click.
+        window.focus(&focus, cx);
+        // GPUI calls this after a frame in which nothing in the window has the
+        // keyboard any more (the focused element is no longer drawn).
+        let focus_lost = cx.on_focus_lost(window, |main, window, cx| {
+            window.focus(&main.focus, cx);
+        });
         MainWindow {
             backend,
             screen: Screen::Home,
@@ -190,9 +268,19 @@ impl MainWindow {
             table,
             controls,
             trace: None,
+            pending_span: None,
+            logs,
+            logs_view,
+            rules,
+            rules_view,
+            trace_origin: Screen::Home,
+            focus,
+            nav_frame: Rc::new(NavFrame::default()),
             regions: Rc::new(RegionReport::new(backdrop)),
             _appearance: appearance,
             _open: open,
+            _logs_events: logs_events,
+            _focus_lost: focus_lost,
         }
     }
 
@@ -203,8 +291,41 @@ impl MainWindow {
 
     /// Shows `screen`. Leaving a trace closes its screen: the next visit starts
     /// from the trace's initial selection again.
+    ///
+    /// `Screen::Logs` with a query puts it in the Logs screen's bar every time,
+    /// even when that screen is the one showing: the query asked for is the one
+    /// that is shown, whatever the user typed since. The Logs model reads the
+    /// store only while its screen shows.
+    ///
+    /// `Screen::Rules` with a draft opens the rules editor on it, unsaved, in the
+    /// same way (a draft that was open is replaced). Without one the screen is
+    /// shown as it was left, an open editor and all. The rules model reads only
+    /// while its screen shows.
+    ///
+    /// Opening a trace from another screen remembers that screen, and the trace
+    /// screen's `Back` (the button, or Esc) returns to it: the home screen for
+    /// a trace opened from the table, the Logs screen for one opened from a log.
+    /// What comes back is the screen as it was left (the Logs screen without a
+    /// query of its own, so the one the user typed stays).
     pub fn navigate(&mut self, screen: Screen, cx: &mut Context<Self>) {
+        if let Screen::Logs { query: Some(query) } = &screen {
+            self.logs.update(cx, |logs, cx| logs.set_query(query, cx));
+        }
+        if let Screen::Rules { draft: Some(draft) } = &screen {
+            self.rules
+                .update(cx, |rules, cx| rules.open_draft(draft.clone(), cx));
+        }
+        if !matches!(screen, Screen::Trace(_)) {
+            self.pending_span = None;
+        }
         if self.screen != screen {
+            if matches!(screen, Screen::Trace(_)) && !matches!(self.screen, Screen::Trace(_)) {
+                self.trace_origin = match &self.screen {
+                    Screen::Logs { .. } => NavItem::Logs.screen(),
+                    Screen::Rules { .. } => NavItem::Rules.screen(),
+                    Screen::Home | Screen::Trace(_) => Screen::Home,
+                };
+            }
             self.screen = screen;
             if self
                 .trace
@@ -213,8 +334,24 @@ impl MainWindow {
             {
                 self.trace = None;
             }
+            let showing_logs = matches!(self.screen, Screen::Logs { .. });
+            self.logs
+                .update(cx, |logs, cx| logs.set_active(showing_logs, cx));
+            let showing_rules = matches!(self.screen, Screen::Rules { .. });
+            self.rules
+                .update(cx, |rules, cx| rules.set_active(showing_rules, cx));
             cx.notify();
         }
+    }
+
+    /// Shows the trace screen of trace `id` with the span `span` selected when
+    /// the trace has it: what `Open trace` of a log does. Without a span (or a
+    /// trace screen of `id` that is already open) it is [`navigate`](Self::navigate).
+    pub fn open_trace_at(&mut self, id: TraceId, span: Option<SpanId>, cx: &mut Context<Self>) {
+        if self.screen != Screen::Trace(id) {
+            self.pending_span = span;
+        }
+        self.navigate(Screen::Trace(id), cx);
     }
 
     /// The trace screen, while [`Screen::Trace`] is showing and has been drawn
@@ -225,8 +362,9 @@ impl MainWindow {
 
     /// Makes the trace screen of trace `id` if it is not open yet. It shares the
     /// home screen's service colours, so a service keeps its colour; its `Back`
-    /// returns to the home screen, and `Traces through this span name` puts its
-    /// query in the home screen's bar and goes there.
+    /// returns to the screen it was opened from (`trace_origin`), and `Traces
+    /// through this span name` puts its query in the home screen's bar and goes
+    /// there.
     fn open_trace(&mut self, id: TraceId, window: &mut Window, cx: &mut Context<Self>) {
         if self.trace.as_ref().is_some_and(|open| open.id == id) {
             return;
@@ -234,15 +372,30 @@ impl MainWindow {
         let backend = Rc::clone(&self.backend);
         let colors = self.home.read(cx).colors();
         let view = cx.new(|cx| TraceView::with_colors(backend, id, colors, window, cx));
-        let events = cx.subscribe(&view, |main, _view, event: &TraceViewEvent, cx| {
-            match event {
-                TraceViewEvent::Back => {}
+        if let Some(span) = self.pending_span.take() {
+            // Before the first read is applied: the model has nothing yet.
+            let model = view.read(cx).model().clone();
+            model.update(cx, |model, _| model.prefer_selection(span));
+        }
+        let events = cx.subscribe(
+            &view,
+            |main, _view, event: &TraceViewEvent, cx| match event {
+                TraceViewEvent::Back => {
+                    let origin = main.trace_origin.clone();
+                    main.navigate(origin, cx)
+                }
                 TraceViewEvent::Query(text) => {
                     main.home.update(cx, |home, cx| home.set_query(text, cx));
+                    main.navigate(Screen::Home, cx);
                 }
-            }
-            main.navigate(Screen::Home, cx);
-        });
+                TraceViewEvent::OpenLogs(query) => main.navigate(
+                    Screen::Logs {
+                        query: Some(query.clone()),
+                    },
+                    cx,
+                ),
+            },
+        );
         self.trace = Some(OpenTrace {
             id,
             view,
@@ -276,6 +429,48 @@ impl MainWindow {
         &self.controls
     }
 
+    /// The Logs screen's live data: the rows of the list, the histogram and the
+    /// settings that shape them.
+    pub fn logs(&self) -> &Entity<LogsModel> {
+        &self.logs
+    }
+
+    /// The Logs screen.
+    pub fn logs_view(&self) -> &Entity<LogsView> {
+        &self.logs_view
+    }
+
+    /// The Discard rules screen's live data: the rules with their counts, and
+    /// the editor session.
+    pub fn rules(&self) -> &Entity<RulesModel> {
+        &self.rules
+    }
+
+    /// The Discard rules screen.
+    pub fn rules_view(&self) -> &Entity<RulesView> {
+        &self.rules_view
+    }
+
+    /// The screen the trace screen's `Back` returns to while a trace is showing:
+    /// the one the trace was opened from.
+    pub fn trace_origin(&self) -> &Screen {
+        &self.trace_origin
+    }
+
+    /// Where the sidebar's entry `item` was drawn in the latest frame, in window
+    /// coordinates; `None` before the first frame.
+    pub fn nav_bounds(&self, item: NavItem) -> Option<Bounds<Pixels>> {
+        self.nav_frame.borrow().get(&item).copied()
+    }
+
+    /// Opens the Settings window, or brings it forward when it is open (⌘,). A
+    /// platform with no display to open it on is logged once and nothing more.
+    fn open_settings(&self, cx: &mut Context<Self>) {
+        if let Err(error) = open_settings_window(Rc::clone(&self.backend), cx) {
+            eprintln!("loctel: cannot open the Settings window: {error:#}");
+        }
+    }
+
     /// Switches to the look of `appearance` (dark for `Dark` and
     /// `VibrantDark`, light for the others): ours and Kit's. This is what the
     /// window's appearance observer calls when the system switches.
@@ -300,10 +495,15 @@ impl Render for MainWindow {
         if let Screen::Trace(id) = self.screen {
             self.open_trace(id, window, cx);
         }
+        self.nav_frame.borrow_mut().clear();
+        let logs_controls = self.logs_view.read(cx).controls().clone();
         if self.screen != Screen::Home {
             // Not drawn now: a test (or anyone) asking where its parts are must
             // not be told where they were on the home screen.
             self.controls.read(cx).forget_places();
+        }
+        if !matches!(self.screen, Screen::Logs { .. }) {
+            logs_controls.read(cx).forget_places();
         }
         let regions = &self.regions;
         let glass = regions.has_backdrop();
@@ -312,13 +512,24 @@ impl Render for MainWindow {
             .w(px(SIDEBAR_WIDTH))
             .h_full()
             .flex_none()
-            .child(sidebar_contents(&theme, &self.screen, &self.status, cx));
+            .child(sidebar_contents(
+                &theme,
+                &self.screen,
+                &self.status,
+                &self.nav_frame,
+                cx,
+            ));
 
         let toolbar = glass_frame(&theme, Region::Toolbar, regions)
             .w_full()
             .h(px(TOOLBAR_HEIGHT))
             .flex_none()
-            .child(toolbar_contents(&theme, &self.screen, &self.controls));
+            .child(toolbar_contents(
+                &theme,
+                &self.screen,
+                &self.controls,
+                &logs_controls,
+            ));
 
         let content = match &self.screen {
             Screen::Home => home_screen(&theme, &self.map, &self.table),
@@ -329,19 +540,44 @@ impl Render for MainWindow {
                     None => panel.into_any_element(),
                 }
             }
+            Screen::Logs { .. } => div()
+                .flex_1()
+                .w_full()
+                .min_h_0()
+                .child(self.logs_view.clone())
+                .into_any_element(),
+            Screen::Rules { .. } => div()
+                .flex_1()
+                .w_full()
+                .min_h_0()
+                .child(self.rules_view.clone())
+                .into_any_element(),
         };
 
-        let root = div()
-            .id("main-window")
-            .size_full()
-            .relative()
-            .flex()
-            .flex_row()
-            .gap(px(INSET))
-            .p(px(INSET))
-            .text_color(theme.text)
-            .font_family(FONT_FAMILY)
-            .text_size(px(13.0));
+        let root =
+            div()
+                .id("main-window")
+                .key_context(KEY_CONTEXT)
+                .track_focus(&self.focus)
+                .on_action(cx.listener(|main, _: &ShowMapAndTraces, _, cx| {
+                    main.navigate(NavItem::MapAndTraces.screen(), cx)
+                }))
+                .on_action(cx.listener(|main, _: &ShowLogs, _, cx| {
+                    main.navigate(NavItem::Logs.screen(), cx)
+                }))
+                .on_action(cx.listener(|main, _: &ShowRules, _, cx| {
+                    main.navigate(NavItem::Rules.screen(), cx)
+                }))
+                .on_action(cx.listener(|main, _: &OpenSettings, _, cx| main.open_settings(cx)))
+                .size_full()
+                .relative()
+                .flex()
+                .flex_row()
+                .gap(px(INSET))
+                .p(px(INSET))
+                .text_color(theme.text)
+                .font_family(FONT_FAMILY)
+                .text_size(px(13.0));
         // The window colour: under everything, except where the backdrop's glass
         // has to show.
         let root = if glass {
@@ -369,7 +605,7 @@ impl Render for MainWindow {
 
 /// Makes the window's Kit `Root` paint no background. A window that is not
 /// inside a `Root` has nothing to clear.
-fn clear_root_background(window: &Window, cx: &mut App) {
+pub(crate) fn clear_root_background(window: &Window, cx: &mut App) {
     let Some(root) = window.root::<Root>().flatten() else {
         return;
     };
