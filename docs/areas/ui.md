@@ -7,17 +7,19 @@ feel), §10.3 (screenshot tests) and §10.5 (gotchas from the spike).
 Status: Milestone 3 is the main window. It has two screens (the home screen,
 the service map above the trace table, and the trace view) in a shell with a
 glass sidebar and toolbar, all in `src/app` and `src/views` over the pure models
-in `src/model`; Milestone 4 Task 4 adds a third, the Logs screen (see "The Logs
-screen"), reached for now through `navigate` and the trace view's `Open in Logs`
-(the sidebar entries are Task 7's); "Screens and views at a glance" below is the map of them, and
+in `src/model`; Milestone 4 adds a third, the Logs screen (Task 4, see "The Logs
+screen"), and a fourth, the Discard rules screen (Task 5, see "The Discard rules
+screen"), reached for now through `navigate`, the trace view's `Open in Logs` and
+the Logs screen's `Discard lines like this…` (the sidebar entries are Task 7's);
+"Screens and views at a glance" below is the map of them, and
 the sections after it say how each one works. The window opens from the Linux
 `loctel` and from the macOS menu bar item's `Open loctel` (see "The real window"
 below and [`macos.md`](macos.md)); the look of the glass parts is done and
 tested here, and Apple's glass behind them is `loctel-macos`'s and unverified.
 Milestones 1 and 2 had one view, the **status view**, which stays as a
 standalone view with its own screenshot tests (Milestone 2 added the discard
-rules line to it and to the macOS menu). The remaining screens (Discard rules,
-Settings) and the popover are the rest of Milestone 4. The macOS menu bar item is in
+rules line to it and to the macOS menu). The remaining parts of Milestone 4 are
+the Settings window and the popover. The macOS menu bar item is in
 `loctel-macos`; it only borrows the strings from `menu_text`.
 
 GPUI comes as the weekly `gpui-pre` snapshot, `gpui-pre`, `gpui-pre-platform`
@@ -38,12 +40,12 @@ are what shows you what moved (the `upgrade-gpui` skill has the steps; decision
 | `menu_text::rules_line(&StatusModel)` | the discard rules in one line, the first that applies: `Discard rules file has an error`; `1 discard rule on · 1 has an error` (for more than one, `3 discard rules on · 2 have errors`); `No discard rules on`; `1 discard rule on · 31% dropped` or `3 discard rules on · 0% dropped`. The percentage is the share the rules dropped of what arrived since launch, rounded to a whole number; a value that is not a number reads `0%` and one outside 0 to 1 is cut to it. A file error wins over a rule error, a rule error over "no rules on" |
 | `menu_text::format_rate(f64)` | `412` is `412`, `1234` is `1.2k`, `0.4` is `0`. One decimal under ten thousand, none above, never `.0` (`1k`, `10k`, `1.3M`); NaN, infinity and negatives read `0` |
 | `model` | the pure models of the main window: `format`, `colors`, `trace_table`, `query_bar`, `map_layout`, `waterfall`, `inspector`, `trace_view`, and (Milestone 4) `logs`, `histogram`, `rules`, `settings`, `popover` (see "Models" below) |
-| `app` | the main window's shell (see "The main window"): `MainWindow`, `Screen`, `UiBackend`, `open_main_window`, `Backdrop`/`GlassRegion`, `kit_theme`; the home screen's live data (see "Live data"): `HomeModel`, `HomeData`, `TimeRange`; the open trace's (see "The trace view"): `TraceModel`; and the Logs screen's (see "The Logs screen"): `LogsModel`, `LogsControls` |
-| `views` | the views of the main window's screens (see "The service map", "The trace table", "The trace view" and "The Logs screen"): `MapView`, with its `Camera`, `TraceTableView`, `TraceView` with its `WaterfallView`, `InspectorView` and `SpanLogsView`, and `LogsView` with its `HistogramView` |
+| `app` | the main window's shell (see "The main window"): `MainWindow`, `Screen`, `UiBackend`, `open_main_window`, `Backdrop`/`GlassRegion`, `kit_theme`; the home screen's live data (see "Live data"): `HomeModel`, `HomeData`, `TimeRange`; the open trace's (see "The trace view"): `TraceModel`; the Logs screen's (see "The Logs screen"): `LogsModel`, `LogsControls`; and the Discard rules screen's (see "The Discard rules screen"): `RulesModel`, `RuleEditor`, `PreviewState` |
+| `views` | the views of the main window's screens (see "The service map", "The trace table", "The trace view", "The Logs screen" and "The Discard rules screen"): `MapView`, with its `Camera`, `TraceTableView`, `TraceView` with its `WaterfallView`, `InspectorView` and `SpanLogsView`, `LogsView` with its `HistogramView`, and `RulesView` with its `RuleEditorView` |
 | `Theme` | the colours below. `Theme::dark()`, `Theme::light()` and `Theme::for_appearance(WindowAppearance)`. It is also a GPUI global once `kit_theme::apply` has run |
 | `KitAssets` | GPUI Kit's bundled icons, to register with `Application::with_assets` |
 | `register_fonts(cx)`, `FONT_FAMILY` | the bundled typeface (below) |
-| `testing` (feature `screenshot`) | `render_png` and `assert_snapshot`; for the main window `render_window_png`, `Driver` (click, drag, scroll, pinch, type), `headless_app`, `FixedBackend`, `RecordingBackdrop` (see "Screenshot tests") |
+| `testing` (feature `screenshot`) | `render_png` and `assert_snapshot`; for the main window `render_window_png`, `Driver` (click, drag, scroll, pinch, type), `headless_app`, `FixedBackend` (with `rule_set()`, the rules in memory, for a test that wants them to have dropped something), `RecordingBackdrop` (see "Screenshot tests") |
 
 The strings in `menu_text` are the contract: the macOS menu header and the
 status view's pill both use `status_line`, the macOS menu's rules header and the
@@ -62,7 +64,7 @@ has its own section further down, which is where the rules are.
 status box) and the toolbar are on every screen.
 
 ```
- sidebar:  Map & traces  (the one entry; Logs and Discard rules are Task 7's)
+ sidebar:  Map & traces  (the one entry; Logs and Discard rules are Task 7's, and reached by `navigate` until then)
               |
               v
  Screen::Home ---------------------------------------------------------------.
@@ -88,7 +90,12 @@ status box) and the toolbar are on every screen.
               |    `Open trace` (or the trace link of a row) -> Screen::Trace(id), the log's span selected
               |    `Discard lines like this…`                -> Screen::Rules { draft: Some(..) }
               |    `Show lines around this one`              -> context mode, `Back to search` returns
- Screen::Rules { draft }  (the rules screen is Task 5's; an empty panel until then)
+ Screen::Rules { draft }  (Milestone 4: no sidebar entry yet)
+   RulesView  header and `New rule`, banners, a card per rule (switch, name, chip, count, query);
+              |  beside it, while a rule is open: RuleEditorView (fields, live validation, preview)
+              |    click a card -> the editor opens on it; the switch toggles it and nothing else
+              |    `Save` / `Cancel` / `Delete` (asks first); a file edited meanwhile -> the banner
+              |    arriving with a draft (`Discard lines like this…`) -> the editor opens on it, unsaved
 ```
 
 | From | The user does | To |
@@ -99,7 +106,7 @@ status box) and the toolbar are on every screen.
 | `Trace` | `Traces through this span name` | `Home`, with `span_name_filter(name)` in the bar |
 | `Trace` | `Open in Logs` | `Logs { query: Some(span_logs_query(service, span)) }` |
 | `Logs` | `Open trace`, or a click on a row's trace link | `Trace(id)` with the log's span selected (`MainWindow::open_trace_at`) |
-| `Logs` | `Discard lines like this…` | `Rules { draft: Some(suggest_from_log(record)) }` |
+| `Logs` | `Discard lines like this…` | `Rules { draft: Some(suggest_from_log(record)) }`: the editor opens on it, unsaved |
 
 The home screen's views and its `HomeModel` live as long as the window, so the
 map keeps its camera and the table its query, toggles and rows while a trace is
@@ -129,11 +136,15 @@ the choices; decision 0031 has the two gaps of Milestone 3 that remain.
 | `LogsView` | `views/logs_view.rs` | `LogsModel`: rows, query state, levels, tail | `model::logs` | "The Logs screen" |
 | `HistogramView` | `views/histogram_view.rs` | `LogsModel`: the bars | `model::histogram` | "The Logs screen" |
 | `LogsControls` | `app/toolbar.rs` | `LogsModel`: tail, range | | "The Logs screen" |
+| `RulesView` | `views/rules_view.rs` | `RulesModel`: cards, banners, the share dropped | `model::rules` (`rows`, `dropped_line`, `file_error_line`) | "The Discard rules screen" |
+| `RuleEditorView` | `views/rule_editor_view.rs` | `RulesModel`: the editor session (draft, preview, banner) | `model::rules` (`Draft`, `draft_error_line`, `preview_text`) | "The Discard rules screen" |
 | `StatusView` | `status_view.rs` | `StatusModel` | `menu_text` | "What is in the crate" |
 
 `HomeModel` (`app/data.rs`), `TraceModel` (`app/trace_data.rs`) and `LogsModel`
 (`app/logs_data.rs`) are the three entities that read the store: one for the home
-screen, one for the open trace, one for the Logs screen.
+screen, one for the open trace, one for the Logs screen. `RulesModel`
+(`app/rules_data.rs`) reads the engine's rules (in memory, once a second) and
+reads the store only for the editor's preview.
 
 ### The data flow
 
@@ -609,7 +620,7 @@ screens of Tasks 6 to 8 go into its content area. Decision 0024 has the choices.
     the inset. From the top it has `TRAFFIC_LIGHT_SPACE` (52, where the macOS
     traffic lights sit; plain room on Linux), the navigation (one entry,
     `Map & traces`, `NAV_ITEM_HEIGHT` 34, lit with the accent at 18%; Logs and
-    Discard rules arrive in Milestone 4) and, at the bottom, the **status
+    Discard rules arrive in Milestone 4 Task 7) and, at the bottom, the **status
     box**.
   - The status box shows `status_line` and `rules_line` (the words of the macOS
     menu) and a row per endpoint (`OTLP gRPC`, `OTLP HTTP`, `MCP`) with its
@@ -660,8 +671,13 @@ shows; the model reads the store only while `Screen::Logs` is the one showing
 LogQL bar every time, even when the Logs screen is already showing and the user
 typed something else since. `open_trace_at(id, Some(span), cx)` is `navigate` to
 the trace of `id` with `span` selected once the trace has it
-(`TraceModel::prefer_selection`). The rules screen is Task 5's: until then
-`Screen::Rules` shows an empty panel. The toolbar's title is `toolbar_title`:
+(`TraceModel::prefer_selection`). The Discard rules screen's model and view live
+as long as the window as well (`main.rules()`, `main.rules_view()`), so an
+editor with a draft in it stays while another screen shows; the model reads only
+while `Screen::Rules` is the one showing, and reads at once when it comes back.
+`navigate(Screen::Rules { draft: Some(d) })` opens the editor on `d`, unsaved,
+every time (a draft that was open is replaced); `draft: None` shows the screen as
+it was left. The toolbar's title is `toolbar_title`:
 `Logs` and `Discard rules` join the two above, and on the Logs screen the
 controls at its right are `LogsControls`.
 
@@ -703,7 +719,12 @@ kept in memory: the rules in a `RuleSet` (so IDs, query errors and
 `rules_generation` behave as in the engine, and `preview_rule` runs
 `loctel_rules::preview` over its store), the settings (`apply_settings` makes up
 three listening listeners at the ports it is given and binds nothing), the pause,
-and `pub login` for a test that wants the Start at login switch. `status()` is
+and `pub login` for a test that wants the Start at login switch. `rule_set()` is
+the `RuleSet` itself, for a test that wants the rules to have dropped something
+(pass data through `filter_spans` and `filter_logs` as the engine's sink does, and
+the cards' counts move; the share in `status.dropped_fraction` does not: it is the
+`status` field's). A change of the rules behind a view's back is `set_rules`,
+which moves `rules_generation` as a reload of the file does. `status()` is
 its `status` field with the rules, the pause and the listeners of those calls
 laid over it. `tests/app_backend.rs` pins both (`AppBackend` over a real engine
 on port 0: saving settings and rebinding, a busy port, a file that cannot be
@@ -1310,6 +1331,127 @@ the banner, the target highlighted, `28 lines · oldest first`). The monospace f
 is Inter on Linux, as in the table. How the screen looks and scrolls on a Mac is
 unverified.
 
+## The Discard rules screen
+
+`views::RulesView` (`src/views/rules_view.rs`, Milestone 4 Task 5) is the content
+of `Screen::Rules { draft }`: the rules as cards, and beside them the
+`views::RuleEditorView` (`src/views/rule_editor_view.rs`) of the one that is open,
+over the live data of `app::RulesModel` (`src/app/rules_data.rs`). Design §7 and
+`docs/areas/rules.md` say what a rule is and what it does to the data; decision
+0038 has the choices the plan left open.
+
+**The list** (one floating panel; the editor panel is beside it while a rule is
+open, so the list gives up 380 px + `INSET`):
+
+| Part | What |
+|---|---|
+| header | the title `Discard rules` (20 px), under it the subtitle `Anything a rule matches is dropped as it arrives and never stored. Rules are kept when loctel restarts.`; on the right `rules::dropped_line` (`31% of incoming data dropped`, `Nothing dropped yet`) and `New rule` |
+| banners | the rules file's error, in the error colour: `The rules file has an error: <msg>. loctel keeps using the rules it had.` (`file_error_line`: the message on one line, no double full stop); `Could not save the rules: <reason>` when a switch could not be written; with no rules, `No discard rules. Nothing is dropped unless you add one.` in a neutral box |
+| cards | one per rule in the file's order (`rules::rows`): the switch, the name (semibold; dimmer while the rule is off), a `TRACEQL` or `LOGQL` chip and, at the right, the count text (`48,210 spans dropped in 602 traces`, `96,433 lines dropped`, `Off`, or `Error: <message>` in `error_text`), and the query in the monospace face on one line under them. The card of the open rule has an accent ring and tint |
+
+A click on a card opens that rule in the editor (`RulesModel::edit`). The switch
+swallows its own click: it calls `set_enabled` (the backend's `set_rule_enabled`,
+which saves) and does not open the card.
+
+**The editor** (380 px wide, `PANEL_RADIUS` corners, the panel fill with the glass
+hairline and the highlight ring just inside it; the fields scroll, the buttons
+are pinned under them):
+
+| Part | What |
+|---|---|
+| title | `Edit rule`, or `New rule` for one that is not saved yet |
+| banner | only while the rules file changed behind the editor: `The rules file changed while you were editing.` with `Keep my draft` and `Discard my draft` |
+| `Name` | an input; `Save` needs something in it |
+| `Applies to` | a segmented control: `Traces (TraceQL)` or `Logs (LogQL)`; the chosen side is tinted with the accent. The query keeps its text when the side changes: it is read by the other parser from then on |
+| `Query` | a multi-line input in the monospace face, with `at column N: message` in `error_text` under it while the text does not parse (nothing while it is blank: a rule that has just been started is not an error yet) |
+| scope | traces only: the radio `When a span matches, drop` with `the whole trace it belongs to` and `only the matching span and its children` (`DropScope::Trace` and `Span`). A log rule has none |
+| preview box | `Tried on the last 5 minutes` and a sentence, below |
+| buttons | `Save`, `Cancel`, and for a saved rule `Delete`, which asks (`Delete this rule?`, `Delete rule`, `Keep rule`) before it removes anything |
+
+**The preview** is `loctel_rules::preview` of the draft over the last five minutes
+of the store (`PREVIEW_WINDOW`), as `model::rules::preview_text` words it:
+
+| State | The box says |
+|---|---|
+| the query does not parse | `Fix the query to see what it would drop.` (at once, no read) |
+| a trace rule | `Would have dropped 1,204 spans in 602 traces. None of those traces had errors.` or `... 3 of those traces had errors.` (`1 span in 1 trace. That trace had no errors.` / `That trace had errors.` for one) |
+| a log rule | `Would have dropped 96 lines. 2 were errors.` (`None were errors.`, `1 was an error.`, `1 line. It was an error.` / `It was not an error.`) |
+| it would have dropped nothing | `Would have dropped nothing.` |
+| blank query, or the first result is not back | nothing (the box keeps its height) |
+
+A change of the name or query text waits 300 ms (`PREVIEW_DEBOUNCE`) after the
+last keystroke; opening a rule, and a click on the language or the scope, run at
+once. The pass runs on GPUI's background executor over a clone of the store, and a
+result that a newer edit replaced is dropped when it arrives (a result that is
+there stays until the next replaces it, so the box does not flicker while typing).
+
+**Saving.** The editor remembers the rules as they were when it opened (their
+IDs and specs). `Save` builds the full list from that snapshot with the draft in
+the place of its rule (at the end for a new one) and calls `UiBackend::set_rules`;
+the editor closes when it worked and stays, with `Could not save the rules:
+<reason>` above the buttons, when it did not. Opening a rule and saving it
+unchanged changes nothing (the rule keeps its ID and counters: the engine keeps a
+rule's identity by name, language, query and scope). A query that does not parse
+is saved (a draft, per M2): its card shows `Error: <message>` and it drops
+nothing (plan Review Focus 3; `invalid_rule_saved_shows_error_and_no_preview`).
+`Delete` asks, and the yes saves the snapshot less that rule. `Cancel` closes the
+editor and saves nothing.
+
+**A rule edited behind the editor's back** (plan Review Focus 2;
+`external_change_during_edit_warns`). The editor keeps `rules_generation` from
+when it opened. When the number has moved and the editor did not move it (a
+reload of the edited file, `set_rules` from elsewhere), the banner shows, the
+draft is left exactly as it is, the list shows what the file has now, and `Save`
+and `Delete` do nothing until the user decides: `Keep my draft` turns the banner
+off, and `Save` then writes the snapshot with the draft over the file, which
+**overwrites** what the file got meanwhile (the banner's whole point);
+`Discard my draft` closes the editor and leaves the file as it is. The editor's
+own writes are not external: a switch on a card (this window's doing) re-takes the
+snapshot and the generation (and the draft of that very rule follows its switch,
+or saving it would turn the rule back on), so no banner appears for them and the
+list saved over is never older than the user's last action.
+
+**Refresh.** The model reads `UiBackend::rules` and `status` (the share dropped,
+the file's error) once a second (`RULES_REFRESH`) while the screen shows, and at
+once after anything it does and when the screen comes back; it redraws only when
+something changed. These are in-memory reads of the engine's rules, not store
+reads, so they run on the foreground like the shell's status refresh. The first
+frame of a screen that was hidden shows what it read as it came back.
+
+**For tests.** `main.rules()` and `main.rules_view()` reach the model and the view;
+`RulesView::bounds_of(RulesPart, cx)` and `center_of` say where a part is in the
+latest frame (`NewRule`, `Card(i)`, `Switch(i)`, `Editor`, `NameInput`,
+`LanguageTraces`, `LanguageLogs`, `QueryInput`, `ScopeTrace`, `ScopeSpan`,
+`Preview`, `Save`, `Cancel`, `Delete`, `ConfirmDelete`, `KeepRule`, `KeepDraft`,
+`DiscardDraft`); `banners`, `dropped_line`, `preview_text`, `query_error_line`,
+`editor_banner`, `name_text` and `query_text` read what it says. The model's
+`rows()`, `selected()`, `editor()` (a `RuleEditor`: `draft()`, `target()`,
+`is_new()`, `external_change()`, `confirming_delete()`, `error()`, `preview()`,
+`preview_text()`, `can_save()`) and `file_error_line()` read what it holds.
+`tests/rules_screen.rs` has the data (`rules_store`: the failing checkout, the
+successful one and 600 health checks, on a clock 140 s after the checkout; three
+rules; `counted_backend`, which sends 1,500 health checks and 40,000 log lines
+through the rules with `FixedBackend::rule_set()` so the cards have counts) and
+every test; a change of the file behind the editor is `FixedBackend::set_rules`,
+which moves the generation as a reload does.
+
+**References** (1440 by 900, at 2x, with the sidebar of the time: `Map & traces`
+is the one entry and is not lit, because the Rules screen is not under it; Task 7
+regenerates them with the sidebar's new entries): `rules_dark.png` and
+`rules_light.png` (the three rules, no editor: the 1,500 spans in 1,500 traces of
+the health checks, `1,217 lines dropped` for the log rule, the third `Off` with
+its switch off, `31% of incoming data dropped`), `rules_editor_dark.png` (the first
+rule open: its fields, the whole-trace radio, the preview `Would have dropped 600
+spans in 600 traces. None of those traces had errors.`, and `Save`, `Cancel` and
+`Delete`), `rules_empty_dark.png` (`No discard rules...` and `Nothing dropped
+yet`), `rules_file_error_dark.png` (the red banner over the rules it kept),
+`rules_editor_invalid_dark.png` (a new rule with `{ name = ` typed: `at column 10:
+expected a value` under the query and `Fix the query to see what it would drop.`
+in the preview, no `Delete`) and `rules_editor_changed_dark.png` (the banner with
+its two buttons over the fields, `Save` dimmed, and the list showing the fourth
+rule the file got). The monospace face is Inter on Linux, as in the table. How
+the screen looks and behaves on a Mac is unverified.
+
 ## Theme tokens
 
 The dark tokens come from the accepted mockups; a test pins them. The light
@@ -1478,7 +1620,7 @@ repo skill `update-screenshots` has the steps, and how to read a CI failure.
 
 Every reference of `crates/loctel-ui/tests/snapshots/`, with the test that
 owns it, the data it is drawn from and what it shows. All of them were opened
-and checked when they were made (Milestone 3, and the Logs ones in Milestone 4 Task 4): legible text, the forced theme, and
+and checked when they were made (Milestone 3, and the Logs and Discard rules ones in Milestone 4 Tasks 4 and 5): legible text, the forced theme, and
 nothing clipped other than the table and the lists that scroll. The main
 window's are 1440 by 900 logical pixels (2880 by 1800, 220 to 740 KB each, all
 under the 1.5 MB the plan allows, so the capture stays at 2x). "Home store" is
@@ -1510,6 +1652,12 @@ complete; "empty store" has nothing in it.
 | `logs_expanded_dark` | `logs_screen.rs` | the same, a click on the `Charge failed…` row | that row expanded: the whole body, the labels (the stack trace on three lines), `Open trace`, `Show lines around this one`, `Discard lines like this…` |
 | `logs_query_error_dark` | `logs_screen.rs` | the same, `{service_name="payments-api"` typed | the focused input, `at column 29: expected `,` or `}`` in red under it, the rows kept |
 | `logs_context_dark` | `logs_screen.rs` | the same, the lines around the 600 ms error | the banner `Lines around 08:00:01.440 · Back to search`, `28 lines · oldest first`, the target highlighted, a scrollbar |
+| `rules_dark`, `rules_light` | `rules_screen.rs` | the rules store (failing and successful checkout, 600 health checks), three rules, 1,500 health checks and 40,000 log lines sent through them, 31% dropped | the Discard rules screen: header, subtitle and `New rule`, three cards (`1,500 spans dropped in 1,500 traces`, `1,217 lines dropped`, `Off` with its switch off) |
+| `rules_editor_dark` | `rules_screen.rs` | the same rules (only the health checks counted), a click on the first card | that card with its accent ring and the editor beside it: name, `Traces (TraceQL)` chosen, the query, the whole-trace radio, the preview with 600 spans in 600 traces, `Save`, `Cancel`, `Delete` |
+| `rules_empty_dark` | `rules_screen.rs` | no rules | `No discard rules. Nothing is dropped unless you add one.` and `Nothing dropped yet` |
+| `rules_file_error_dark` | `rules_screen.rs` | three rules, a file error | the red banner `The rules file has an error: ... loctel keeps using the rules it had.` over the three cards |
+| `rules_editor_invalid_dark` | `rules_screen.rs` | `New rule`, a name and `{ name = ` typed | the focused query with `at column 10: expected a value` in red under it, `Fix the query to see what it would drop.` in the preview, `Save` and `Cancel` only |
+| `rules_editor_changed_dark` | `rules_screen.rs` | the first rule open with a new name typed, the file then changed (its query, a fourth rule) and a second passed | the amber banner `The rules file changed while you were editing.` with `Keep my draft` and `Discard my draft`, the dimmed `Save`, the draft kept, four cards |
 
 `shell_light`, `shell_glass_light`, `home_light`, `trace_light` and the `toolbar_*_light` ones are the same
 picture as their dark twins with the light `Theme`: the same data and the same

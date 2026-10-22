@@ -16,13 +16,21 @@
 //!   toggles, the [`HistogramView`] and the list of lines, which expand where they
 //!   stand.
 //!
+//! - [`RulesView`]: the Discard rules screen (Milestone 4): the cards of the
+//!   rules with their switches and counts, and beside them the
+//!   [`RuleEditorView`] of the rule that is open (its fields, live validation and
+//!   the preview of the last five minutes).
+//!
 //! `docs/areas/ui.md` ("The service map", "The trace table", "The trace view",
-//! "The Logs screen") has the look and the interactions.
+//! "The Logs screen", "The Discard rules screen") has the look and the
+//! interactions.
 
 mod histogram_view;
 mod inspector_view;
 mod logs_view;
 mod map_view;
+mod rule_editor_view;
+mod rules_view;
 mod span_logs_view;
 mod trace_table_view;
 mod trace_view;
@@ -37,6 +45,12 @@ pub use logs_view::{
     OPEN_TRACE, SHOW_AROUND,
 };
 pub use map_view::{Camera, EMPTY_HINT, EMPTY_TITLE, MAX_ZOOM, MIN_ZOOM, MapView};
+pub use rule_editor_view::{
+    APPLIES_LABEL, CANCEL, DELETE, DELETE_ASK, DELETE_CONFIRM, DELETE_KEEP, DISCARD_DRAFT,
+    EDITOR_WIDTH, EXTERNAL_CHANGE, KEEP_DRAFT, LANGUAGE_LOGS, LANGUAGE_TRACES, NAME_LABEL,
+    QUERY_LABEL, RuleEditorView, SAVE, SCOPE_SPAN, SCOPE_TITLE, SCOPE_TRACE,
+};
+pub use rules_view::{NEW_RULE, RulesPart, RulesView, TITLE as RULES_TITLE};
 pub use span_logs_view::{
     NO_LOGS, NOTHING_SELECTED as LOGS_EMPTY, OPEN_IN_LOGS, PANEL_HEIGHT as LOGS_HEIGHT,
     SpanLogsEvent, SpanLogsView,

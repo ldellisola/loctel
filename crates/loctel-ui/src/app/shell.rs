@@ -26,12 +26,14 @@ use super::backend::UiBackend;
 use super::data::HomeModel;
 use super::kit_theme;
 use super::logs_data::LogsModel;
+use super::rules_data::RulesModel;
 use super::sidebar::sidebar_contents;
 use super::toolbar::{HomeControls, toolbar_contents};
 use crate::model::rules::Draft;
 use crate::theme::FONT_FAMILY;
 use crate::views::{
-    LogsView, LogsViewEvent, MapView, TraceTableEvent, TraceTableView, TraceView, TraceViewEvent,
+    LogsView, LogsViewEvent, MapView, RulesView, TraceTableEvent, TraceTableView, TraceView,
+    TraceViewEvent,
 };
 use crate::{StatusModel, Theme};
 
@@ -143,6 +145,12 @@ pub struct MainWindow {
     logs: Entity<LogsModel>,
     /// The Logs screen.
     logs_view: Entity<LogsView>,
+    /// The Discard rules screen's live data and editor session. Like the Logs
+    /// screen's it lives as long as the window, so a draft in the editor stays
+    /// while another screen shows; it reads only while its screen is showing.
+    rules: Entity<RulesModel>,
+    /// The Discard rules screen.
+    rules_view: Entity<RulesView>,
     regions: Rc<RegionReport>,
     /// Keeps the appearance observer alive.
     _appearance: Subscription,
@@ -223,6 +231,8 @@ impl MainWindow {
                     ),
                 },
             );
+        let rules = cx.new(|cx| RulesModel::new(Rc::clone(&backend), cx));
+        let rules_view = cx.new(|cx| RulesView::new(rules.clone(), window, cx));
         MainWindow {
             backend,
             screen: Screen::Home,
@@ -235,6 +245,8 @@ impl MainWindow {
             pending_span: None,
             logs,
             logs_view,
+            rules,
+            rules_view,
             regions: Rc::new(RegionReport::new(backdrop)),
             _appearance: appearance,
             _open: open,
@@ -254,9 +266,18 @@ impl MainWindow {
     /// even when that screen is the one showing: the query asked for is the one
     /// that is shown, whatever the user typed since. The Logs model reads the
     /// store only while its screen shows.
+    ///
+    /// `Screen::Rules` with a draft opens the rules editor on it, unsaved, in the
+    /// same way (a draft that was open is replaced). Without one the screen is
+    /// shown as it was left, an open editor and all. The rules model reads only
+    /// while its screen shows.
     pub fn navigate(&mut self, screen: Screen, cx: &mut Context<Self>) {
         if let Screen::Logs { query: Some(query) } = &screen {
             self.logs.update(cx, |logs, cx| logs.set_query(query, cx));
+        }
+        if let Screen::Rules { draft: Some(draft) } = &screen {
+            self.rules
+                .update(cx, |rules, cx| rules.open_draft(draft.clone(), cx));
         }
         if !matches!(screen, Screen::Trace(_)) {
             self.pending_span = None;
@@ -273,6 +294,9 @@ impl MainWindow {
             let showing_logs = matches!(self.screen, Screen::Logs { .. });
             self.logs
                 .update(cx, |logs, cx| logs.set_active(showing_logs, cx));
+            let showing_rules = matches!(self.screen, Screen::Rules { .. });
+            self.rules
+                .update(cx, |rules, cx| rules.set_active(showing_rules, cx));
             cx.notify();
         }
     }
@@ -369,6 +393,17 @@ impl MainWindow {
         &self.logs_view
     }
 
+    /// The Discard rules screen's live data: the rules with their counts, and
+    /// the editor session.
+    pub fn rules(&self) -> &Entity<RulesModel> {
+        &self.rules
+    }
+
+    /// The Discard rules screen.
+    pub fn rules_view(&self) -> &Entity<RulesView> {
+        &self.rules_view
+    }
+
     /// Switches to the look of `appearance` (dark for `Dark` and
     /// `VibrantDark`, light for the others): ours and Kit's. This is what the
     /// window's appearance observer calls when the system switches.
@@ -437,9 +472,12 @@ impl Render for MainWindow {
                 .min_h_0()
                 .child(self.logs_view.clone())
                 .into_any_element(),
-            // The rules screen is Task 5's: until it is built the content is
-            // an empty panel.
-            Screen::Rules { .. } => panel(&theme).flex_1().w_full().min_h_0().into_any_element(),
+            Screen::Rules { .. } => div()
+                .flex_1()
+                .w_full()
+                .min_h_0()
+                .child(self.rules_view.clone())
+                .into_any_element(),
         };
 
         let root = div()

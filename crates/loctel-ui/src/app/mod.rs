@@ -14,6 +14,10 @@
 //! - [`LogsModel`]: the Logs screen's live data (the rows of the list, read in
 //!   pages, kept fresh by the live tail, and the histogram) and the settings that
 //!   shape it (query, levels, range, tail).
+//! - [`RulesModel`]: the Discard rules screen's live data (the rules with what
+//!   each has dropped, read every second) and the editor session: the draft, its
+//!   preview of the last five minutes and the check that the rules file did not
+//!   change behind it.
 //! - [`HomeControls`]: the home toolbar's Live indicator, time range, Pause and
 //!   Clear all, over the [`HomeModel`]; [`LogsControls`] the Logs toolbar's
 //!   Live tail pill, range and Clear all, over the [`LogsModel`].
@@ -31,6 +35,7 @@ mod data;
 pub mod kit_theme;
 mod logs_data;
 mod nav;
+mod rules_data;
 mod shell;
 mod sidebar;
 mod toolbar;
@@ -52,6 +57,7 @@ pub use logs_data::{
     LogsModelEvent, TAIL_REFRESH,
 };
 pub use nav::NavItem;
+pub use rules_data::{PREVIEW_DEBOUNCE, PreviewState, RULES_REFRESH, RuleEditor, RulesModel};
 pub use shell::{
     Backdrop, DEFAULT_SIZE, GlassRegion, INSET, MIN_SIZE, MainWindow, PANEL_RADIUS, SIDEBAR_WIDTH,
     Screen, TOOLBAR_HEIGHT, content_width,

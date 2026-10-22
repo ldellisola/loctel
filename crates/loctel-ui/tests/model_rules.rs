@@ -9,8 +9,11 @@ use loctel_ingest::logs_from_request;
 use loctel_meshgen::{Scenario, generate};
 use loctel_model::{AttrValue, LogRecord, Resource, Severity};
 use loctel_query::{logql, traceql};
-use loctel_rules::{DropScope, RuleId, RuleLanguage, RuleSpec, RuleStatus};
-use loctel_ui::model::rules::{Draft, DraftCheck, RuleRow, dropped_line, rows, suggest_from_log};
+use loctel_rules::{DropScope, Preview, RuleId, RuleLanguage, RuleSpec, RuleStatus};
+use loctel_ui::model::rules::{
+    Draft, DraftCheck, NO_RULES, PREVIEW_INVALID, PREVIEW_TITLE, RuleRow, SUBTITLE,
+    draft_error_line, dropped_line, file_error_line, preview_text, rows, suggest_from_log,
+};
 
 const BASE: u64 = 1_800_000_000_000_000_000;
 
@@ -601,4 +604,158 @@ fn every_log_of_the_failed_checkout_is_matched_by_its_own_suggestion() {
         }
     }
     assert_eq!(seen, 7);
+}
+
+// --- the screen's own texts (Task 5) -----------------------------------------------
+
+#[test]
+fn the_fixed_texts_of_the_screen_are_the_plans() {
+    assert_eq!(
+        SUBTITLE,
+        "Anything a rule matches is dropped as it arrives and never stored. \
+         Rules are kept when loctel restarts."
+    );
+    assert_eq!(
+        NO_RULES,
+        "No discard rules. Nothing is dropped unless you add one."
+    );
+    assert_eq!(PREVIEW_TITLE, "Tried on the last 5 minutes");
+    assert_eq!(PREVIEW_INVALID, "Fix the query to see what it would drop.");
+}
+
+#[test]
+fn the_file_error_banner_names_the_error_and_says_the_old_rules_stay() {
+    assert_eq!(
+        file_error_line("expected a table, found a string at line 3"),
+        "The rules file has an error: expected a table, found a string at line 3. \
+         loctel keeps using the rules it had."
+    );
+    // An error that ends with a full stop does not end up with two.
+    assert_eq!(
+        file_error_line("unknown key `scpoe`."),
+        "The rules file has an error: unknown key `scpoe`. \
+         loctel keeps using the rules it had."
+    );
+    // The error of the TOML parser is several lines; the banner is one.
+    assert_eq!(
+        file_error_line("TOML parse error at line 2, column 1\n  |\n2 | [[rule]\n  | ^\n"),
+        "The rules file has an error: TOML parse error at line 2, column 1 | 2 | [[rule] | ^. \
+         loctel keeps using the rules it had."
+    );
+    // An error with no words still reads as a sentence.
+    assert_eq!(
+        file_error_line("  \n"),
+        "The rules file has an error. loctel keeps using the rules it had."
+    );
+}
+
+fn preview(traces: u64, spans: u64, logs: u64, error_traces: u64, error_logs: u64) -> Preview {
+    Preview {
+        traces,
+        spans,
+        logs,
+        error_traces,
+        error_logs,
+    }
+}
+
+#[test]
+fn a_trace_rule_preview_counts_spans_traces_and_the_traces_with_errors() {
+    let trace_rule = RuleLanguage::TraceQl;
+    assert_eq!(
+        preview_text(trace_rule, &preview(602, 1_204, 0, 0, 0)),
+        "Would have dropped 1,204 spans in 602 traces. None of those traces had errors."
+    );
+    assert_eq!(
+        preview_text(trace_rule, &preview(602, 1_204, 0, 3, 0)),
+        "Would have dropped 1,204 spans in 602 traces. 3 of those traces had errors."
+    );
+    // Logs of the dropped traces are not part of the sentence.
+    assert_eq!(
+        preview_text(trace_rule, &preview(602, 1_204, 9_999, 3, 5)),
+        "Would have dropped 1,204 spans in 602 traces. 3 of those traces had errors."
+    );
+}
+
+#[test]
+fn a_trace_rule_preview_is_singular_for_one_and_says_nothing_for_none() {
+    let trace_rule = RuleLanguage::TraceQl;
+    assert_eq!(
+        preview_text(trace_rule, &preview(1, 1, 0, 0, 0)),
+        "Would have dropped 1 span in 1 trace. That trace had no errors."
+    );
+    assert_eq!(
+        preview_text(trace_rule, &preview(1, 15, 0, 1, 0)),
+        "Would have dropped 15 spans in 1 trace. That trace had errors."
+    );
+    assert_eq!(
+        preview_text(trace_rule, &preview(0, 0, 0, 0, 0)),
+        "Would have dropped nothing."
+    );
+}
+
+#[test]
+fn a_log_rule_preview_counts_lines_and_the_errors_among_them() {
+    let log_rule = RuleLanguage::LogQl;
+    assert_eq!(
+        preview_text(log_rule, &preview(0, 0, 96, 0, 2)),
+        "Would have dropped 96 lines. 2 were errors."
+    );
+    assert_eq!(
+        preview_text(log_rule, &preview(0, 0, 96, 0, 0)),
+        "Would have dropped 96 lines. None were errors."
+    );
+    assert_eq!(
+        preview_text(log_rule, &preview(0, 0, 96, 0, 1)),
+        "Would have dropped 96 lines. 1 was an error."
+    );
+    assert_eq!(
+        preview_text(log_rule, &preview(0, 0, 12_345, 0, 1_200)),
+        "Would have dropped 12,345 lines. 1,200 were errors."
+    );
+    assert_eq!(
+        preview_text(log_rule, &preview(0, 0, 1, 0, 1)),
+        "Would have dropped 1 line. It was an error."
+    );
+    assert_eq!(
+        preview_text(log_rule, &preview(0, 0, 1, 0, 0)),
+        "Would have dropped 1 line. It was not an error."
+    );
+    assert_eq!(
+        preview_text(log_rule, &preview(0, 0, 0, 0, 0)),
+        "Would have dropped nothing."
+    );
+}
+
+#[test]
+fn the_editor_says_where_the_query_is_wrong_but_not_before_anything_is_typed() {
+    // Nothing typed: the query is an error to the parser, and the editor keeps
+    // quiet about it (the preview says to fix it).
+    assert_eq!(draft_error_line(&draft(RuleLanguage::TraceQl, "")), None);
+    assert_eq!(draft_error_line(&draft(RuleLanguage::LogQl, "  \n ")), None);
+    // A good query has no line.
+    assert_eq!(
+        draft_error_line(&draft(RuleLanguage::TraceQl, r#"{ name = "x" }"#)),
+        None
+    );
+    // A bad one says `at column N: message`, with the column the draft's own
+    // check gives (counted from 1).
+    let bad = draft(RuleLanguage::TraceQl, "{ status = ");
+    let (column, message) = bad.validate().query.expect_err("it is not a query");
+    assert_eq!(
+        draft_error_line(&bad),
+        Some(format!("at column {column}: {message}"))
+    );
+    let bad_logs = draft(RuleLanguage::LogQl, "{service_name=\"x\"");
+    let (column, message) = bad_logs.validate().query.expect_err("it is not a query");
+    assert_eq!(
+        draft_error_line(&bad_logs),
+        Some(format!("at column {column}: {message}"))
+    );
+    // The language decides which parser reads it: a TraceQL query is not LogQL.
+    assert!(draft_error_line(&draft(RuleLanguage::LogQl, "{ duration > 1s }")).is_some());
+    assert_eq!(
+        draft_error_line(&draft(RuleLanguage::TraceQl, "{ duration > 1s }")),
+        None
+    );
 }

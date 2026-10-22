@@ -1,12 +1,12 @@
 //! What the Discard rules screen shows: the cards of the list, the line with
-//! the total dropped, the editor's draft with its validation, and the rule
-//! "Discard lines like this…" suggests from a log. Plain Rust over the rules
-//! crate's types, with no GPUI in it: every exact string of the plan is pinned
-//! in `tests/model_rules.rs`.
+//! the total dropped, the banners, the editor's draft with its validation and
+//! the preview's sentence, and the rule "Discard lines like this…" suggests from
+//! a log. Plain Rust over the rules crate's types, with no GPUI in it: every
+//! exact string of the plan is pinned in `tests/model_rules.rs`.
 
 use loctel_model::LogRecord;
 use loctel_query::{logql, traceql};
-use loctel_rules::{DropScope, RuleId, RuleLanguage, RuleSpec, RuleStatus};
+use loctel_rules::{DropScope, Preview, RuleId, RuleLanguage, RuleSpec, RuleStatus};
 
 use super::logs::escaped;
 use super::trace_table::thousands;
@@ -16,6 +16,19 @@ pub const OFF: &str = "Off";
 
 /// What the total line says while nothing has been dropped.
 pub const NOTHING_DROPPED: &str = "Nothing dropped yet";
+
+/// The line under the screen's title.
+pub const SUBTITLE: &str = "Anything a rule matches is dropped as it arrives and never stored. \
+                            Rules are kept when loctel restarts.";
+
+/// What the list says when there are no rules at all.
+pub const NO_RULES: &str = "No discard rules. Nothing is dropped unless you add one.";
+
+/// The title of the editor's preview box.
+pub const PREVIEW_TITLE: &str = "Tried on the last 5 minutes";
+
+/// What the preview box says while the query does not parse.
+pub const PREVIEW_INVALID: &str = "Fix the query to see what it would drop.";
 
 /// How many characters of the log's body the suggested rule's name quotes.
 pub const NAME_BODY_CHARS: usize = 40;
@@ -99,16 +112,85 @@ fn row(status: &RuleStatus) -> RuleRow {
     }
 }
 
+/// `1,204`: `n` with a thousands separator.
+fn grouped(n: u64) -> String {
+    // A count over usize::MAX cannot happen on the 64-bit targets loctel
+    // builds for; saturating keeps it from wrapping anywhere else.
+    thousands(usize::try_from(n).unwrap_or(usize::MAX))
+}
+
 /// `1,204 spans`, `1 span`, `0 spans`.
 fn counted(n: u64, one: &str, many: &str) -> String {
     let noun = if n == 1 { one } else { many };
-    // A count over usize::MAX cannot happen on the 64-bit targets loctel
-    // builds for; saturating keeps it from wrapping anywhere else.
-    format!(
-        "{} {noun}",
-        thousands(usize::try_from(n).unwrap_or(usize::MAX))
-    )
+    format!("{} {noun}", grouped(n))
 }
+
+/// The banner of a rules file that cannot be used: `The rules file has an
+/// error: <message>. loctel keeps using the rules it had.` The message is the
+/// one line it is shown as: its blanks and line breaks (a TOML error is several
+/// lines) become single spaces, and a full stop at its end is dropped, so the
+/// sentence has one. A message with no words leaves `The rules file has an
+/// error.`.
+pub fn file_error_line(message: &str) -> String {
+    let flat = message.split_whitespace().collect::<Vec<_>>().join(" ");
+    let flat = flat.trim_end_matches('.');
+    if flat.is_empty() {
+        "The rules file has an error. loctel keeps using the rules it had.".to_owned()
+    } else {
+        format!("The rules file has an error: {flat}. loctel keeps using the rules it had.")
+    }
+}
+
+/// The preview box's sentence for a query that parses, as the editor's
+/// language reads it:
+///
+/// - a trace rule: `Would have dropped 1,204 spans in 602 traces. None of those
+///   traces had errors.` (or `3 of those traces had errors.`)
+/// - a log rule: `Would have dropped 96 lines. 2 were errors.`
+/// - a rule that matched nothing: `Would have dropped nothing.`
+///
+/// Singular for one (`1 span in 1 trace. That trace had errors.`, `1 line. It was
+/// an error.`), and counts have a thousands separator. The logs a trace rule
+/// takes with its traces are not part of its sentence.
+pub fn preview_text(language: RuleLanguage, preview: &Preview) -> String {
+    match language {
+        RuleLanguage::TraceQl => {
+            if preview.traces == 0 {
+                return NOTHING_WOULD_DROP.to_owned();
+            }
+            let errors = match (preview.error_traces, preview.traces) {
+                (0, 1) => "That trace had no errors.".to_owned(),
+                (0, _) => "None of those traces had errors.".to_owned(),
+                (_, 1) => "That trace had errors.".to_owned(),
+                (n, _) => format!("{} of those traces had errors.", grouped(n)),
+            };
+            format!(
+                "Would have dropped {} in {}. {errors}",
+                counted(preview.spans, "span", "spans"),
+                counted(preview.traces, "trace", "traces"),
+            )
+        }
+        RuleLanguage::LogQl => {
+            if preview.logs == 0 {
+                return NOTHING_WOULD_DROP.to_owned();
+            }
+            let errors = match (preview.error_logs, preview.logs) {
+                (0, 1) => "It was not an error.".to_owned(),
+                (0, _) => "None were errors.".to_owned(),
+                (1, 1) => "It was an error.".to_owned(),
+                (1, _) => "1 was an error.".to_owned(),
+                (n, _) => format!("{} were errors.", grouped(n)),
+            };
+            format!(
+                "Would have dropped {}. {errors}",
+                counted(preview.logs, "line", "lines")
+            )
+        }
+    }
+}
+
+/// What the preview says of a rule that would have dropped nothing.
+const NOTHING_WOULD_DROP: &str = "Would have dropped nothing.";
 
 /// The line on the right of the header: the share of everything that arrived
 /// that the rules dropped, since launch.
@@ -198,6 +280,22 @@ impl Draft {
     pub fn can_save(&self) -> bool {
         self.validate().name_ok
     }
+}
+
+/// The line under the editor's query input: `at column 12: <message>` (the
+/// column counts from 1) while the text does not parse. `None` for a query that
+/// parses and for one with nothing typed: a rule that has just been started is
+/// not an error yet (the preview box and the card of a saved rule say the query
+/// is not one).
+pub fn draft_error_line(draft: &Draft) -> Option<String> {
+    if draft.query.trim().is_empty() {
+        return None;
+    }
+    draft
+        .validate()
+        .query
+        .err()
+        .map(|(column, message)| format!("at column {column}: {message}"))
 }
 
 /// The rule `Discard lines like this…` opens in the editor, unsaved:

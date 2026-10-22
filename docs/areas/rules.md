@@ -12,8 +12,9 @@ it, reloads the file and reports the counts ("In the engine" below). MCP shows
 the rules in `get_status` ("In MCP" below), and the menu and the main window's status box show
 the rules line and the macOS menu opens the file for editing ("In the menu and
 the window" below; see the M2 plan,
-`superpowers/plans/2026-10-21-loctel-m2-query-rules.md`). The rules screen is
-Milestone 4. What no one has seen run is the Mac side (the menu), which the
+`superpowers/plans/2026-10-21-loctel-m2-query-rules.md`). The Discard rules
+screen (Milestone 4 Task 5, with the editor and the preview) is described in
+[`ui.md`](ui.md) ("The Discard rules screen"). What no one has seen run is the Mac side (the menu), which the
 Milestone 2 Mac checklist covers.
 
 The crate depends on `loctel-model`, `loctel-query` and `loctel-store` (to read
@@ -232,7 +233,10 @@ match that was already there can now drop the trace, stored spans included.
 
 `preview(&spec, &store, since_unix_nano) -> Result<Preview, QueryError>` runs one
 rule over the stored data and says what it would have dropped. The editor calls it
-with `now - PREVIEW_WINDOW` (5 minutes) as `since`. It looks only at this rule:
+with `now - PREVIEW_WINDOW` (5 minutes) as `since`, on the store's clock. It is a
+pass over the stored data, so the editor of the main window runs it on GPUI's
+background executor over a clone of the store (`UiBackend::preview_rule`, which
+is the same call, cannot leave the foreground thread; decision 0038). It looks only at this rule:
 other rules, the `enabled` flag and the memory are ignored, and nothing is
 changed.
 
@@ -311,7 +315,9 @@ rules_watch.rs}`). The reasons are in decision 0018.
     nothing. It starts at 0 and goes up after the new rules are in force. The
     rules editor (Milestone 4) reads it when it opens a rule and compares it
     later, so a rule edited in the file while a draft is open is noticed
-    (`UiBackend::rules_generation`).
+    (`UiBackend::rules_generation`). A change the editor's own window made (a
+    switch of a card) moves it too, and the editor takes that number as its own
+    (`RulesModel`, see [`ui.md`](ui.md)).
   - `set_rules` and `set_rule_enabled` save the file first (when there is a path)
     and then apply, so that a failed write is an `Err` that changes nothing. They
     clear a file error, since the file has just been written over. Invalid
@@ -393,10 +399,10 @@ of rules with errors never exceeds the number on, which keeps "3 discard rules o
 
 On macOS the menu also has **Edit discard rules…**, which opens
 `engine.rules_path()` in the default text editor (`NSWorkspace` `openURL`, and
-`open -t` if no app handles `.toml`). Editing the file by hand is the way to edit
-rules until the rules screen (M4); the engine reloads the file within about 2
-seconds (`RULES_POLL`, see "In the engine"). The item is greyed out when the
-engine has no rules file. Saving through the handle (the future rules screen)
+`open -t` if no app handles `.toml`). Editing the file by hand is the other way
+to edit rules, beside the rules screen of the main window; the engine reloads the file within about 2 seconds (`RULES_POLL`, see "In the
+engine"). The item is greyed out when the engine has no rules file. Saving
+through the handle (the rules screen's `Save`, `Delete` and switches)
 rewrites the file and drops hand-written comments, but keeps the header, so the
 menu item and the screen must not be offered as if both were lossless (decision
 0018). See [`macos.md`](macos.md) for what is unverified until the Mac check, and
@@ -404,4 +410,5 @@ menu item and the screen must not be offered as if both were lossless (decision
 
 ## Not here
 
-Prefilling a rule from a log line and the rules screen are M4.
+The rules screen, the editor and prefilling a rule from a log line are in the
+main window (Milestone 4), described in [`ui.md`](ui.md).

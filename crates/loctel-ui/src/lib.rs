@@ -26,14 +26,18 @@
 //!   the query bar), [`TraceModel`](app::TraceModel), an open trace's (read
 //!   every 500 ms while it arrives, then every 2 s), and
 //!   [`LogsModel`](app::LogsModel), the Logs screen's (the rows of the list in
-//!   pages, kept fresh by the live tail, and the histogram).
+//!   pages, kept fresh by the live tail, and the histogram), and
+//!   [`RulesModel`](app::RulesModel), the Discard rules screen's (the rules read
+//!   every second, and the editor session with its preview).
 //! - [`views`] holds the views of the main window's screens: the live
 //!   [`MapView`](views::MapView) and the [`TraceTableView`](views::TraceTableView)
 //!   (the TraceQL bar, the two toggles and the table) of the home screen, and
 //!   the [`TraceView`](views::TraceView) (the waterfall, the inspector and the
 //!   selected span's logs), and (Milestone 4) the Logs screen's
 //!   [`LogsView`](views::LogsView) (the LogQL bar, the level toggles, the
-//!   histogram and the list of lines).
+//!   histogram and the list of lines) and the Discard rules screen's
+//!   [`RulesView`](views::RulesView) (the cards of the rules, and beside them the
+//!   [`RuleEditorView`](views::RuleEditorView) with its preview).
 //! - [`menu_text`] holds the exact strings for the status line, the discard
 //!   rules line and the rates, so the macOS menu and the view cannot drift apart.
 //! - [`Theme`] holds the colours; [`register_fonts`] the bundled typeface.

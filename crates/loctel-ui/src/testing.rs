@@ -469,6 +469,15 @@ impl FixedBackend {
     fn replaced(&self) {
         self.generation.set(self.generation.get() + 1);
     }
+
+    /// The rules in memory, for a test that wants them to have dropped
+    /// something: pass data through [`RuleSet::filter_spans`] and
+    /// [`RuleSet::filter_logs`] as the engine's sink does, and the counters of
+    /// [`UiBackend::rules`] move (the share of
+    /// `status.dropped_fraction` does not: it is `status`'s as it is).
+    pub fn rule_set(&self) -> &RuleSet {
+        &self.rules
+    }
 }
 
 impl UiBackend for FixedBackend {
