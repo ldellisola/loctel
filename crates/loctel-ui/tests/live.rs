@@ -560,11 +560,7 @@ fn map_rates_are_counts_over_the_range() {
     f.clock.advance(Duration::from_secs(250));
     f.update(|home, cx| home.set_range(TimeRange::Last5m, cx));
     f.settle();
-    assert_eq!(
-        subtitle(&f),
-        "0.2 req/s \u{b7} 0% err",
-        "50 over 5 minutes"
-    );
+    assert_eq!(subtitle(&f), "0.2 req/s \u{b7} 0% err", "50 over 5 minutes");
     for range in [
         TimeRange::Last15m,
         TimeRange::LastHour,

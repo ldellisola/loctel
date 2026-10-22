@@ -521,7 +521,11 @@ impl ReadPlan {
 
     /// How long the map's counts cover. See [`rate_window_secs`].
     fn window_secs(&self, now: u64) -> f64 {
-        rate_window_secs(self.range.seconds(), self.store.oldest_start_unix_nano(), now)
+        rate_window_secs(
+            self.range.seconds(),
+            self.store.oldest_start_unix_nano(),
+            now,
+        )
     }
 }
 
@@ -551,7 +555,10 @@ mod tests {
 
     #[test]
     fn young_data_divides_by_the_time_it_covers() {
-        assert_eq!(rate_window_secs(Some(900), Some(1_000 * S), 1_060 * S), 60.0);
+        assert_eq!(
+            rate_window_secs(Some(900), Some(1_000 * S), 1_060 * S),
+            60.0
+        );
     }
 
     #[test]
