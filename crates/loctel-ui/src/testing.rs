@@ -647,6 +647,9 @@ pub fn listening_status() -> EngineStatus {
         dropped_spans: 0,
         dropped_logs: 0,
         dropped_fraction: 0.0,
+        disk_bytes: 0,
+        disk_cap_bytes: 4 * 1024 * 1024 * 1024,
+        spill_error: None,
     }
 }
 

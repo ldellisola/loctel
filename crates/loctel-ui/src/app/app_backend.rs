@@ -120,6 +120,8 @@ impl UiBackend for AppBackend {
         // Saved first: a port that cannot be bound is still the user's choice,
         // and a file that cannot be written must not move anything.
         s.save(&self.settings_path)?;
+        // The disk cap applies at once: a lower one deletes the oldest data now.
+        self.engine.set_disk_cap(s.disk_cap_bytes);
         Ok(self.engine.rebind(Ports::from(&s)))
     }
 

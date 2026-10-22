@@ -768,6 +768,69 @@ async fn get_status_reports_what_the_source_says() {
 }
 
 #[tokio::test]
+async fn mcp_status_has_disk_fields() {
+    // What loctel keeps on disk, what it may keep, and why it cannot write.
+    let status = StatusDto {
+        disk_bytes: 1_300_000_000,
+        disk_cap_bytes: 4 * 1024 * 1024 * 1024,
+        spill_error: Some("No space left on device (os error 28)".to_owned()),
+        ..sample_status()
+    };
+    let fixture = Fixture::with_status(Arc::new(FakeStatus(status)));
+
+    let r = fixture.call("get_status", json!({})).await;
+
+    assert_eq!(r["disk_bytes"], 1_300_000_000u64);
+    assert_eq!(r["disk_cap_bytes"], 4_294_967_296u64);
+    assert_eq!(r["spill_error"], "No space left on device (os error 28)");
+    // The rest of the status is as before.
+    assert_eq!(r["traces_held"], 4);
+
+    // A healthy disk: the numbers, and `spill_error` there as `null` (a key
+    // without a `?` is always present).
+    let fixture = Fixture::new();
+    let r = fixture.call("get_status", json!({})).await;
+    assert_eq!(r["disk_bytes"], 0);
+    assert_eq!(r["disk_cap_bytes"], 4_294_967_296u64);
+    assert_eq!(r.get("spill_error"), Some(&Value::Null), "{r}");
+}
+
+#[tokio::test]
+async fn status_cuts_a_long_spill_error_at_2000_characters() {
+    let long = "x".repeat(2_500);
+    let cut = format!("{}…(truncated)", "x".repeat(2_000));
+    let status = StatusDto {
+        spill_error: Some(long),
+        ..sample_status()
+    };
+    let fixture = Fixture::with_status(Arc::new(FakeStatus(status)));
+
+    let r = fixture.call("get_status", json!({})).await;
+
+    assert_eq!(r["spill_error"], cut.as_str());
+}
+
+#[test]
+fn the_status_schema_requires_the_disk_fields() {
+    let tool = LoctelTools::definitions()
+        .into_iter()
+        .find(|tool| tool.name == "get_status")
+        .expect("get_status");
+    let schema = Value::Object((**tool.output_schema.as_ref().unwrap()).clone());
+    let required: Vec<&str> = schema["required"]
+        .as_array()
+        .expect("required keys")
+        .iter()
+        .map(|key| key.as_str().unwrap())
+        .collect();
+    for key in ["disk_bytes", "disk_cap_bytes", "spill_error"] {
+        assert!(required.contains(&key), "{key} is required: {required:?}");
+    }
+    let description = tool.description.as_deref().unwrap_or_default();
+    assert!(description.contains("disk"), "{description}");
+}
+
+#[tokio::test]
 async fn get_marker_is_the_stores_time_in_both_forms() {
     let fixture = Fixture::new();
 

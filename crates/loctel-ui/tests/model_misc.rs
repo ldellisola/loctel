@@ -360,12 +360,16 @@ fn engine(paused: bool, listeners: Vec<ListenerStatus>) -> EngineStatus {
             logs: 1_200_000,
             spans_received: 500,
             logs_received: 2_000,
+            ..StoreStats::default()
         },
         rules: vec![],
         rules_file_error: None,
         dropped_spans: 0,
         dropped_logs: 0,
         dropped_fraction: 0.0,
+        disk_bytes: 0,
+        disk_cap_bytes: 4 * 1024 * 1024 * 1024,
+        spill_error: None,
     }
 }
 

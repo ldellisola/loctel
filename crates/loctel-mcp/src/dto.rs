@@ -255,6 +255,17 @@ pub struct StatusDto {
     /// Spans and logs the rules dropped, divided by those dropped plus those
     /// accepted, since launch: 0 to 1, 0 when nothing has arrived.
     pub dropped_fraction: f64,
+    /// What loctel keeps in temporary files on disk, in bytes: the traces and
+    /// logs it moved out of memory. 0 when it keeps everything in memory.
+    pub disk_bytes: u64,
+    /// The most it may keep there, in bytes (the disk cap of the settings, 4 GiB
+    /// by default). Over it, the oldest data is deleted, whole.
+    pub disk_cap_bytes: u64,
+    /// Why loctel could not write to disk the last time it tried (the volume is
+    /// full, say), or `null`. While it is set the data that did not fit stays in
+    /// memory, up to its limits, and loctel tries again every minute.
+    #[schemars(required, schema_with = "nullable_string")]
+    pub spill_error: Option<String>,
 }
 
 /// The query language of a discard rule, as written in `rules.toml`.

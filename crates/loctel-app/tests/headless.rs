@@ -36,14 +36,19 @@ impl Loctel {
 
     /// [`spawn`](Self::spawn) with `args` as given: no `--rules` is added.
     fn spawn_exactly(settings: &Path, args: &[&str]) -> Loctel {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_loctel"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_loctel"));
+        command
             .arg("--headless")
             .arg("--settings")
             .arg(settings)
             .args(args)
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("the loctel binary starts");
+            .stdout(Stdio::piped());
+        // The run's temporary files (its segment files) go beside its settings,
+        // never into the developer's own temporary directory.
+        if let Some(dir) = settings.parent().filter(|dir| dir.is_dir()) {
+            command.env("TMPDIR", dir);
+        }
+        let mut child = command.spawn().expect("the loctel binary starts");
         let stdout = child.stdout.take().unwrap();
         let (tx, lines) = mpsc::channel();
         thread::spawn(move || {
@@ -151,6 +156,61 @@ fn headless_binary_stops_cleanly_on_sigint() {
 
     loctel.signal("INT");
 
+    assert_eq!(loctel.wait().code(), Some(0));
+}
+
+/// The run directories in `<tmp>/loctel/` (what the app keeps its segment files
+/// in), as names. Empty when `<tmp>/loctel` does not exist.
+fn run_dirs(tmp: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(tmp.join("loctel")) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn headless_binary_spills_into_a_run_directory_and_deletes_it_on_exit() {
+    let dir = tempfile::tempdir().unwrap();
+    // What a killed run left behind goes at the next start.
+    let stale = dir.path().join("loctel/run-999999-1700000000");
+    std::fs::create_dir_all(&stale).unwrap();
+    let mut loctel = Loctel::spawn(&settings_path(&dir), &PORTS_ZERO);
+    loctel.listener_lines();
+
+    let runs = run_dirs(dir.path());
+    assert_eq!(runs.len(), 1, "this run's directory only: {runs:?}");
+    assert!(
+        runs[0].starts_with(&format!("run-{}-", loctel.child.id())),
+        "named after the process: {runs:?}"
+    );
+    assert!(!stale.exists());
+
+    loctel.signal("TERM");
+
+    assert_eq!(loctel.wait().code(), Some(0));
+    assert_eq!(
+        run_dirs(dir.path()),
+        Vec::<String>::new(),
+        "deleted on exit"
+    );
+}
+
+#[test]
+fn headless_no_spill_flag_makes_no_run_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut loctel = Loctel::spawn(
+        &settings_path(&dir),
+        &[&PORTS_ZERO[..], &["--no-spill"]].concat(),
+    );
+    loctel.listener_lines();
+
+    assert!(!dir.path().join("loctel").exists(), "nothing is spilled");
+
+    loctel.signal("TERM");
     assert_eq!(loctel.wait().code(), Some(0));
 }
 

@@ -173,7 +173,10 @@ rules) are written to disk.
   and for a cold trace its summary) stays in memory, so lists, searches, counts and
   "oldest start" do not read the files. The spans of a cold trace are decoded on
   demand through a small cache. `Store::spilled_traces()` counts the cold ones;
-  nothing else tells. The disk cap is not enforced yet. Details and the reasons:
+  nothing else tells. The disk cap (`disk_cap_bytes`, 4 GiB) is enforced after every
+  write by deleting the oldest segment file whole, with the traces and log chunks in
+  it; a write that fails (a full volume) is waited out for a minute and reported in
+  `StoreStats::spill_error` while the data stays in memory. Details and the reasons:
   [`areas/store.md`](areas/store.md), "Hot and cold traces", and
   [`decisions/0045-trace-index-and-spill-policy.md`](decisions/0045-trace-index-and-spill-policy.md).
 - **Log chunks (Milestone 5).** Logs go to an open chunk in memory, which is
@@ -465,8 +468,8 @@ and, for the rules,
   buckets, of what the rules **accepted**. Time is passed in, never read, so
   tests need no sleeping. The first 5 seconds after start understate the rate.
 - **Status.** `EngineStatus { paused, listeners, spans_per_sec, logs_per_sec,
-  stats, rules, rules_file_error, dropped_spans, dropped_logs, dropped_fraction }`
-  is a snapshot by value. Callers poll it (the UI) or print it (the
+  stats, rules, rules_file_error, dropped_spans, dropped_logs, dropped_fraction,
+  disk_bytes, disk_cap_bytes, spill_error }` is a snapshot by value. Callers poll it (the UI) or print it (the
   headless binary). `listeners` is `otlp-grpc`, `otlp-http`, `mcp`, in that
   order. The same state, behind `StatusSource`, answers the MCP `get_status`
   tool, so the two cannot disagree.
@@ -479,8 +482,19 @@ and, for the rules,
   `~/Library/Application Support/loctel/settings.toml`. `load` is strict (a
   missing file is the defaults, an unreadable or invalid one is an `Err`
   naming the file); `load_or_default` never fails and never rewrites a bad file.
-  `disk_cap_bytes` is stored but not enforced until the spill-to-disk store
-  exists (Milestone 5).
+  `disk_cap_bytes` is given to the store at start (`Engine::start` sets
+  `StoreConfig::disk_cap_bytes` from it, whatever the store config said), and
+  `EngineHandle::set_disk_cap(bytes)` applies a new one at once (the app's
+  `AppBackend::apply_settings` calls it after saving the file).
+- **The run directory.** `EngineConfig::spill_base` is where the store's temporary
+  segment files go: `Some(base)` makes `base/run-<pid>-<start>/` at start (deleting
+  the directories of runs whose process is gone first), has the store spill into it
+  and deletes it at `shutdown` (and when the last handle is dropped). The app passes
+  `default_spill_base()`, `$TMPDIR/loctel`, unless it was started with `--no-spill`;
+  the default (`None`) keeps everything in memory, which is what the tests want. A
+  directory that cannot be made does not stop the engine: it runs in memory and says
+  why in `EngineStatus::spill_error`. After `shutdown` the store still answers for
+  what it holds in memory, and what was spilled is gone with the directory.
 
 ## Headless mode
 
@@ -489,14 +503,18 @@ what the end-to-end tests, the release smoke test and agents on Linux use.
 
 ```
 loctel [--headless] [--grpc-port N] [--http-port N] [--mcp-port N]
-       [--settings PATH] [--rules PATH] [--completeness-ms N]
+       [--settings PATH] [--rules PATH] [--completeness-ms N] [--no-spill]
 ```
 
 - **Configuration.** Settings come from `--settings PATH`, else the per-user
   file; a missing file is fine, and a broken one is reported on stderr and
   replaced by the defaults for this run. The port flags win over the file.
   `--completeness-ms` sets how long a trace must be quiet to count as complete
-  (tests use small values). Port 0 picks a free port. The file is only read:
+  (tests use small values). `--no-spill` keeps everything in memory: without it
+  the engine moves what it no longer needs in memory to temporary files in a run
+  directory under the system's temporary directory, up to the disk cap of the
+  settings, and deletes it on shutdown (see "The run directory" above). Port 0
+  picks a free port. The file is only read:
   headless mode never writes it. The discard rules are in `--rules PATH`, else
   `rules.toml` in the directory of the settings file (so beside a scratch
   `--settings` file, and in the per-user folder otherwise). Unlike the settings,
@@ -525,7 +543,11 @@ loctel [--headless] [--grpc-port N] [--http-port N] [--mcp-port N]
   headless.
 - **Tests.** `crates/loctel-app/tests/headless.rs` runs the built binary:
   the lines (the rules line included), SIGTERM and SIGINT, a taken port,
-  settings file and flags. `crates/loctel-app/tests/window.rs` runs it without
+  settings file and flags, and (Milestone 5) the run directory: it is made in
+  `$TMPDIR/loctel/` (the test points `TMPDIR` beside its settings file, so the
+  developer's own is never touched), a dead run's directory is deleted at start, and
+  this run's is deleted at exit; `--no-spill` makes none.
+  `crates/loctel-app/tests/window.rs` runs it without
   `--headless` under `xvfb-run` (Linux; skips with a printed notice without
   xvfb): the window stays open for 3 s, the startup lines are printed and
   SIGTERM ends it with status 0.

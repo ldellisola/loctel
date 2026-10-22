@@ -28,7 +28,9 @@ way: the segment files and the run directory it spills into exist (see "Segment
 files" below), **traces** spill through them (see "Hot and cold traces" below)
 and **logs** are held in chunks, the sealed ones in segment files, with the
 count of a filter, the log at a position and the histogram answered from what is
-kept about each chunk (see "Log chunks" below). The disk cap is not enforced yet.
+kept about each chunk (see "Log chunks" below). The **disk cap** is enforced: the oldest
+segment files are deleted whole when the files take more than it, and a write that
+fails is waited out and reported (see "The disk cap" and "A failing disk" below).
 
 ## API
 
@@ -53,6 +55,9 @@ let oldest = store.oldest_log_unix_nano(); // Option<u64>
 let map = store.service_map(TimeWindow { since_unix_nano }); // ServiceMap
 let services = store.services(TimeWindow { since_unix_nano }); // Vec<ServiceStats>
 let stats = store.stats();               // StoreStats
+store.set_disk_cap(bytes);               // applies at once: the oldest segment files go whole
+let on_disk = store.disk_bytes();        // what the segment files take, dead records included
+let cap = store.disk_cap_bytes();        // the cap now
 let oldest = store.oldest_start_unix_nano(); // Option<u64>, the earliest trace start held
 let now = store.now_unix_nano();         // the store's clock, for markers
 let removed = store.remove_trace(trace_id);               // Removed { spans, logs }
@@ -91,18 +96,27 @@ store.clear();
   | `spill_after` | 30 s | how long a complete trace stays in memory before it is spilled |
   | `hot_max_spans` | 2,000,000 | spans of traces in memory before the oldest complete ones go early |
   | `segment_max_bytes` | 64 MiB | a segment file is finished at this size and the next trace starts a new one |
-  | `disk_cap_bytes` | 4 GiB | the most the segment files may take (not enforced yet) |
+  | `disk_cap_bytes` | 4 GiB | the most the segment files may take: past it the oldest segment goes whole (see "The disk cap") |
+  | `spill_retry` | 60 s | how long the store waits after a failed write before it tries to write again (see "A failing disk") |
   | `log_chunk_max` | 65,536 | logs the open chunk takes before it is sealed |
   | `log_chunk_age` | 10 s | how long the open chunk may stay open, from its first log, before it is sealed |
 
   `StoreConfig::spilling_for_tests(dir)` (hidden from the docs) is the config
   the tests spill with: `spill_after` 0, `segment_max_bytes` 4 KiB,
-  `hot_max_spans` 16 and `log_chunk_max` 7 (so that every log test of the crate
-  runs over sealed chunks), the rest the defaults.
+  `hot_max_spans` 16, `log_chunk_max` 7 (so that every log test of the crate
+  runs over sealed chunks) and `spill_retry` 0 (a failed write is tried again at
+  the next step), the rest the defaults.
 
 - `StoreStats`: `traces`, `spans` and `logs` are what the store holds now.
   `spans_received` and `logs_received` are lifetime totals of what it
-  accepted. See "Counting" below.
+  accepted. See "Counting" below. Since Milestone 5 it also says where the data
+  is: `spilled_traces` (the traces that are in segment files), `disk_bytes` (what
+  the files take, dead records included) and `spill_error` (why the last write to
+  a segment failed, until one works). It is no longer `Copy` (`spill_error` is a
+  `String`), and **`==` compares the five counters only**: the store's tests
+  compare a store in memory with one that spills, fed the same data, and they
+  must keep passing now that the second has files and the first has none. Compare
+  `spilled_traces`, `disk_bytes` and `spill_error` yourself when you mean them.
 
 ### `TraceSnapshot`
 
@@ -760,7 +774,8 @@ and hidden from the generated docs (`#[doc(hidden)]`) only so that tests can
 reach them; nothing outside the crate uses them, and `Store` is still the only
 entry point. **Status:** the modules and their tests exist, and `Store` spills
 traces and sealed chunks of logs through them (see "Hot and cold traces" and "Log
-chunks"); the disk cap comes in the next task. The decision and its reasons are
+chunks"), and the disk cap deletes the oldest of the files (see "The disk cap").
+The decision and its reasons are
 [`decisions/0044-segment-file-format.md`](../decisions/0044-segment-file-format.md).
 
 ### The record
@@ -774,7 +789,7 @@ A segment is an append-only file of records, with no header or footer:
 Both numbers are little-endian, `len` is the length of the compressed bytes,
 and zstd runs at level 1. Record 0 starts at byte 0 and the next record starts
 where the last one ended, so the size of the file is the sum of its records
-(`Writer::bytes`, and what the disk cap will count). A `Location { seq, offset,
+(`Writer::bytes`, and what the disk cap counts). A `Location { seq, offset,
 len }` finds a record again: the segment's number, the byte its header starts
 at, and the length from its header (`Location::disk_bytes` adds the 8 header
 bytes). Files are `traces-{seq:06}.seg` and `logs-{seq:06}.seg`; a number is
@@ -928,10 +943,9 @@ with the summary computed from the spans. The work is done under the store's wri
 lock, a trace at a time.
 
 If a write fails (the disk is full, the directory is gone) the trace stays hot, the
-step ends, the reason is kept (`Store::spill_error`, a hidden accessor until the
-status reports it) and the next step tries again. The store never panics over it.
-Memory then grows with the data, up to `max_traces`, as it did before M5; stopping
-and reporting that cleanly is the next task's.
+step ends, and the store waits before it writes again and says why
+(`StoreStats::spill_error`, see "A failing disk"). The store never panics over it.
+Memory then grows with the data, up to `max_traces`, as it did before M5.
 
 ### Rehydration
 
@@ -959,8 +973,8 @@ A record cannot be taken out of its file. When its trace comes back to memory or
 removed or evicted (or, for a chunk of logs, evicted whole or written again
 without logs a rule removed), the record is **dead**: still on disk, counted in the disk
 total (`Store::spill_disk_bytes`, hidden for now) and in `spill_dead_bytes`, until
-its whole segment is deleted. M5's disk cap (a later task) deletes the oldest
-segment whole, which takes its traces and its log chunks with it; a trace never
+its whole segment is deleted. The disk cap deletes the oldest segment whole, which
+takes its traces and its log chunks with it (see "The disk cap"); a trace never
 straddles two segments.
 
 `src/segment_set.rs` keeps the books. One segment is open for writing for each kind of
@@ -1162,7 +1176,9 @@ once, as for traces), and its logs are still in `stats().logs` and in the counts
 until the chunk is evicted, which drops it whole as the oldest. Nothing panics. A
 write that fails (the disk is full, the directory is gone) leaves the chunk in
 memory and the error in `spill_error`, and ingest goes on; a later seal that
-works clears it.
+works clears it. Such a chunk **stays in memory** for good, even when the disk
+works again (the logs are bounded by `max_log_records`, and the chunks sealed from
+then on go to disk): see "A failing disk" for what waits and for how long.
 
 ### What it costs
 
@@ -1187,6 +1203,80 @@ What a chunk costs to read is most of every slow row: Task 6 of the milestone
 record of independent blocks with an index of their first ids) or faster, are the
 two ways to make `logs_at` fast; the window of the Logs screen can snap to whole
 seconds for the histogram.
+
+## The disk cap
+
+The files of a store that spills take at most `disk_cap_bytes` (4 GiB by default,
+the `Settings::disk_cap_bytes` of the app, changed while loctel runs with
+`Store::set_disk_cap`). **Disk bytes** are the sizes of the segment files, so they
+include the dead records (see "Dead bytes and segments"): a record is not
+taken out of its file, the file goes whole.
+
+After every call that can write (`ingest_spans`, `ingest_logs`, `remove_trace`,
+`remove_spans`, and the spill step that runs ahead of the reads) and at once when
+`set_disk_cap` is called, the store compares the disk bytes with the cap. Over it,
+it deletes **the oldest segment file** (the lowest number: numbers count up over
+traces and logs, so the order is the order of the files' birth), then the next
+oldest, until the files take no more than the cap. Deleting a segment forgets what
+was in it, whole:
+
+- every **cold trace** whose record is in the file leaves the index, as if it had
+  been evicted (`traces` and `spans` go down by what it held, a late span for it
+  starts a new trace, `spans_received` does not change). A trace is one record in
+  one file, so a trace is there whole or not at all;
+- every **sealed chunk of logs** whose record is in the file is dropped. Each is
+  read first to forget the dedup keys of its logs, as eviction by count does, so a
+  retry of a log that went is taken as new. That costs a read and decode of every
+  chunk in the file (about 30 ms a chunk, in the development container: a 64 MiB
+  segment is tens of chunks), under the store's write lock, once per file
+  deleted: the cap only costs this when the disk is full of data, once per 64 MiB
+  written. Chunks that are in memory (a failed write) are in no file and stay;
+- the file is deleted, with its map, and its writer if it was the one being
+  written (the next write starts a file).
+
+Nothing is deleted that the cap does not require, nothing out of order (a file with
+nothing but dead records is not deleted early), and nothing is left over: the
+disk bytes, the files and `StoreStats` agree after the call (`disk_cap.rs`
+checks all three after every cap it sets). A cap too small to hold one record
+keeps nothing on disk: whatever is written goes at the end of the call. A store
+with no `spill_dir` has no files and `set_disk_cap` only remembers the number.
+
+Deleting needs no new space, so the cap works on a full volume, which is how space
+comes back.
+
+## A failing disk
+
+A write to a segment can fail: the volume is full (`ENOSPC`), the directory is gone
+(someone cleaned the temporary directory), the disk fails. Review Focus 4 of the
+plan: the store stops spilling, keeps ingesting in memory, says so, and tries
+again later; it never panics. Concretely:
+
+- The failed write leaves a trace **hot** (it is tried again, not lost) and a
+  sealed chunk of logs **in memory**.
+- The reason becomes `StoreStats::spill_error` (`"No space left on device (os error
+  28)"` for a full volume), and is printed on stderr once, not once per failed write.
+- **Writes are suspended** for `spill_retry` (60 s): every append fails at once,
+  without trying the disk, with the same reason, so a store with a full disk does not
+  spend its time on writes that fail (a seal of 65,536 logs would be encoded and
+  refused every time). The first call after the minute resumes writes: the step
+  tries the oldest hot trace that is ready, a seal tries its chunk. A write that
+  fails again suspends them for another minute.
+- What cannot be written stays in memory, **up to the limits that always applied**:
+  `max_traces` evicts the oldest trace whole, `max_log_records` the oldest logs. It
+  does not grow without bound, and ingest, search and every read go on working.
+- A write that works clears the error (a trace spilled, or a chunk written), and
+  from then on every complete trace spills again. The chunks of logs whose
+  write failed stay in memory until they are evicted: they are not written
+  later, which is a bounded cost (`max_log_records`) that keeps the store simple.
+- **The error is cleared by a write**, not by a probe: a store with nothing to write
+  keeps the error until it has. `clear` forgets it (everything is gone, and the files
+  with it).
+- Deleting still works, so the disk cap goes on, and lowering it is a way to make room
+  (but the files of the run are all the store can free: the operator frees the rest).
+
+The hidden hooks `Store::inject_write_failure(bool)` (every write fails as a full
+volume's does) and `Store::failed_write_attempts()` (how many writes tried the disk
+and failed) are how `disk_cap.rs` tests this without a full volume.
 
 ## Tests
 
@@ -1236,6 +1326,15 @@ seconds for the histogram.
   logs, retries, trace context), removals and clock steps against a plain list and compares
   every read of the store with it after each one, for chunk sizes from 3 to 500, with and
   without segment files.
+- `disk_cap.rs`: Milestone 5, Task 4. `cap_evicts_oldest_segments_whole` (the files that
+  go are the oldest, the newest traces stay whole, it stops as soon as it is under the cap),
+  `the_cap_holds_while_data_arrives`, `log_segments_go_with_their_chunks` (and the
+  dedup keys with them), `lowering_cap_evicts_now_and_keeps_stats_consistent` (traces and
+  logs mixed, caps down to one byte, every counter and the files agree, then it works
+  again), a cap smaller than a record, a store in memory;
+  `spill_write_failure_keeps_ingesting_and_reports` (a volume that fills up: nothing
+  panics, memory is held to its limits, one attempt a minute, the error clears when a write
+  works) and the cap on a failing disk.
 - `fixtures.rs`: `span(...)`, `error(span)`, `with_kind`, `with_attr`,
   `with_exception`, `log(...)`, `with_severity`, `in_span`, `in_trace`,
   `tid(n)`, `sid(n)` and the `store_with_manual_clock()` builders every store

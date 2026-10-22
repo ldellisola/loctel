@@ -36,10 +36,16 @@ pub struct StoreConfig {
     /// The size at which a segment file is finished and the next trace goes
     /// into a new one. A trace is never split, so a file is a little over it.
     pub segment_max_bytes: u64,
-    /// The most disk the segment files may use: the oldest segments go whole
-    /// when they would take more. Not enforced yet; the disk cap is the next
-    /// task of the milestone.
+    /// The most disk the segment files may use, dead records included: when they
+    /// take more, the oldest segment goes whole, with the traces and the logs in
+    /// it, until they are under it again. Applies after every write, and at once
+    /// when [`Store::set_disk_cap`](crate::Store::set_disk_cap) changes it.
     pub disk_cap_bytes: u64,
+    /// How long the store waits after a write to a segment has failed (the volume
+    /// is full, the directory is gone) before it tries to write again. Until
+    /// then it keeps what it cannot write in memory (up to `max_traces` and
+    /// `max_log_records`) and says why in [`StoreStats::spill_error`](crate::StoreStats).
+    pub spill_retry: Duration,
     /// How many logs the open chunk takes before it is sealed (see
     /// "Log chunks" in `docs/areas/store.md`). A sealed chunk is written to a
     /// segment file when the store has one, and read back through a small cache
@@ -62,6 +68,7 @@ impl Default for StoreConfig {
             hot_max_spans: 2_000_000,
             segment_max_bytes: 64 * 1024 * 1024,
             disk_cap_bytes: 4 * 1024 * 1024 * 1024,
+            spill_retry: Duration::from_secs(60),
             log_chunk_max: LOG_CHUNK_MAX,
             log_chunk_age: LOG_CHUNK_AGE,
         }
@@ -72,7 +79,8 @@ impl StoreConfig {
     /// A config that spills into `dir` as eagerly as it can: a trace goes to a
     /// segment the moment it is complete (`spill_after` is zero), a segment
     /// rolls every 4 KiB, the oldest complete traces go early past 16 hot
-    /// spans and a chunk of logs is sealed every 7 logs, so a test that lets the
+    /// spans, a chunk of logs is sealed every 7 logs and a failed write is
+    /// tried again at the next step (`spill_retry` is 0), so a test that lets the
     /// clock pass the quiet period meets every cold path: decoding on a read,
     /// rehydrating on a late span, a trace spread over many segments, logs
     /// spread over many chunks that a late log overlaps. Everything else is the
@@ -87,6 +95,7 @@ impl StoreConfig {
             spill_after: Duration::ZERO,
             segment_max_bytes: 4 * 1024,
             hot_max_spans: 16,
+            spill_retry: Duration::ZERO,
             log_chunk_max: 7,
             ..StoreConfig::default()
         }

@@ -1561,7 +1561,9 @@ If a Settings window is already open it focuses that one and returns its handle
 (the handle is kept in a GPUI global and checked against `cx.windows()`, so a
 window that was closed is forgotten and the next call opens a new one). The view
 takes the theme from the window's appearance and follows it, as `MainWindow`
-does. The disk cap is not on the form until M5 (nothing enforces it). The form's
+does. The disk cap is not on the form yet (Milestone 5, Task 8 puts it there); the
+engine already enforces the one in the file, and `AppBackend::apply_settings` hands
+whatever cap the settings hold to `EngineHandle::set_disk_cap`. The form's
 rules are `model::settings::Form` (see "Models"); decision 0039 has the choices
 the plan left open.
 

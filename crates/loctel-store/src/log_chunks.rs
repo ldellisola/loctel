@@ -686,7 +686,12 @@ impl LogStore {
         let Some(segments) = segments else {
             return Data::Memory(Arc::new(rows));
         };
-        match segments.append(Kind::Logs, &encode_logs(&rows)) {
+        // A suspended segment set refuses before the chunk is encoded: that is
+        // the work a full disk must not make the store do on every seal.
+        let written = segments
+            .check_writable()
+            .and_then(|()| segments.append(Kind::Logs, &encode_logs(&rows)));
+        match written {
             Ok(location) => {
                 self.wrote = true;
                 Data::Disk(location)
@@ -717,6 +722,38 @@ impl LogStore {
         self.sealed.clear();
         self.held.clear();
         self.cache.get_mut().entries.clear();
+        self.write_error = None;
+        self.wrote = false;
+    }
+
+    /// Drops every sealed chunk whose record is in one of the segments `doomed`
+    /// (sorted), which the caller is about to delete: the disk cap's eviction
+    /// of the oldest files. Each chunk is read first, to forget the dedup keys of
+    /// its logs as eviction by count does (a retry that arrives after its log
+    /// went is taken as new); one that cannot be read is dropped all the same.
+    /// Chunks in memory are in no segment and stay.
+    pub(crate) fn drop_in_segments(
+        &mut self,
+        doomed: &[u64],
+        mut segments: Option<&mut SegmentSet>,
+    ) {
+        let mut index = 0;
+        while index < self.sealed.len() {
+            let doomed_here = self.sealed[index]
+                .location()
+                .is_some_and(|location| doomed.binary_search(&location.seq).is_ok());
+            if !doomed_here {
+                index += 1;
+                continue;
+            }
+            if let Some(rows) = self.decoded(&self.sealed[index], segments.as_deref(), false) {
+                let skip = self.sealed[index].skip.min(rows.len());
+                for row in &rows[skip..] {
+                    self.held.remove(&row.record.dedup_key());
+                }
+            }
+            self.drop_chunk(index, segments.as_deref_mut());
+        }
     }
 
     /// Drops the oldest logs until at most `max` remain.

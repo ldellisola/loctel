@@ -25,9 +25,11 @@
 //! `spill_dir` ([`StoreConfig`]), the store moves the traces that are complete
 //! out of memory into [`segment`] files (append-only files of checksummed,
 //! compressed records), keeps a small index of every trace in memory, and brings
-//! a trace back when a late span arrives for it. The [`run_dir`] holds one run's
-//! segments. Both modules are public, and hidden from the docs, only so that
-//! tests can reach them.
+//! a trace back when a late span arrives for it. The files are kept under a disk
+//! cap by deleting the oldest segment whole ([`Store::set_disk_cap`]), and a
+//! write that fails is waited out and reported ([`StoreStats::spill_error`]).
+//! The [`run_dir`] holds one run's segments. Both modules are public, and hidden
+//! from the docs, only so that tests can reach them.
 //!
 //! Time comes from a [`Clock`], so tests drive completeness with a
 //! [`ManualClock`] instead of sleeping.

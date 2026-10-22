@@ -198,7 +198,9 @@ impl LoctelTools {
             OTLP HTTP, MCP) with its address and any error, spans and logs received per second \
             over the last 5 seconds, how many traces, spans and logs are held, and the discard \
             rules (what each drops, and whether its query has an error), whether the rules file \
-            has an error, and the share of what arrived that the rules dropped.",
+            has an error, the share of what arrived that the rules dropped, and the disk: how \
+            many bytes loctel keeps in temporary files, its cap, and the error if it cannot \
+            write.",
         annotations(
             title = "loctel status",
             read_only_hint = true,
@@ -216,6 +218,7 @@ impl LoctelTools {
             rule.error = rule.error.as_deref().map(truncate);
         }
         status.rules_file_error = status.rules_file_error.as_deref().map(truncate);
+        status.spill_error = status.spill_error.as_deref().map(truncate);
         Ok(Json(status))
     }
 

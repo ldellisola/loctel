@@ -41,7 +41,7 @@ the tool's output schema, plus the same JSON as text.
 
 | tool | arguments | returns |
 |---|---|---|
-| `get_status` | none | `{paused, listeners:[{name,address,state,error?}], spans_per_sec, logs_per_sec, traces_held, spans_held, logs_held, rules:[RuleDto], rules_file_error, dropped_fraction}` |
+| `get_status` | none | `{paused, listeners:[{name,address,state,error?}], spans_per_sec, logs_per_sec, traces_held, spans_held, logs_held, rules:[RuleDto], rules_file_error, dropped_fraction, disk_bytes, disk_cap_bytes, spill_error}` |
 | `get_marker` | none | `{marker:"<unix nanos>", time:"<RFC 3339>"}` |
 | `list_services` | `since?` | `{services:[{name, requests, errors, error_rate, last_seen}]}` |
 | `get_service_map` | `since?` | `{nodes:[{id,kind,requests,errors}], edges:[{from,to,calls,errors}]}` |
@@ -68,7 +68,16 @@ The DTOs (`src/dto.rs`):
   `unknown`, `trace`, `debug`, `info`, `warn`, `error` or `fatal`.
 - **`StatusDto`** (`get_status`) has, besides the listeners, rates and counts of
   M1, the discard rules (see "Rules in `get_status`" below): `rules`,
-  `rules_file_error` and `dropped_fraction`.
+  `rules_file_error` and `dropped_fraction`; and, since Milestone 5, the disk:
+  `disk_bytes` (what loctel keeps in its temporary segment files, 0 when it runs
+  with `--no-spill`), `disk_cap_bytes` (the most it may keep; the oldest data
+  is deleted whole past it) and `spill_error` (`null`, or why loctel could not write
+  to disk the last time it tried, such as `No space left on device (os error 28)`,
+  cut at 2,000 characters like the rule texts). While `spill_error` is set,
+  what does not fit on disk stays in memory up to loctel's limits, and loctel tries
+  again every minute. The three keys are always there (`spill_error` as `null`
+  when all is well). They come from the same engine state as the window's status
+  box and the popover's disk tile, so the three cannot disagree.
 - **`RuleDto`:** `name, language ("traceql"|"logql"), scope? ("trace"|"span"),
   enabled, error?, dropped_spans, dropped_logs, dropped_traces`.
 

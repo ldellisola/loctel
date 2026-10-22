@@ -29,8 +29,16 @@ use crate::summary::{TraceFilter, TraceSummary, decode_cursor, encode_cursor};
 use crate::trace::{TraceEntry, TraceSnapshot, root_span};
 use crate::trace_index::{Cold, ColdCache, Location, TraceIndex, TraceMeta};
 
-/// Counts of what the store holds and has received.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// Counts of what the store holds and has received, and where it holds it.
+///
+/// Two `StoreStats` are **equal when they count the same data**: the five
+/// counters of Milestones 1 to 4 (`traces`, `spans`, `logs` and the two
+/// `*_received` totals). Where the data is held (`spilled_traces`,
+/// `disk_bytes`) and how the disk is doing (`spill_error`) are left out of `==`
+/// on purpose. The store's tests compare a store in memory with one that spills,
+/// fed the same data, and they must keep saying "the same counts" now that
+/// the second one has files; compare those fields themselves when you mean them.
+#[derive(Clone, Debug, Default)]
 pub struct StoreStats {
     /// Traces held now, in memory or in segment files.
     pub traces: usize,
@@ -44,7 +52,41 @@ pub struct StoreStats {
     /// Log records accepted since the store was created, counted like
     /// `spans_received`.
     pub logs_received: u64,
+    /// How many of the traces held are in segment files now (the rest, and
+    /// every log of the open chunk, are in memory).
+    pub spilled_traces: usize,
+    /// What the segment files take on disk: every record in them, the dead ones
+    /// (of traces that came back to memory or were removed) included, until
+    /// the segment is deleted. What the disk cap limits. 0 for a store that does
+    /// not spill.
+    pub disk_bytes: u64,
+    /// Why the store last failed to write a segment (the volume is full, the
+    /// directory is gone), until a write works again. While it is set the store
+    /// keeps what it cannot write in memory, up to its limits, and tries again
+    /// every [`StoreConfig::spill_retry`]. `None` when all is well, and for a
+    /// store that does not spill.
+    pub spill_error: Option<String>,
 }
+
+impl PartialEq for StoreStats {
+    fn eq(&self, other: &Self) -> bool {
+        (
+            self.traces,
+            self.spans,
+            self.logs,
+            self.spans_received,
+            self.logs_received,
+        ) == (
+            other.traces,
+            other.spans,
+            other.logs,
+            other.spans_received,
+            other.logs_received,
+        )
+    }
+}
+
+impl Eq for StoreStats {}
 
 /// What a removal took out of the store.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -74,6 +116,9 @@ struct Shared {
     /// When the spill step last ran, on the store's clock: so that most calls
     /// can see, without a lock, that it is not their turn.
     last_step: AtomicU64,
+    /// The disk cap now: `config.disk_cap_bytes` until `set_disk_cap` says
+    /// another.
+    disk_cap: AtomicU64,
 }
 
 #[derive(Default)]
@@ -100,12 +145,18 @@ struct Inner {
     decodes: AtomicU64,
     /// Why the last write to a segment failed, until one works.
     spill_error: Option<String>,
+    /// While a failed write is being waited out: when the next one may be tried
+    /// (the segment files are suspended until then). `None` when writes are on.
+    retry_at: Option<u64>,
+    /// `StoreConfig::spill_retry`, in nanoseconds.
+    spill_retry: u64,
 }
 
 impl Store {
     pub fn new(config: StoreConfig, clock: Arc<dyn Clock>) -> Store {
         let mut inner = Inner {
             logs: LogStore::new(config.log_chunk_max, config.log_chunk_age),
+            spill_retry: saturating_nanos(config.spill_retry),
             ..Inner::default()
         };
         if let Some(dir) = &config.spill_dir {
@@ -122,6 +173,7 @@ impl Store {
         }
         Store {
             shared: Arc::new(Shared {
+                disk_cap: AtomicU64::new(config.disk_cap_bytes),
                 config,
                 clock,
                 inner: RwLock::new(inner),
@@ -146,6 +198,7 @@ impl Store {
         }
         inner.evict_beyond(self.shared.config.max_traces);
         self.shared.spill_step_if_due(&mut inner, now);
+        self.shared.enforce_disk_cap(&mut inner);
     }
 
     /// Adds log records, in any order. A record identical to one already
@@ -160,6 +213,7 @@ impl Store {
         }
         let mut inner = self.shared.inner.write();
         let now = self.shared.clock.now_unix_nano();
+        inner.retry_if_due(now);
         // A chunk that has been open for its time seals before this batch, so
         // that the batch starts a new one.
         inner.seal_logs_if_old(now);
@@ -167,12 +221,13 @@ impl Store {
             if inner.logs.insert(log, now) {
                 inner.logs_received += 1;
                 if inner.logs.open_is_full() {
-                    inner.seal_logs();
+                    inner.seal_logs(now);
                 }
             }
         }
-        inner.evict_logs_beyond(self.shared.config.max_log_records);
+        inner.evict_logs_beyond(self.shared.config.max_log_records, now);
         self.shared.spill_step_if_due(&mut inner, now);
+        self.shared.enforce_disk_cap(&mut inner);
     }
 
     /// The logs matching `filter`, newest first, one page at a time.
@@ -320,7 +375,12 @@ impl Store {
     /// of them is accepted again as new.
     pub fn remove_trace(&self, id: TraceId) -> Removed {
         self.shared.spill_if_due();
-        self.shared.inner.write().remove_trace(id)
+        let mut inner = self.shared.inner.write();
+        let now = self.shared.clock.now_unix_nano();
+        inner.retry_if_due(now);
+        let removed = inner.remove_trace(id, now);
+        self.shared.enforce_disk_cap(&mut inner);
+        removed
     }
 
     /// Removes the given spans of trace `trace` and the logs emitted in them
@@ -335,7 +395,12 @@ impl Store {
     /// lose it, and is not made incomplete by that.
     pub fn remove_spans(&self, trace: TraceId, ids: &[SpanId]) -> Removed {
         self.shared.spill_if_due();
-        self.shared.inner.write().remove_spans(trace, ids)
+        let mut inner = self.shared.inner.write();
+        let now = self.shared.clock.now_unix_nano();
+        inner.retry_if_due(now);
+        let removed = inner.remove_spans(trace, ids, now);
+        self.shared.enforce_disk_cap(&mut inner);
+        removed
     }
 
     /// Runs `f` on the spans the store holds for trace `id`, under the read
@@ -554,12 +619,46 @@ impl Store {
             logs: inner.logs.len(),
             spans_received: inner.spans_received,
             logs_received: inner.logs_received,
+            spilled_traces: inner.index.cold_len(),
+            disk_bytes: inner.disk_bytes(),
+            spill_error: inner.spill_error.clone(),
         }
     }
 
     /// How many of the traces held are in segment files now.
     pub fn spilled_traces(&self) -> usize {
         self.shared.inner.read().index.cold_len()
+    }
+
+    /// What the segment files take on disk: every record in them, dead ones
+    /// included, until their segment is deleted. 0 for a store with no
+    /// `spill_dir`. A lookup of a counter. The disk cap keeps it down (see
+    /// [`set_disk_cap`](Self::set_disk_cap)).
+    pub fn disk_bytes(&self) -> u64 {
+        self.shared.inner.read().disk_bytes()
+    }
+
+    /// The most the segment files may take now: `StoreConfig::disk_cap_bytes`, or
+    /// what [`set_disk_cap`](Self::set_disk_cap) last said.
+    pub fn disk_cap_bytes(&self) -> u64 {
+        self.shared.disk_cap.load(Ordering::Relaxed)
+    }
+
+    /// Changes the most the segment files may take, and applies it at once: if
+    /// they take more, the oldest segment is deleted whole, with the traces and
+    /// the log chunks in it, then the next oldest, until they are under it. A
+    /// cap that is raised deletes nothing. The traces and logs that go are
+    /// forgotten like any that were evicted (`stats` says so, a late span of one
+    /// starts a trace anew), and `spans_received` and `logs_received` do not
+    /// change. A store with no `spill_dir` has no files and ignores the cap, but
+    /// keeps the number.
+    ///
+    /// The files are also kept to the cap after every write, so this is only for
+    /// a cap that changes while loctel runs (the Settings window).
+    pub fn set_disk_cap(&self, bytes: u64) {
+        self.shared.disk_cap.store(bytes, Ordering::Relaxed);
+        let mut inner = self.shared.inner.write();
+        self.shared.enforce_disk_cap(&mut inner);
     }
 
     /// What the segment files take on disk, bytes of dead records included
@@ -588,10 +687,32 @@ impl Store {
     }
 
     /// Why the store last failed to write a segment, until a write works
-    /// again. A test hook for now.
+    /// again: [`StoreStats::spill_error`], without the rest.
     #[doc(hidden)]
     pub fn spill_error(&self) -> Option<String> {
         self.shared.inner.read().spill_error.clone()
+    }
+
+    /// Makes every write to a segment fail as a full volume's does ("No space
+    /// left on device"), or, with `false`, work again: the test of a disk that
+    /// fills up and is then freed. A test hook.
+    #[doc(hidden)]
+    pub fn inject_write_failure(&self, on: bool) {
+        if let Some(segments) = &mut self.shared.inner.write().segments {
+            segments.inject_failure(on);
+        }
+    }
+
+    /// How many writes to a segment have failed since the store was made
+    /// (those that tried the disk, or the hook: while the store waits out a
+    /// failure it does not try). A test hook.
+    #[doc(hidden)]
+    pub fn failed_write_attempts(&self) -> u64 {
+        let inner = self.shared.inner.read();
+        inner
+            .segments
+            .as_ref()
+            .map_or(0, SegmentSet::failed_attempts)
     }
 
     /// Empties the store, and deletes its segment files. The `*_received`
@@ -607,6 +728,10 @@ impl Store {
             segments.clear();
         }
         inner.logs.clear();
+        // A fresh start: whatever could not be written is gone, and the next
+        // write finds out whether the disk works.
+        inner.spill_error = None;
+        inner.retry_at = None;
     }
 }
 
@@ -642,12 +767,20 @@ impl Shared {
         }
         let mut inner = self.inner.write();
         self.spill_step_if_due(&mut inner, now);
+        self.enforce_disk_cap(&mut inner);
+    }
+
+    /// Keeps the segment files to the disk cap: while they take more, deletes
+    /// the oldest one, whole, with what is in it.
+    fn enforce_disk_cap(&self, inner: &mut Inner) {
+        inner.enforce_disk_cap(self.disk_cap.load(Ordering::Relaxed));
     }
 
     /// The spill step, if no other has run in the last [`step_interval`]
-    /// (`Shared::step_interval`). It seals the open chunk of logs if it has been
-    /// open for `log_chunk_age`, and moves hot traces to the open segment,
-    /// oldest first (by when their last span arrived):
+    /// (`Shared::step_interval`). It first tries writing again if a failed
+    /// write has been waited out for `spill_retry`. It seals the open chunk of
+    /// logs if it has been open for `log_chunk_age`, and moves hot traces to the
+    /// open segment, oldest first (by when their last span arrived):
     ///
     /// - a trace that has been quiet for `completeness_quiet + spill_after`
     ///   goes, and
@@ -655,18 +788,24 @@ impl Shared {
     ///   oldest of the traces that are complete (quiet for `completeness_quiet`),
     ///   without waiting for `spill_after`.
     ///
-    /// The traces still being written, or recently finished, stay in memory. A
-    /// write that fails ends the step with the trace still hot (and the error
-    /// kept in `spill_error`, to be retried by the next step).
+    /// The traces still being written, or recently finished, stay in memory.
+    ///
+    /// A write that fails ends the step with the trace still hot and the reason
+    /// kept in `spill_error`. Then nothing is written, by this step or by the
+    /// seal of a chunk of logs, until `spill_retry` has passed: the traces wait in
+    /// memory, up to `max_traces` (a chunk of logs whose write failed stays in
+    /// memory for good, up to `max_log_records`), and the first call after that
+    /// tries again.
     fn spill_step_if_due(&self, inner: &mut Inner, now: u64) {
         if !self.step_due(now) {
             return;
         }
         self.last_step.store(now, Ordering::Relaxed);
+        inner.retry_if_due(now);
         // A chunk of logs that has been open long enough seals, with or without
         // segment files to write it to.
         inner.seal_logs_if_old(now);
-        if inner.segments.is_none() {
+        if inner.segments.is_none() || inner.retry_at.is_some() {
             return;
         }
         let quiet = saturating_nanos(self.config.completeness_quiet);
@@ -683,13 +822,8 @@ impl Shared {
             match inner.spill_trace(id) {
                 Ok(()) => inner.spill_error = None,
                 Err(error) => {
-                    if inner.spill_error.is_none() {
-                        eprintln!(
-                            "loctel: cannot write a segment: {error}; keeping traces in memory"
-                        );
-                    }
-                    inner.spill_error = Some(error.to_string());
-                    break;
+                    inner.spill_failed(error.to_string(), now);
+                    return;
                 }
             }
         }
@@ -697,37 +831,100 @@ impl Shared {
 }
 
 impl Inner {
+    /// What the segment files take (0 without any).
+    fn disk_bytes(&self) -> u64 {
+        self.segments.as_ref().map_or(0, SegmentSet::disk_bytes)
+    }
+
+    /// Deletes the oldest segments, whole, until the files take no more than
+    /// `cap`, and forgets what was in them: the cold traces whose records were
+    /// there (as if evicted, each counted out of the totals) and the sealed
+    /// chunks of logs. Deleting is not writing, so it works while writes are
+    /// suspended.
+    fn enforce_disk_cap(&mut self, cap: u64) {
+        let doomed = match &self.segments {
+            Some(segments) if segments.disk_bytes() > cap => segments.plan_eviction(cap),
+            _ => return,
+        };
+        let traces: Vec<TraceId> = self
+            .index
+            .iter()
+            .filter_map(|meta| match &meta.location {
+                Location::Cold(cold) if doomed.binary_search(&cold.blob.seq).is_ok() => {
+                    Some(meta.id)
+                }
+                _ => None,
+            })
+            .collect();
+        for id in traces {
+            self.forget_trace(id);
+        }
+        self.logs.drop_in_segments(&doomed, self.segments.as_mut());
+        if let Some(segments) = &mut self.segments {
+            segments.delete(&doomed);
+        }
+    }
+
+    /// A write to a segment failed, for `error`. Writes are suspended (they fail
+    /// at once, without trying the disk) until `spill_retry` has passed, and what
+    /// could not be written stays in memory. Another failure while they are
+    /// suspended is the same one: the time to the retry does not move.
+    fn spill_failed(&mut self, error: String, now: u64) {
+        if self.spill_error.is_none() {
+            eprintln!("loctel: cannot write a segment: {error}; keeping what it holds in memory");
+        }
+        if self.retry_at.is_none() {
+            self.retry_at = Some(now.saturating_add(self.spill_retry));
+            if let Some(segments) = &mut self.segments {
+                segments.suspend(&error);
+            }
+        }
+        self.spill_error = Some(error);
+    }
+
+    /// Lets writes try the disk again, if `spill_retry` has passed since the
+    /// failure (or the clock has been set back by more than that). The error
+    /// stays until a write works.
+    fn retry_if_due(&mut self, now: u64) {
+        let Some(at) = self.retry_at else {
+            return;
+        };
+        if now >= at || at.saturating_sub(now) > self.spill_retry {
+            self.retry_at = None;
+            if let Some(segments) = &mut self.segments {
+                segments.resume();
+            }
+        }
+    }
+
     /// Seals the open chunk of logs, if it holds any, and notes whether it
     /// could be written to a segment.
-    fn seal_logs(&mut self) {
+    fn seal_logs(&mut self, now: u64) {
         self.logs.seal(self.segments.as_mut());
-        self.note_log_writes();
+        self.note_log_writes(now);
     }
 
     /// [`seal_logs`](Self::seal_logs), if the open chunk has been open for the
     /// chunk age.
     fn seal_logs_if_old(&mut self, now: u64) {
         if self.logs.open_is_old(now) {
-            self.seal_logs();
+            self.seal_logs(now);
         }
     }
 
-    fn evict_logs_beyond(&mut self, max: usize) {
+    fn evict_logs_beyond(&mut self, max: usize, now: u64) {
         self.logs.evict_beyond(max, self.segments.as_mut());
-        self.note_log_writes();
+        self.note_log_writes(now);
     }
 
     /// What the log chunks wrote since the last call: a write that failed is
     /// the store's spill error (the logs stay in memory), one that worked ends
     /// it, as for traces.
-    fn note_log_writes(&mut self) {
+    fn note_log_writes(&mut self, now: u64) {
         let error = self.logs.take_write_error();
         let wrote = self.logs.take_wrote();
         if let Some(error) = error {
-            if self.spill_error.is_none() {
-                eprintln!("loctel: cannot write a segment: {error}; keeping logs in memory");
-            }
-            self.spill_error = Some(error);
+            self.spill_failed(error, now);
         } else if wrote {
             self.spill_error = None;
         }
@@ -976,14 +1173,14 @@ impl Inner {
         Some(spans)
     }
 
-    fn remove_trace(&mut self, id: TraceId) -> Removed {
+    fn remove_trace(&mut self, id: TraceId, now: u64) -> Removed {
         let spans = self.forget_trace(id).unwrap_or(0);
         let logs = self.logs.remove_trace(id, self.segments.as_mut());
-        self.note_log_writes();
+        self.note_log_writes(now);
         Removed { spans, logs }
     }
 
-    fn remove_spans(&mut self, trace: TraceId, ids: &[SpanId]) -> Removed {
+    fn remove_spans(&mut self, trace: TraceId, ids: &[SpanId], now: u64) -> Removed {
         // A trace in a segment is read to see whether it has any of the spans,
         // and brought back only if it has: otherwise it stays where it is.
         if self.index.is_cold(&trace) {
@@ -1009,7 +1206,7 @@ impl Inner {
             }
         }
         let logs = self.logs.remove_spans(trace, ids, self.segments.as_mut());
-        self.note_log_writes();
+        self.note_log_writes(now);
         Removed { spans, logs }
     }
 }
