@@ -3,8 +3,9 @@
 //! - `screenshots [--update]` runs the screenshot tests of `loctel-ui`.
 //!   With `--update` it regenerates the reference PNGs instead of comparing
 //!   (and reminds you to look at them before committing).
-//! - `run-shot` builds `loctel`, runs it under a virtual X display, captures
-//!   the screen and writes `target/run-shot.png`.
+//! - `run-shot` builds `loctel` and `meshgen`, runs `loctel` under a virtual X
+//!   display, sends it the failing checkout trace, captures the screen with the
+//!   main window on it and writes `target/run-shot.png`.
 //! - `next-version` prints the version the next release gets (`version.rs`).
 //! - `release-notes` prints the notes of the next release: the commit subjects
 //!   since the previous version tag, the Mac checklist and the install steps
@@ -31,7 +32,8 @@ usage: cargo xtask <command>
 commands:
   screenshots [--update]  run the screenshot tests; --update rewrites the
                           reference PNGs (view them before committing)
-  run-shot                run `loctel` under xvfb-run and write target/run-shot.png
+  run-shot                run `loctel` under xvfb-run, send it the failing checkout
+                          trace and write the main window to target/run-shot.png
   next-version            print the next release's version (the highest vX.Y.Z
                           tag with its patch plus one; v0.1.0 with no tags)
   release-notes           print the next release's notes: the commit subjects
@@ -156,17 +158,24 @@ fn screenshots(update: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// Runs inside `xvfb-run`. Arguments: the `loctel` binary, the output PNG.
+/// Runs inside `xvfb-run`. Arguments: the `loctel` binary, the `meshgen`
+/// binary, the output PNG.
 ///
 /// It starts `loctel` with every port 0 and a scratch settings file, waits
-/// for its window, lets the first frames land, and captures the whole screen
-/// with ImageMagick's `import`. A capture of a single colour means the window
-/// stayed black (the old GPUI X11 wake-up bug, design 10.5): one `xdotool
-/// windowmove` nudge and a second capture. Still blank, it fails.
+/// for its main window and lets the first frames land (about 2 s). Then it
+/// reads the OTLP HTTP address from the listener lines `loctel` printed, sends
+/// the failing checkout trace (`meshgen --scenario checkout-failure`), waits
+/// for the window's next refresh (it reads the store every 500 ms) and captures
+/// the whole screen with ImageMagick's `import`. The screen is exactly the
+/// window's default size, so the capture is the window and nothing else. A
+/// capture of a single colour means the window stayed black (the old GPUI X11
+/// wake-up bug, design 10.5): one `xdotool windowmove` nudge and a second
+/// capture. Still blank, it fails.
 const RUN_SHOT_SCRIPT: &str = r#"
 set -u
 bin=$1
-out=$2
+meshgen=$2
+out=$3
 scratch=$(mktemp -d)
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-$scratch}"
 app=
@@ -177,7 +186,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"$bin" --grpc-port 0 --http-port 0 --mcp-port 0 --settings "$scratch/settings.toml" &
+"$bin" --grpc-port 0 --http-port 0 --mcp-port 0 --settings "$scratch/settings.toml" \
+  >"$scratch/stdout" 2>"$scratch/stderr" &
 app=$!
 
 win=
@@ -186,6 +196,7 @@ for _ in $(seq 1 200); do
   [ -n "$win" ] && break
   if ! kill -0 "$app" 2>/dev/null; then
     echo "xtask: loctel exited before it opened a window" >&2
+    cat "$scratch/stderr" >&2
     exit 1
   fi
   sleep 0.1
@@ -195,7 +206,19 @@ if [ -z "$win" ]; then
   exit 1
 fi
 
-# The first frame, and one refresh from the engine.
+# The first frames.
+sleep 2
+
+# The traffic: the listener lines say where the HTTP receiver is (port 0).
+addr=$(sed -n 's/.*"name":"otlp-http".*"address":"\([^"]*\)".*/\1/p' "$scratch/stdout" | head -n 1)
+if [ -z "$addr" ]; then
+  echo "xtask: loctel printed no otlp-http address" >&2
+  cat "$scratch/stdout" >&2
+  exit 1
+fi
+"$meshgen" --scenario checkout-failure --transport http-json --endpoint "http://$addr" >&2 || exit 1
+
+# One refresh of the window's data (every 500 ms) and a frame to draw it.
 sleep 2
 import -window root "$out" || exit 1
 
@@ -213,6 +236,10 @@ if [ "$colors" -lt 2 ]; then
 fi
 "#;
 
+/// The virtual screen of `run-shot`: the main window's default size
+/// (`loctel_ui::app::DEFAULT_SIZE`, 1440 by 900), so the window fills it.
+const SHOT_SCREEN: &str = "-screen 0 1440x900x24";
+
 fn run_shot() -> Result<(), String> {
     let root = workspace_root();
     for tool in ["xvfb-run", "xdotool", "import", "convert"] {
@@ -224,11 +251,17 @@ fn run_shot() -> Result<(), String> {
     }
 
     let mut build = Command::new(cargo());
-    build.current_dir(&root).args(["build", "-p", "loctel-app"]);
-    succeeded(build.status(), "cargo build -p loctel-app")?;
+    build
+        .current_dir(&root)
+        .args(["build", "-p", "loctel-app", "-p", "loctel-meshgen"]);
+    succeeded(
+        build.status(),
+        "cargo build -p loctel-app -p loctel-meshgen",
+    )?;
 
     let target = target_dir(&root);
     let binary = target.join("debug/loctel");
+    let meshgen = target.join("debug/meshgen");
     let output = target.join("run-shot.png");
     std::fs::create_dir_all(&target)
         .map_err(|error| format!("cannot create {}: {error}", target.display()))?;
@@ -237,16 +270,10 @@ fn run_shot() -> Result<(), String> {
 
     let mut shot = Command::new("xvfb-run");
     shot.current_dir(&root)
-        .args([
-            "-a",
-            "-s",
-            "-screen 0 1280x800x24",
-            "bash",
-            "-c",
-            RUN_SHOT_SCRIPT,
-        ])
+        .args(["-a", "-s", SHOT_SCREEN, "bash", "-c", RUN_SHOT_SCRIPT])
         .arg("run-shot")
         .arg(&binary)
+        .arg(&meshgen)
         .arg(&output);
     succeeded(shot.status(), "xvfb-run")?;
 

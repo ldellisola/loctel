@@ -106,9 +106,10 @@ base URL); `--repeat N --interval-ms M` sends it again and again with fresh IDs
 scenarios. `cargo run -p loctel-meshgen -- --help` has them all.
 
 See the app, and the screenshot tests. Without `--headless`, Linux opens the
-status window and prints the same startup lines (with no display it says so
+main window and prints the same startup lines (with no display it says so
 and runs headless), so the real window runs under Xvfb. The first command
-writes `target/run-shot.png`; open it with the Read tool. The screenshot tests
+sends it meshgen's failing checkout trace and writes `target/run-shot.png`;
+open it with the Read tool. The screenshot tests
 run with the rest of `cargo test --workspace`; the second command rewrites
 their reference PNGs, which you must view before committing (the repo skills
 `run-and-screenshot` and `update-screenshots` have the steps, and

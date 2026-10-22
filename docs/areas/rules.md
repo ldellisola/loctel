@@ -9,7 +9,7 @@ languages) and §8 (MCP can see rules, not change them).
 Status (Milestone 2): implemented end to end: the model, `rules.toml`, the
 ingest filter (`RuleSet`) and the preview. The engine runs every batch through
 it, reloads the file and reports the counts ("In the engine" below). MCP shows
-the rules in `get_status` ("In MCP" below), and the menu and status window show
+the rules in `get_status` ("In MCP" below), and the menu and the main window's status box show
 the rules line and the macOS menu opens the file for editing ("In the menu and
 the window" below; see the M2 plan,
 `superpowers/plans/2026-10-21-loctel-m2-query-rules.md`). The rules screen is
@@ -365,7 +365,8 @@ MCP client.
 
 ## In the menu and the window
 
-The menu bar menu (macOS) and the status window (Linux) show the rules in one
+The menu bar menu (macOS) and the main window's status box (both platforms; the standalone status
+view too) show the rules in one
 line, `loctel_ui::menu_text::rules_line`, built from the same `EngineStatus` as
 everything else (never from the file). In priority order:
 

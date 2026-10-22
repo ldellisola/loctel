@@ -1,13 +1,15 @@
 # macOS shell (`loctel-macos`)
 
-The menu bar item, the accessory-app behaviour and start at login. Design
+The menu bar item, the main window's lifecycle (opening it, the Dock while it
+is open), the accessory-app behaviour and start at login. Design
 references: §9.1 (app lifecycle), §9.2 (menu bar popover, which is Milestone 4;
 Milestone 1 has the plain menu below), §10.3 (macOS checks), §10.4 (the Mac
 checks), §11 (technology).
 
 Status: written and type-checked, **never run**. Everything in "Unverified
-until the M1 Mac check" and "Unverified until the M2 Mac check" below is a claim
-from reading the crates, not something anyone has seen work.
+until the M1 Mac check", "Unverified until the M2 Mac check" and "Unverified
+until the M3 Mac check" below is a claim from reading the crates, not something
+anyone has seen work.
 
 ## What is in the crate
 
@@ -20,6 +22,7 @@ the project lives here.
 | Item | What it is |
 |---|---|
 | `install(cx, engine, settings_path)` | `loctel-app` calls this once, inside `Application::run`. Runs the first-launch step, registers the actions, builds the status item and starts the 2 s refresh. Opens no window. If the item cannot be created it prints why and quits |
+| `window::open_or_focus(cx, engine)` (also `loctel_macos::open_or_focus`) | shows the main window: brings the open one to the front, or opens it with the Dock icon on. The menu's `Open loctel` and GPUI's reopen event call it. See "The main window's lifecycle" below |
 | `login_item::is_enabled()` | `SMAppService.mainAppService().status() == Enabled`. Asked every time; nothing is cached |
 | `login_item::set_enabled(on)` | `registerAndReturnError` or `unregisterAndReturnError`; the system's `NSError` becomes an `anyhow` error |
 | `menu::rows(&MenuState)` | the rows below, as values: tested on Linux |
@@ -27,9 +30,12 @@ the project lives here.
 | `icon::template_icon()` | the two PNGs as one template `NSImage` |
 
 `loctel-app` without `--headless` on macOS (`run_menu_bar` in `main.rs`) starts
-the engine, prints the startup lines (listeners, then the rules line) like headless mode, sets
-`QuitMode::Explicit` and, in `Application::run`, `ActivationPolicy::Accessory`,
-calls `install` and opens no window. `--headless` is unchanged.
+the engine, prints the startup lines (listeners, then the rules line) like
+headless mode, registers `KitAssets` (the icons of GPUI Kit's components, which
+the main window draws), sets `QuitMode::Explicit`, registers the reopen handler
+(`Application::on_reopen`, which runs `open_or_focus`) and, in
+`Application::run`, `ActivationPolicy::Accessory`, calls `install` and opens no
+window at launch. `--headless` is unchanged.
 
 ## The menu
 
@@ -40,23 +46,27 @@ menu after every click. The menu, in order:
 |---|---|---|
 | 1 | header: `Receiving · 412 spans/s · 1.2k logs/s`, `Paused` or `Port problem: otlp-http (address in use)` | nothing; greyed out. The text is `loctel_ui::menu_text::status_line`, the same function the Linux window uses, so the words cannot drift |
 | 2 | rules header: `No discard rules on`, `1 discard rule on · 31% dropped`, `1 discard rule on · 1 has an error` or `Discard rules file has an error` | nothing; greyed out. The text is `loctel_ui::menu_text::rules_line` (the exact strings and their priority are in [`ui.md`](ui.md)), the same function the Linux window uses |
-| 3 | `Copy MCP address` | puts `engine.mcp_url()` on the clipboard. Greyed out while the MCP server is not listening |
-| 4 | `Pause receiving`, or `Resume receiving` while paused | `engine.set_paused(!paused)` |
-| 5 | `Edit discard rules…` | opens `engine.rules_path()` (`rules.toml`) in the default text editor: `NSWorkspace` `openURL` with the file URL, and if no app handles `.toml`, `open -t <path>`. A failure is printed to stderr. Greyed out when `rules_path()` is `None` (the rules live in memory only; the app always passes a path). The file exists because the engine writes the defaults (no rules, a comment header) at start; saving it in the editor is picked up within about 2 seconds, with no restart |
-| 6 | separator | |
-| 7 | `Start at login` | checkmark from `login_item::is_enabled()`; choosing it flips the login item |
+| 3 | `Open loctel` | `window::open_or_focus`: opens the main window and shows loctel in the Dock, or brings the open window to the front. Never greyed out |
+| 4 | separator | |
+| 5 | `Copy MCP address` | puts `engine.mcp_url()` on the clipboard. Greyed out while the MCP server is not listening |
+| 6 | `Pause receiving`, or `Resume receiving` while paused | `engine.set_paused(!paused)` |
+| 7 | `Edit discard rules…` | opens `engine.rules_path()` (`rules.toml`) in the default text editor: `NSWorkspace` `openURL` with the file URL, and if no app handles `.toml`, `open -t <path>`. A failure is printed to stderr. Greyed out when `rules_path()` is `None` (the rules live in memory only; the app always passes a path). The file exists because the engine writes the defaults (no rules, a comment header) at start; saving it in the editor is picked up within about 2 seconds, with no restart |
 | 8 | separator | |
-| 9 | `Quit loctel` | `engine.shutdown()`, removes the icon, quits |
+| 9 | `Start at login` | checkmark from `login_item::is_enabled()`; choosing it flips the login item |
+| 10 | separator | |
+| 11 | `Quit loctel` | `engine.shutdown()`, removes the icon, quits |
 
 Every 2 seconds the state behind the menu (header text, rules line, paused,
 login item, MCP address, whether there is a rules file) is read again; only if it differs from what the menu was built from is
 the menu rebuilt. A rebuild also happens right after any click, so a toggled
 row is correct at once.
 
-**⌘Q is not in the menu.** `gpui-tray` 0.2.0 cannot set a key equivalent on its
-items. The shortcut `cmd-q` is bound to the same Quit action, which works only
-while a loctel window has the keyboard (the main window, Milestone 3). Decision
-0009 says what changing that would take.
+**⌘Q and ⌘O are not in the menu.** `gpui-tray` 0.2.0 cannot set a key equivalent
+on its items. The shortcuts `cmd-q` and `cmd-o` are bound to the same Quit and
+`Open loctel` actions, which work only while a loctel window has the keyboard
+(the main window, Milestone 3; there ⌘O just brings the window to the front).
+So "⌘O while the menu is open" does nothing: the menu shows no shortcut and
+cannot answer one. Decision 0009 says what changing that would take.
 
 ### The icon
 
@@ -74,16 +84,48 @@ bundle's `.icns` (see [`release.md`](release.md)). Change the glyph in both.
 
 ## Activation policy and quitting
 
-- loctel is an **accessory app** (design §9.1): no Dock icon, no menu bar of its
-  own, and it is not in ⌘-Tab. `main.rs` sets `ActivationPolicy::Accessory`
-  once the app has launched. The release bundle also sets `LSUIElement`
-  (`crates/loctel-app/bundle/info-plist-ext.xml`, which cargo-bundle copies into
-  `Info.plist`, and `script/bundle-mac.sh` checks that it landed), which is what
-  stops a Dock icon from flashing at launch.
-- Showing in the Dock and ⌘-Tab while a window is open is the main window's job
-  (Milestone 3: switch to `Regular` on open, back to `Accessory` on close).
+- loctel is an **accessory app** (design §9.1) while no window is open: no Dock
+  icon, no menu bar of its own, and it is not in ⌘-Tab. `main.rs` sets
+  `ActivationPolicy::Accessory` once the app has launched. The release bundle
+  also sets `LSUIElement` (`crates/loctel-app/bundle/info-plist-ext.xml`, which
+  cargo-bundle copies into `Info.plist`, and `script/bundle-mac.sh` checks that
+  it landed), which is what stops a Dock icon from flashing at launch.
+- While the main window is open loctel is a **regular app**: in the Dock and in
+  ⌘-Tab. See the next section.
 - **`QuitMode::Explicit`**: closing the last window never quits, because the
   engine keeps receiving with no window open. Only `Quit loctel` does.
+
+## The main window's lifecycle
+
+`window.rs` (Milestone 3, Task 9). The app opens no window at launch (as in
+Milestone 1); the menu's `Open loctel` is the way in.
+
+- **`open_or_focus(cx, engine)`**, which the `Open loctel` action and the
+  reopen handler call:
+  - If the main window exists (`MainWindowState`, a GPUI global holding its
+    handle, checked against `cx.windows()`): `window.activate_window()` and
+    `cx.activate(true)`. A second `Open loctel` never opens a second window.
+  - Otherwise, in this order:
+    1. `cx.set_activation_policy(ActivationPolicy::Regular)`: the Dock icon and
+       the ⌘-Tab entry appear.
+    2. `loctel_ui::app::open_main_window(Rc::new(engine), cx, |_| None)`. The
+       backdrop closure returns `None` until Task 10 passes `glass::attach`.
+    3. `cx.activate(true)`.
+  - If opening fails the reason goes to stderr and the policy goes back to
+    `Accessory`.
+- **Closing the window** (`cx.on_window_closed`, registered once, the first time
+  a window is opened; it ignores every window but the main one): the handle is
+  forgotten and `cx.set_activation_policy(ActivationPolicy::Accessory)` takes
+  the Dock icon away. loctel keeps running in the menu bar. The next
+  `Open loctel` opens a new window.
+- **Reopen**: a click on the Dock icon reaches GPUI as
+  `applicationShouldHandleReopen:hasVisibleWindows:`, and GPUI calls its reopen
+  handler only when there are no visible windows. `Application::on_reopen` (it
+  exists only on `Application`, so `main.rs` registers it before `run`) runs
+  `open_or_focus`: it opens the window when there is none, and brings the
+  existing one forward when it is there but not visible (minimised or hidden).
+- **Linux** has none of this: closing the main window quits (see
+  [`ui.md`](ui.md), "The real window").
 
 ## Start at login
 
@@ -188,11 +230,34 @@ items 1 to 4) should confirm:
   header does) look right together, and an open menu is not disturbed by the
   refresh while the percentage moves (the same open question as for the rates).
 
+## Unverified until the M3 Mac check
+
+Milestone 3 Task 9 added the main window's lifecycle. Nobody has run it. The
+Milestone 3 section of the Mac checklist (`docs/milestones/mac-checklist.md`)
+should confirm:
+
+- **Open loctel** is the first item after the two headers, opens the window in
+  under half a second, and choosing it again brings the same window to the
+  front instead of opening another. Its shortcut, ⌘O, only works with a loctel
+  window focused: the menu cannot answer it.
+- **Dock and ⌘-Tab while the window is open**: loctel's icon appears in the Dock
+  and in ⌘-Tab when the window opens (`ActivationPolicy::Regular` takes effect at
+  once), and the window comes to the front over the app that was active.
+- **Accessory after close**: closing the window removes the Dock icon and the
+  ⌘-Tab entry, and loctel keeps receiving and keeps its menu bar item.
+- **Reopen from the Dock**: clicking the Dock icon while the window is open
+  brings it to the front, and while the window is minimised shows it again (no
+  window can be closed with the icon still there, since closing removes the
+  icon). Report what happens in each case.
+- **No leftovers**: opening and closing the window ten times in a row leaves one
+  window each time and no stray Dock icon.
+
 ## Tests
 
-- `cargo test -p loctel-macos` (runs on Linux): `menu` (the designed order,
-  the rules header and the Edit item, the Pause/Resume label, the checkmark,
-  the greyed Copy and the greyed Edit, the header text),
+- `cargo test -p loctel-macos` (runs on Linux): `menu` (the designed order with
+  `Open loctel` first after the headers, the rules header and the Edit item,
+  the Pause/Resume label, the checkmark, the greyed Copy and the greyed Edit,
+  the header text),
   `first_launch` (once only, the login-item error, other settings survive, a
   broken file left alone) and `icon` (18 and 36 pixels, black template ink, three
   rings at the mockup's positions).

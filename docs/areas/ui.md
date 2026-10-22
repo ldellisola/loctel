@@ -9,8 +9,9 @@ window that shows it. Milestone 2 added the discard rules line to it and to the
 macOS menu; the rules screen is Milestone 4. The main window (Map & traces, Trace view) is Milestone 3
 (in progress: the pure models in `src/model`, the window's shell in
 `src/app`, the home screen's live data, the service map view, the trace
-table and the trace view in `src/views` are done; the window's lifecycle on
-Linux and macOS and the glass are not; see "Models", "The main window", "Live
+table and the trace view in `src/views` are done, and so is the window's
+lifecycle (Linux opens it, macOS opens it from the menu bar item: see "The
+real window" below and [`macos.md`](macos.md)); the glass is not; see "Models", "The main window", "Live
 data", "The service map", "The trace table" and "The trace view" below), the remaining screens and the popover Milestone 4. The macOS menu bar
 item is in `loctel-macos`; it only borrows the strings from `menu_text`.
 
@@ -27,7 +28,7 @@ are what shows you what moved (the `upgrade-gpui` skill has the steps; decision
 |---|---|
 | `StatusModel`, `ListenerLine` | plain values for the view and the menu. `StatusModel::from_status(&EngineStatus)` builds one. A failed listener keeps the address it was asked for, and its error. The rules fields: `rules_on` (enabled rules, whether or not their queries parse), `rules_with_errors` (the enabled ones that do not parse; a switched-off draft with a bad query is not counted, so it never exceeds `rules_on`), `rules_file_error` (a flag: `rules.toml` could not be used; the text stays in `EngineStatus`) and `dropped_fraction` (0 to 1, since launch) |
 | `StatusView` | the GPUI view: a headline pill, four numbers (spans/s, logs/s, traces held, logs held), the discard rules line under them (a dot and the words of `rules_line`; red dot and text when the file or a rule has an error, green when rules are on, grey when none is) and the endpoint list. `StatusView::new(model, theme)`, `set_model(model, cx)` (redraws only when the model changed) and `refresh_from(engine, cx)` (once a second, until the view is dropped) |
-| `open_status_window(engine, cx)` | opens the 900 by 600 window on an `App`: dark theme, refreshed every second from `EngineHandle::status()`. This is what `loctel` (no `--headless`) shows on Linux |
+| `open_status_window(engine, cx)` | opens the 900 by 600 window on an `App`: dark theme, refreshed every second from `EngineHandle::status()`. Since Milestone 3 Task 9 nothing in the app calls it (`loctel` opens the main window instead); the view and its screenshot tests stay as a standalone view |
 | `menu_text::status_line(&StatusModel)` | the one-line status: `Receiving · 412 spans/s · 1.2k logs/s`, `Paused` or `Port problem: otlp-http (address in use)`. A failed listener wins over paused, paused over receiving. The reason is `address in use` when the OS error contains "in use", otherwise the raw error cut to 40 characters. The first failed listener is the one named |
 | `menu_text::rules_line(&StatusModel)` | the discard rules in one line, the first that applies: `Discard rules file has an error`; `1 discard rule on · 1 has an error` (for more than one, `3 discard rules on · 2 have errors`); `No discard rules on`; `1 discard rule on · 31% dropped` or `3 discard rules on · 0% dropped`. The percentage is the share the rules dropped of what arrived since launch, rounded to a whole number; a value that is not a number reads `0%` and one outside 0 to 1 is cut to it. A file error wins over a rule error, a rule error over "no rules on" |
 | `menu_text::format_rate(f64)` | `412` is `412`, `1234` is `1.2k`, `0.4` is `0`. One decimal under ten thousand, none above, never `.0` (`1k`, `10k`, `1.3M`); NaN, infinity and negatives read `0` |
@@ -375,6 +376,12 @@ screens of Tasks 6 to 8 go into its content area. Decision 0024 has the choices.
 shows `Home`. The home screen's views live as long as the window; the trace
 screen is made when it is first drawn and dropped when the window leaves it
 (see "The trace view").
+
+**Lifecycle.** The window is opened by `loctel-app`, not by the shell. On Linux
+`loctel` without `--headless` opens it at launch; on macOS the menu's `Open
+loctel` does (`loctel_macos::open_or_focus`), which also puts loctel in the Dock
+for as long as the window is open. See "The real window" below and
+[`macos.md`](macos.md).
 
 **The backend.** Views never name the engine: they hold an `Rc<dyn UiBackend>`
 with `store() -> Store`, `status() -> EngineStatus`, `clear_all()` and
@@ -934,22 +941,44 @@ repo skill `update-screenshots` has the steps, and how to read a CI failure.
 
 ## The real window
 
-`loctel` without `--headless` on Linux opens the status view in a window and
-prints the same startup lines as headless mode (the listeners, then the rules
-line), so a script that passed port 0 finds the ports. Closing the window quits. With no `DISPLAY` or
-`WAYLAND_DISPLAY` it says so on stderr and runs headless: GPUI would otherwise
-hand out windows that draw nothing.
+`loctel` without `--headless` on Linux opens the **main window**
+(`app::open_main_window(Rc::new(engine), cx, |_| None)`: no backdrop, so the
+panels are opaque) and prints the same startup lines as headless mode (the
+listeners, then the rules line), so a script that passed port 0 finds the ports.
+The app registers `KitAssets` (`Application::with_assets`) so Kit's icons draw.
 
-`cargo xtask run-shot` builds `loctel` and runs it under `xvfb-run` (1280 by
-800) with every port 0 and a scratch settings file. It waits for the window,
-gives it two seconds (the first frame and one refresh), captures the whole
-screen with `import -window root` and writes `target/run-shot.png`. A
+- **Closing the window quits**, with the engine shut down and exit status 0.
+- **SIGINT and SIGTERM quit the same way.** The handlers are installed before
+  anything is printed (as in headless mode). A thread waits for the signal and
+  tells the app over a channel, because only GPUI's own thread may call
+  `cx.quit()`; then `engine.shutdown()` runs and the process exits 0. Before
+  Milestone 3 Task 9 a signal killed the window process abruptly.
+- With no `DISPLAY` or `WAYLAND_DISPLAY` it says so on stderr and runs
+  headless: GPUI would otherwise hand out windows that draw nothing.
+- On macOS the window is not opened at launch: see [`macos.md`](macos.md).
+
+`crates/loctel-app/tests/window.rs` (`linux_window_opens_under_xvfb`) runs the
+built binary under `xvfb-run` for 3 s and checks that it was still alive, that
+the four startup lines were printed, that stderr has no panic, and that SIGTERM
+ends it with status 0. Without `xvfb-run` it prints `skipped: no xvfb-run` and
+passes; CI installs xvfb, so CI never skips.
+
+`cargo xtask run-shot` builds `loctel` and `meshgen` and runs `loctel` under
+`xvfb-run` on a screen of 1440 by 900 (the window's default size, so the window
+fills it) with every port 0 and a scratch settings file. It waits for the
+window, gives it two seconds (the first frame), reads the OTLP HTTP address from
+the listener lines, sends the failing checkout trace (`meshgen --scenario
+checkout-failure --transport http-json`), waits two more seconds (the window
+reads the store every 500 ms), captures the whole screen with `import -window
+root` and writes `target/run-shot.png`. The shot has data: the map, with the
+failing services outlined in red, above a table with one failed `POST
+/api/checkout`. Xvfb reports the light appearance, so the shot is the light
+theme. A
 capture of one flat colour means the window stayed black, the old X11
 wake-up bug of crates.io GPUI (§10.5); the script then nudges the window with
 `xdotool windowmove` and captures again, and fails if it is still blank. With
 `gpui-pre` the window was not black on its first try, so the nudge is a safety
-net. Open the PNG with the Read tool: the window sits in the black screen at
-about (192, 100), 900 by 600.
+net. Open the PNG with the Read tool.
 
 The repo skill `run-and-screenshot` covers running with meshgen data.
 
@@ -973,10 +1002,13 @@ The repo skill `run-and-screenshot` covers running with meshgen data.
   and toggles with a real keyboard and IME, the tooltip of the dots, and that a
   click on a row opens the trace with a trackpad. The tests drive GPUI's own
   event path on Linux only.
+- The main window's lifecycle on macOS (`Open loctel`, the Dock and Cmd-Tab
+  while it is open, the Accessory policy after it closes, a reopen from the
+  Dock) is listed in [`macos.md`](macos.md) under "Unverified until the M3 Mac
+  check".
 - Everything here was checked on Linux with software rendering. How the status
   view looks and behaves on macOS (fonts, scale, window chrome) is unverified
-  until a milestone check on a real Mac; the macOS app opens no window in
-  Milestone 1 anyway.
+  until a milestone check on a real Mac.
 - The references were made with Mesa lavapipe on Ubuntu 24.04. If the CI
   runner's Mesa renders anti-aliasing differently, `ci.yml` uploads the actual
   and diff images as the `screenshot-diffs` artifact; see the

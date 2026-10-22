@@ -85,7 +85,8 @@ clean) does, from the repository root:
      has no comments). It holds `LSUIElement = true`, which makes loctel an
      accessory app: no Dock icon and no flash of one at launch (the
      `ActivationPolicy::Accessory` in `main.rs` only applies once the app is
-     running).
+     running; while the main window is open the app switches itself to a regular
+     one, see `macos.md`).
    cargo-bundle writes `CFBundleExecutable` (`loctel`, the `[[bin]]` name)
    itself, and puts the binary at `loctel.app/Contents/MacOS/loctel`. The
    result is copied from `target/release/bundle/osx/` to `./loctel.app`.

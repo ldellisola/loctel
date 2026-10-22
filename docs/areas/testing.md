@@ -324,7 +324,10 @@ let failures = harness.tool("recent_failures", json!({ "since": marker })).await
 The harness asserts nothing about what loctel says. It runs the same
 `Engine::start` the `loctel` binary runs, in the test process, which is faster
 and lets a test pause it; the binary's own start, stop and output lines are
-tested in `crates/loctel-app/tests/headless.rs`. See
+tested in `crates/loctel-app/tests/headless.rs`, and the Linux window's (it opens
+under `xvfb-run`, prints the startup lines and stops with status 0 on SIGTERM; it
+prints `skipped: no xvfb-run` and passes where that is missing) in
+`crates/loctel-app/tests/window.rs`. See
 [`decisions/0007-e2e-harness-choices.md`](../decisions/0007-e2e-harness-choices.md)
 (and [`0020`](../decisions/0020-e2e-rules-and-query-tests.md) for the tests of the
 rules and the queries).

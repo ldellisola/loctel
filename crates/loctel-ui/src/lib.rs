@@ -5,8 +5,9 @@
 //!   the rates and counts, the discard rules line (Milestone 2) and every
 //!   listener with its problem if it has one.
 //!   [`open_status_window`] shows it in a window that refreshes every second
-//!   from [`loctel_engine::EngineHandle::status`] (the Linux development
-//!   window; on macOS the menu bar item comes first).
+//!   from [`loctel_engine::EngineHandle::status`]. Since Milestone 3 the app
+//!   opens the main window instead (Linux at launch, macOS from the menu bar
+//!   item); the status view stays as a standalone view.
 //! - [`model`] holds the pure models of the main window (Milestone 3): the
 //!   formats of durations, clock times, rates and error shares, the colour a
 //!   service keeps, the trace table's rows, the query bar's state, the

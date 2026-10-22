@@ -5,13 +5,20 @@
 //! SIGTERM.
 //!
 //! Without `--headless` on macOS it is the product: a menu bar item and no
-//! window, no Dock icon (`loctel_macos::install`), running until the menu's
-//! Quit. It prints the same startup lines as headless mode.
+//! window at launch, no Dock icon (`loctel_macos::install`), running until the
+//! menu's Quit. `Open loctel` in the menu opens the main window, and while it
+//! is open loctel shows in the Dock and in Cmd-Tab (`loctel_macos::open_or_focus`
+//! also runs when the Dock icon is clicked with no window open). It prints the
+//! same startup lines as headless mode.
 //!
-//! Without `--headless` on Linux it opens one window with the status view
-//! (`loctel_ui::StatusView`), refreshed every second, and prints the same
-//! startup lines; closing the window quits. With no display to open it on, it
-//! says so and runs headless instead. That window is a development aid.
+//! Without `--headless` on Linux it opens the main window
+//! (`loctel_ui::app::open_main_window`: the service map, the trace table and
+//! the trace view) and prints the same startup lines; closing the window
+//! quits, and so does SIGINT or SIGTERM, with the engine shut down and exit
+//! status 0. With no display to open it on, it says so and runs headless
+//! instead. That window is a development aid, and how an agent sees the app.
+//! (`loctel_ui::StatusView`, the old Linux window, is still there as a
+//! standalone view.)
 //!
 //! On any other OS, running without `--headless` is the same as running with
 //! it.
@@ -92,10 +99,13 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The macOS app: the engine, and the menu bar item over it. It is an
-/// accessory app (no Dock icon, no menu bar of its own) and quits only when
-/// the menu says so, never because a window closed: it has none. Prints the
-/// listener lines like headless mode does, then runs until Quit.
+/// The macOS app: the engine, and the menu bar item over it. It starts as an
+/// accessory app (no Dock icon, no menu bar of its own, no window) and quits
+/// only when the menu says so, never because a window closed. `Open loctel`
+/// opens the main window and shows loctel in the Dock for as long as it is open
+/// (`loctel_macos::open_or_focus`); a click on the Dock icon with no window
+/// open does the same. Prints the listener lines like headless mode does, then
+/// runs until Quit.
 #[cfg(target_os = "macos")]
 fn run_menu_bar(config: EngineConfig, settings_path: std::path::PathBuf) -> anyhow::Result<()> {
     use gpui::{ActivationPolicy, QuitMode};
@@ -103,15 +113,24 @@ fn run_menu_bar(config: EngineConfig, settings_path: std::path::PathBuf) -> anyh
     let engine = Engine::start(config)?;
     print_startup(&engine)?;
 
-    gpui_platform::application()
-        .with_quit_mode(QuitMode::Explicit)
-        .run({
-            let engine = engine.clone();
-            move |cx| {
-                cx.set_activation_policy(ActivationPolicy::Accessory);
-                loctel_macos::install(cx, engine, settings_path);
-            }
-        });
+    // The icons of GPUI Kit's components (the main window's) need the assets
+    // registered here; the quit mode is why a closing window never ends the
+    // app.
+    let app = gpui_platform::application()
+        .with_assets(loctel_ui::KitAssets)
+        .with_quit_mode(QuitMode::Explicit);
+    // GPUI calls this when the Dock icon is clicked while no window is open.
+    app.on_reopen({
+        let engine = engine.clone();
+        move |cx| loctel_macos::open_or_focus(cx, engine.clone())
+    });
+    app.run({
+        let engine = engine.clone();
+        move |cx| {
+            cx.set_activation_policy(ActivationPolicy::Accessory);
+            loctel_macos::install(cx, engine, settings_path);
+        }
+    });
     engine.shutdown();
     Ok(())
 }
@@ -126,39 +145,60 @@ fn display_available() -> bool {
         .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
 }
 
-/// The Linux development window: the engine, and the status view over it.
+/// The Linux development window: the engine, and the main window over it.
 /// Prints the listener lines like headless mode does (so a script can find
 /// the ports when they were asked for as 0), then runs the window until it is
-/// closed.
+/// closed, or until SIGINT or SIGTERM: either way the engine is shut down and
+/// the exit status is 0.
 #[cfg(target_os = "linux")]
 fn run_window(config: EngineConfig) -> anyhow::Result<()> {
     use std::cell::RefCell;
     use std::rc::Rc;
 
+    // The handlers come before anything is announced, as in headless mode.
+    let signals = ShutdownSignals::install()?;
     let engine = Engine::start(config)?;
     print_startup(&engine)?;
 
-    let failure: Rc<RefCell<Option<anyhow::Error>>> = Rc::new(RefCell::new(None));
-    gpui_platform::application().run({
-        let engine = engine.clone();
-        let failure = Rc::clone(&failure);
-        move |cx| match loctel_ui::open_status_window(engine, cx) {
-            Ok(_window) => {
-                // It is the only window, so closing it ends the app.
-                cx.on_window_closed(|cx, _| {
-                    if cx.windows().is_empty() {
-                        cx.quit();
-                    }
-                })
-                .detach();
-                cx.activate(true);
-            }
-            Err(error) => {
-                *failure.borrow_mut() = Some(error);
-                cx.quit();
-            }
-        }
+    // A signal is waited for on a thread of its own and told to the window as
+    // a message, because only GPUI's own thread can ask the app to quit.
+    let (signalled, signal) = tokio::sync::oneshot::channel::<()>();
+    std::thread::spawn(move || {
+        signals.wait();
+        // The receiver is gone once the app has quit; nothing to tell then.
+        let _ = signalled.send(());
     });
+
+    let failure: Rc<RefCell<Option<anyhow::Error>>> = Rc::new(RefCell::new(None));
+    gpui_platform::application()
+        // GPUI Kit's components draw their icons from its assets.
+        .with_assets(loctel_ui::KitAssets)
+        .run({
+            let engine = engine.clone();
+            let failure = Rc::clone(&failure);
+            move |cx| match loctel_ui::app::open_main_window(Rc::new(engine), cx, |_| None) {
+                Ok(_window) => {
+                    // It is the only window, so closing it ends the app.
+                    cx.on_window_closed(|cx, _| {
+                        if cx.windows().is_empty() {
+                            cx.quit();
+                        }
+                    })
+                    .detach();
+                    cx.spawn(async move |cx| {
+                        if signal.await.is_ok() {
+                            cx.update(|cx| cx.quit());
+                        }
+                    })
+                    .detach();
+                    cx.activate(true);
+                }
+                Err(error) => {
+                    *failure.borrow_mut() = Some(error);
+                    cx.quit();
+                }
+            }
+        });
     engine.shutdown();
 
     match failure.take() {
