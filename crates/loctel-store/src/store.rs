@@ -1,9 +1,11 @@
-//! The store: traces in memory and in segment files, and logs in memory.
+//! The store: traces and logs, in memory and in segment files.
 //!
 //! A trace is **hot** while its spans are in memory and **cold** once they have
 //! been written to a segment file (see [`trace_index`](crate::trace_index) and
 //! `docs/areas/store.md`, "Hot and cold traces"). Nothing outside this module
 //! can tell which it is, except through the counters of [`Store::spilled_traces`].
+//! Logs are held in chunks, the newest in memory and the sealed ones in segment
+//! files ([`log_chunks`](crate::log_chunks), "Log chunks" in the same document).
 
 use std::collections::{HashMap, hash_map::Entry};
 use std::io;
@@ -17,6 +19,7 @@ use parking_lot::{Mutex, RwLock};
 use crate::clock::{Clock, saturating_nanos};
 use crate::config::StoreConfig;
 use crate::failure::{TraceStatus, classify};
+use crate::log_chunks::LogChunkInfo;
 use crate::logs::{Around, HistogramBucket, LogFilter, LogId, LogStore};
 use crate::page::{Page, PageRequest};
 use crate::segment::{Kind, decode_trace, encode_trace};
@@ -101,7 +104,10 @@ struct Inner {
 
 impl Store {
     pub fn new(config: StoreConfig, clock: Arc<dyn Clock>) -> Store {
-        let mut inner = Inner::default();
+        let mut inner = Inner {
+            logs: LogStore::new(config.log_chunk_max, config.log_chunk_age),
+            ..Inner::default()
+        };
         if let Some(dir) = &config.spill_dir {
             match SegmentSet::new(dir.clone(), config.segment_max_bytes) {
                 Ok(segments) => inner.segments = Some(segments),
@@ -145,19 +151,27 @@ impl Store {
     /// Adds log records, in any order. A record identical to one already
     /// held (an exporter retry: same time, body, trace, span and service) is
     /// ignored. When the batch is applied, the oldest records beyond
-    /// `max_log_records` are evicted.
+    /// `max_log_records` are evicted. The logs go to the open chunk, which is
+    /// sealed when it has `log_chunk_max` of them or has been open for
+    /// `log_chunk_age`, and written to a segment file if the store has them.
     pub fn ingest_logs(&self, logs: Vec<LogRecord>) {
         if logs.is_empty() {
             return;
         }
         let mut inner = self.shared.inner.write();
         let now = self.shared.clock.now_unix_nano();
+        // A chunk that has been open for its time seals before this batch, so
+        // that the batch starts a new one.
+        inner.seal_logs_if_old(now);
         for log in logs {
-            if inner.logs.insert(log) {
+            if inner.logs.insert(log, now) {
                 inner.logs_received += 1;
+                if inner.logs.open_is_full() {
+                    inner.seal_logs();
+                }
             }
         }
-        inner.logs.evict_beyond(self.shared.config.max_log_records);
+        inner.evict_logs_beyond(self.shared.config.max_log_records);
         self.shared.spill_step_if_due(&mut inner, now);
     }
 
@@ -184,13 +198,16 @@ impl Store {
         filter: &LogFilter,
         page: &PageRequest,
     ) -> Page<(LogId, LogRecord)> {
-        self.shared.inner.read().logs.search(filter, page)
+        self.shared.spill_if_due();
+        let inner = self.shared.inner.read();
+        inner.logs.search(filter, page, inner.segments.as_ref())
     }
 
     /// The log held under `id`, or `None` if it was evicted, removed or
     /// cleared (or never existed). An ID is never given to a second log.
     pub fn log(&self, id: LogId) -> Option<LogRecord> {
-        self.shared.inner.read().logs.get(id)
+        let inner = self.shared.inner.read();
+        inner.logs.get(id, inner.segments.as_ref())
     }
 
     /// The time of the oldest log held (its own timestamp, or its observed time
@@ -199,6 +216,44 @@ impl Store {
     /// shows everything stored. A lookup, not a pass over the logs.
     pub fn oldest_log_unix_nano(&self) -> Option<u64> {
         self.shared.inner.read().logs.oldest_time()
+    }
+
+    /// How many held logs `f` keeps, for an *indexed* filter
+    /// ([`LogFilter::is_indexed`]: it sets only the window, `levels` and
+    /// `service`), and `None` for any other, which cannot be counted without
+    /// reading the logs (use [`search_logs`](Self::search_logs) for those). The
+    /// answer is exact. It comes from what the store keeps about each chunk of
+    /// logs, and reads only the chunks that the edges of the window cut through,
+    /// so it costs about the number of chunks held, not the number of logs: the
+    /// Logs screen's total over millions of lines.
+    pub fn log_count(&self, f: &LogFilter) -> Option<u64> {
+        self.shared.spill_if_due();
+        let inner = self.shared.inner.read();
+        inner.logs.count(f, inner.segments.as_ref())
+    }
+
+    /// Up to `limit` of the logs `f` keeps, from position `offset` of the list
+    /// newest first (the order of [`search_logs_keyed`](Self::search_logs_keyed),
+    /// which is the same list): `offset` 0 is the newest log that passes. Fewer
+    /// come back at the end of the list, and none past it. A list that is
+    /// scrolled through, by position, is read with this instead of with a cursor
+    /// that has to be walked to.
+    ///
+    /// For an indexed filter ([`LogFilter::is_indexed`]) it finds the position
+    /// from the counts of the chunks and reads the chunks the position and the
+    /// rows are in, so any position of ten million logs costs about the same.
+    /// Any other filter is walked from the newest log, which costs the logs
+    /// before `offset`: slow past the first few thousand.
+    pub fn logs_at(&self, f: &LogFilter, offset: u64, limit: usize) -> Vec<(LogId, LogRecord)> {
+        self.shared.spill_if_due();
+        let inner = self.shared.inner.read();
+        inner.logs.at(f, offset, limit, inner.segments.as_ref())
+    }
+
+    /// What the log chunks hold now. A test hook.
+    #[doc(hidden)]
+    pub fn log_chunks(&self) -> LogChunkInfo {
+        self.shared.inner.read().logs.info()
     }
 
     /// A histogram of the logs in `[since, until)` (nanoseconds since the
@@ -210,8 +265,12 @@ impl Store {
     /// the arguments. An empty or backwards window, or no buckets, counts
     /// nothing.
     ///
-    /// It is a pass over the logs inside the window, which the Logs screen
-    /// asks for every 2 s: see `docs/areas/store.md` for the cost.
+    /// For an indexed filter ([`LogFilter::is_indexed`]) it is answered from the
+    /// counts the store keeps per chunk and per second, and reads only the
+    /// chunks it has to for the answer to be exact (the ones a bucket edge falls
+    /// inside a second of, and the ones at the edges of the window). For any
+    /// other filter it is a pass over the logs inside the window. The Logs
+    /// screen asks for it every 2 s: see `docs/areas/store.md` for the cost.
     pub fn log_histogram(
         &self,
         f: &LogFilter,
@@ -219,11 +278,11 @@ impl Store {
         until: u64,
         buckets: usize,
     ) -> Vec<HistogramBucket> {
-        self.shared
-            .inner
-            .read()
+        self.shared.spill_if_due();
+        let inner = self.shared.inner.read();
+        inner
             .logs
-            .histogram(f, since, until, buckets)
+            .histogram(f, since, until, buckets, inner.segments.as_ref())
     }
 
     /// Up to `before` of the logs held just before `id`, the log itself, and
@@ -234,14 +293,18 @@ impl Store {
     /// are the ones nearest to where it was: the `before` just older than its
     /// time and the `after` just newer.
     pub fn logs_around(&self, id: LogId, before: usize, after: usize) -> Around {
-        self.shared.inner.read().logs.around(id, before, after)
+        let inner = self.shared.inner.read();
+        inner
+            .logs
+            .around(id, before, after, inner.segments.as_ref())
     }
 
     /// The logs emitted in span `span` of trace `trace`, oldest first. Logs
     /// and spans are stored independently, so this works whether or not the
     /// span itself is held.
     pub fn logs_for_span(&self, trace: TraceId, span: SpanId) -> Vec<LogRecord> {
-        self.shared.inner.read().logs.for_span(trace, span)
+        let inner = self.shared.inner.read();
+        inner.logs.for_span(trace, span, inner.segments.as_ref())
     }
 
     /// Removes the trace and every held log that carries its trace ID (with or
@@ -340,7 +403,8 @@ impl Store {
     /// has none), oldest first. Runs under the read lock, like
     /// [`scan_traces`](Self::scan_traces).
     pub fn scan_logs(&self, since_unix_nano: u64, f: impl FnMut(&LogRecord)) {
-        self.shared.inner.read().logs.scan(since_unix_nano, f);
+        let inner = self.shared.inner.read();
+        inner.logs.scan(since_unix_nano, inner.segments.as_ref(), f);
     }
 
     /// The service map over the spans that start inside `window`: services
@@ -572,9 +636,6 @@ impl Shared {
     /// writes to still gives its memory back, which is the common case once an
     /// exporter has stopped.
     fn spill_if_due(&self) {
-        if self.config.spill_dir.is_none() {
-            return;
-        }
         let now = self.clock.now_unix_nano();
         if !self.step_due(now) {
             return;
@@ -584,7 +645,8 @@ impl Shared {
     }
 
     /// The spill step, if no other has run in the last [`step_interval`]
-    /// (`Shared::step_interval`). It moves hot traces to the open segment,
+    /// (`Shared::step_interval`). It seals the open chunk of logs if it has been
+    /// open for `log_chunk_age`, and moves hot traces to the open segment,
     /// oldest first (by when their last span arrived):
     ///
     /// - a trace that has been quiet for `completeness_quiet + spill_after`
@@ -601,6 +663,9 @@ impl Shared {
             return;
         }
         self.last_step.store(now, Ordering::Relaxed);
+        // A chunk of logs that has been open long enough seals, with or without
+        // segment files to write it to.
+        inner.seal_logs_if_old(now);
         if inner.segments.is_none() {
             return;
         }
@@ -632,6 +697,42 @@ impl Shared {
 }
 
 impl Inner {
+    /// Seals the open chunk of logs, if it holds any, and notes whether it
+    /// could be written to a segment.
+    fn seal_logs(&mut self) {
+        self.logs.seal(self.segments.as_mut());
+        self.note_log_writes();
+    }
+
+    /// [`seal_logs`](Self::seal_logs), if the open chunk has been open for the
+    /// chunk age.
+    fn seal_logs_if_old(&mut self, now: u64) {
+        if self.logs.open_is_old(now) {
+            self.seal_logs();
+        }
+    }
+
+    fn evict_logs_beyond(&mut self, max: usize) {
+        self.logs.evict_beyond(max, self.segments.as_mut());
+        self.note_log_writes();
+    }
+
+    /// What the log chunks wrote since the last call: a write that failed is
+    /// the store's spill error (the logs stay in memory), one that worked ends
+    /// it, as for traces.
+    fn note_log_writes(&mut self) {
+        let error = self.logs.take_write_error();
+        let wrote = self.logs.take_wrote();
+        if let Some(error) = error {
+            if self.spill_error.is_none() {
+                eprintln!("loctel: cannot write a segment: {error}; keeping logs in memory");
+            }
+            self.spill_error = Some(error);
+        } else if wrote {
+            self.spill_error = None;
+        }
+    }
+
     fn insert_span(&mut self, span: Span, now: u64) {
         let trace_id = span.trace_id;
         // A span for a trace that is in a segment brings the trace back, unless
@@ -877,7 +978,8 @@ impl Inner {
 
     fn remove_trace(&mut self, id: TraceId) -> Removed {
         let spans = self.forget_trace(id).unwrap_or(0);
-        let logs = self.logs.remove_trace(id);
+        let logs = self.logs.remove_trace(id, self.segments.as_mut());
+        self.note_log_writes();
         Removed { spans, logs }
     }
 
@@ -906,7 +1008,8 @@ impl Inner {
                 self.index.sync_hot(trace, entry);
             }
         }
-        let logs = self.logs.remove_spans(trace, ids);
+        let logs = self.logs.remove_spans(trace, ids, self.segments.as_mut());
+        self.note_log_writes();
         Removed { spans, logs }
     }
 }

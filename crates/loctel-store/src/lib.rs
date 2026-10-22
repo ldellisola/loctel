@@ -35,6 +35,7 @@
 mod clock;
 mod config;
 mod failure;
+mod log_chunks;
 mod logs;
 mod page;
 #[doc(hidden)]
@@ -51,6 +52,8 @@ mod trace_index;
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use config::StoreConfig;
 pub use failure::{FailedIn, TraceStatus, classify, trace_exception};
+#[doc(hidden)]
+pub use log_chunks::LogChunkInfo;
 pub use logs::{Around, HistogramBucket, LevelSet, LogFilter, LogId};
 pub use page::{Page, PageRequest};
 pub use service_map::{NodeKind, ServiceEdge, ServiceMap, ServiceNode, ServiceStats, TimeWindow};

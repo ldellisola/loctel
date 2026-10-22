@@ -33,7 +33,7 @@ crate updates this table and the diagram below it.
 | Crate | Layer | Owns | Status |
 |---|---|---|---|
 | `loctel-model` | core | Domain types (spans, logs, resources, IDs, severity), independent of OTLP | implemented (see "Domain model" below) |
-| `loctel-store` | core | In-memory store: trace assembly, completeness, dedup, eviction, failure semantics, search (with TraceQL and LogQL filters), logs, removal and scans, service map | implemented: assembly, completeness, dedup, eviction, failure semantics, trace summaries and search, logs, service map and services list, and (Milestone 2) query filters with matched spans, `remove_trace`, `remove_spans`, `with_trace_spans` and the scans, and (Milestone 4) log IDs, level and window filters on log search, the log histogram and the lines around a log (see "Store" below) |
+| `loctel-store` | core | Store, in memory and spilling to temporary segment files: trace assembly, completeness, dedup, eviction, failure semantics, search (with TraceQL and LogQL filters), logs, removal and scans, service map | implemented: assembly, completeness, dedup, eviction, failure semantics, trace summaries and search, logs, service map and services list, and (Milestone 2) query filters with matched spans, `remove_trace`, `remove_spans`, `with_trace_spans` and the scans, and (Milestone 4) log IDs, level and window filters on log search, the log histogram and the lines around a log, and (Milestone 5) segment files, a trace index with hot and cold traces, and logs in chunks with counts and positions from their metadata (see "Store" below) |
 | `loctel-query` | core | TraceQL and LogQL lexers, parsers and evaluators, with errors that carry the position in the query. Pure: depends only on `loctel-model` (and `regex`) | implemented (Milestone 2): `QueryError`, `Pattern`, duration literals, the TraceQL lexer, parser and evaluator (`TraceView`, `evaluate`, `matches_span`) and LogQL (`logql::parse`, `LogQuery::matches`, `logql::labels`); the store, the rules and MCP (the `query` arguments of `search_traces` and `search_logs`) use them (see "Query languages" below) |
 | `loctel-rules` | core | Discard rules: the rule model and `rules.toml`, `RuleSet` (the ingest filter for spans and logs, with a bounded memory of what was dropped), and the preview | implemented (Milestone 2): `RuleSpec`, `RulesFile`, `RuleSet`, `preview`; the engine runs it at ingest (see "Discard rules" and "Engine" below) |
 | `loctel-ingest` | core | OTLP gRPC and HTTP receivers, protobuf and JSON to model conversion | implemented: gRPC and HTTP receivers, gzip, conversion, `partial_success` (see "Ingest" below) |
@@ -173,10 +173,20 @@ rules) are written to disk.
   and for a cold trace its summary) stays in memory, so lists, searches, counts and
   "oldest start" do not read the files. The spans of a cold trace are decoded on
   demand through a small cache. `Store::spilled_traces()` counts the cold ones;
-  nothing else tells. Logs are still in memory (the next task of the milestone
-  moves them), and the disk cap is not enforced yet. Details and the reasons:
+  nothing else tells. The disk cap is not enforced yet. Details and the reasons:
   [`areas/store.md`](areas/store.md), "Hot and cold traces", and
   [`decisions/0045-trace-index-and-spill-policy.md`](decisions/0045-trace-index-and-spill-policy.md).
+- **Log chunks (Milestone 5).** Logs go to an open chunk in memory, which is
+  sealed at 65,536 logs or after 10 s into one record of a logs segment file (or
+  of memory, with no files). Chunks overlap in time when logs arrive late, so
+  every list of logs is a merge of the chunks that reads a sealed one only when it
+  has to. What is kept in memory about each sealed chunk (its range of ids, counts
+  by level and service, counts per second, its traces) answers
+  `Store::log_count` (a total) and `Store::logs_at` (rows from a position) and the
+  histogram of an *indexed* filter (a window, levels, a service) without reading
+  the logs, so the Logs screen can scroll ten million lines. Details, the cost and
+  the reasons: [`areas/store.md`](areas/store.md), "Log chunks", and
+  [`decisions/0046-log-chunks.md`](decisions/0046-log-chunks.md).
 - **Time is injected.** `Store::new(config, Arc<dyn Clock>)`. `SystemClock`
   in the app, `ManualClock` in tests, so completeness is tested without
   sleeping.
@@ -210,8 +220,10 @@ rules) are written to disk.
   body text (case-insensitive), trace and span, newest first with the same keyset
   paging; `LogFilter::query` adds a LogQL query. `Store::search_logs_keyed` also
   returns each log's stable `LogId`, which `Store::log` and `Store::logs_around`
-  read, and `Store::log_histogram` counts a search into equal buckets (the Logs
-  screen's volume bars). `Store::logs_for_span` returns
+  read, `Store::log_histogram` counts a search into equal buckets (the Logs
+  screen's volume bars), and (Milestone 5) `Store::log_count` and
+  `Store::logs_at` give the total and the rows at a position of a list that is
+  too long to page through. `Store::logs_for_span` returns
   a span's logs, oldest first, linked by ID only, so it works whether or not the
   span is held.
 - **Removal and scans.** `Store::remove_trace` and `Store::remove_spans`

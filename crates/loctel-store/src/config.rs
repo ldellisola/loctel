@@ -3,6 +3,8 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::log_chunks::{LOG_CHUNK_AGE, LOG_CHUNK_MAX};
+
 /// Limits and timings for a [`Store`](crate::Store).
 ///
 /// The first three fields are what the store always had. The rest are about
@@ -38,6 +40,15 @@ pub struct StoreConfig {
     /// when they would take more. Not enforced yet; the disk cap is the next
     /// task of the milestone.
     pub disk_cap_bytes: u64,
+    /// How many logs the open chunk takes before it is sealed (see
+    /// "Log chunks" in `docs/areas/store.md`). A sealed chunk is written to a
+    /// segment file when the store has one, and read back through a small cache
+    /// of decoded chunks.
+    pub log_chunk_max: usize,
+    /// How long the open chunk may stay open, on the store's clock from its
+    /// first log, before it is sealed whatever its size: so that a store that
+    /// is no longer written to gives its last logs back to the disk too.
+    pub log_chunk_age: Duration,
 }
 
 impl Default for StoreConfig {
@@ -51,6 +62,8 @@ impl Default for StoreConfig {
             hot_max_spans: 2_000_000,
             segment_max_bytes: 64 * 1024 * 1024,
             disk_cap_bytes: 4 * 1024 * 1024 * 1024,
+            log_chunk_max: LOG_CHUNK_MAX,
+            log_chunk_age: LOG_CHUNK_AGE,
         }
     }
 }
@@ -58,10 +71,12 @@ impl Default for StoreConfig {
 impl StoreConfig {
     /// A config that spills into `dir` as eagerly as it can: a trace goes to a
     /// segment the moment it is complete (`spill_after` is zero), a segment
-    /// rolls every 4 KiB and the oldest complete traces go early past 16 hot
-    /// spans, so a test that lets the clock pass the quiet period meets every
-    /// cold path: decoding on a read, rehydrating on a late span, a trace
-    /// spread over many segments. Everything else is the default.
+    /// rolls every 4 KiB, the oldest complete traces go early past 16 hot
+    /// spans and a chunk of logs is sealed every 7 logs, so a test that lets the
+    /// clock pass the quiet period meets every cold path: decoding on a read,
+    /// rehydrating on a late span, a trace spread over many segments, logs
+    /// spread over many chunks that a late log overlaps. Everything else is the
+    /// default.
     ///
     /// Public only for the tests of this crate and of the crates that test
     /// through the store.
@@ -72,6 +87,7 @@ impl StoreConfig {
             spill_after: Duration::ZERO,
             segment_max_bytes: 4 * 1024,
             hot_max_spans: 16,
+            log_chunk_max: 7,
             ..StoreConfig::default()
         }
     }
