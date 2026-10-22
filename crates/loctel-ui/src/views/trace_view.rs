@@ -4,8 +4,8 @@
 //!
 //! [`TraceView`] puts the screen together and holds none of its data:
 //!
-//! - a **header** in two lines. First the `Traces` back button (Esc does the
-//!   same), the root span's name, the red `Failed in …` badge (or the amber
+//! - a **header** in two lines. First the `Back` button (Esc does the same; it
+//!   returns to the screen the trace was opened from), the root span's name, the red `Failed in …` badge (or the amber
 //!   `Errors inside`) and, on the right, the completeness indicator
 //!   (`Receiving spans…` in the accent colour, `Complete` in green). Then the
 //!   line `1.84 s · 15 spans · 5 services · 14:32:07.412`, the trace ID in the
@@ -63,6 +63,10 @@ const TRACE_ID_CHARS: usize = 17;
 /// The padding of the header's sides.
 const PAD_X: f32 = 16.0;
 
+/// The label of the header's back button. It returns to the screen the trace was
+/// opened from (the home screen or the Logs screen), so it does not name one.
+pub const BACK_LABEL: &str = "Back";
+
 /// What the screen says while the first read is out.
 pub const LOADING: &str = "Loading trace\u{2026}";
 /// What it says when the store has no such trace.
@@ -77,7 +81,7 @@ fn rgba(color: Rgba, alpha: f32) -> Rgba {
 /// The parts of the trace screen a test can ask the place of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TracePart {
-    /// The `Traces` back button.
+    /// The `Back` button.
     Back,
     /// The `Copy ID` button.
     CopyId,
@@ -129,7 +133,8 @@ pub(super) fn measure(frame: &Rc<Frame>, part: TracePart) -> impl IntoElement {
 /// What the trace screen asks of the window.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TraceViewEvent {
-    /// Leave the trace: show the home screen as it was.
+    /// Leave the trace: show the screen it was opened from (the home screen, or
+    /// the Logs screen) as it was.
     Back,
     /// Show the home screen with this TraceQL query in the bar (the query of
     /// `Traces through this span name`).
@@ -349,7 +354,7 @@ impl TraceView {
             .flex_none()
             .child(
                 Button::new("trace-back")
-                    .label("Traces")
+                    .label(BACK_LABEL)
                     .icon(IconName::ArrowLeft)
                     .small()
                     .ghost()

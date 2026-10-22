@@ -9,7 +9,10 @@
 //! toggles narrow the rows, a click on a row opens its trace and the empty
 //! table offers `Clear filters`. The toolbar's (decision 0032): Pause freezes the
 //! view while the store goes on receiving, the range menu changes the rows, and
-//! Clear all empties the map, the table and the store.
+//! Clear all empties the map, the table and the store. The sidebar's (M4 plan,
+//! Task 7): the three entries switch screens and every screen keeps its state,
+//! ⌘1 to ⌘3 and ⌘, are the keyboard's way, and the trace screen's `Back` returns
+//! to the screen the trace was opened from.
 //!
 //! They drive the real window (`testing::Driver`) over the home screen's data
 //! (`common::home_store`: the failing and the successful checkout and a health
@@ -26,15 +29,21 @@ use std::time::Duration;
 
 use gpui::{AppContext as _, Entity, Modifiers, Pixels, Point, point, px};
 use loctel_model::{AttrValue, Resource, Span, SpanId, SpanKind, StatusCode, TraceId};
+use loctel_rules::{DropScope, RuleLanguage};
 use loctel_store::{PageRequest, Store, TraceFilter};
-use loctel_ui::Theme;
-use loctel_ui::app::{HomeModel, MainWindow, Screen, TOOLBAR_HEIGHT, TimeRange, ToolbarPart};
+use loctel_ui::app::{
+    HomeModel, INSET, MainWindow, NAV_ITEM_GAP, NAV_ITEM_HEIGHT, NavItem, SIDEBAR_WIDTH, Screen,
+    TOOLBAR_HEIGHT, TRAFFIC_LIGHT_SPACE, TimeRange, ToolbarPart,
+};
 use loctel_ui::model::query_bar::{QueryState, service_filter};
+use loctel_ui::model::rules::Draft;
 use loctel_ui::testing::{Driver, FixedBackend, assert_snapshot};
 use loctel_ui::views::{
-    CLEAR_FILTERS, Camera, EMPTY_NO_DATA, EMPTY_NO_MATCH, INSPECTOR_MAX_WIDTH, INSPECTOR_MIN_WIDTH,
-    MAX_ZOOM, MIN_ZOOM, MapView, TablePart, TracePart, TraceTableView,
+    BACK_LABEL, CLEAR_FILTERS, Camera, EMPTY_NO_DATA, EMPTY_NO_MATCH, INSPECTOR_MAX_WIDTH,
+    INSPECTOR_MIN_WIDTH, LogsPart, MAX_ZOOM, MIN_ZOOM, MapView, TablePart, TracePart,
+    TraceTableView,
 };
+use loctel_ui::{KitAssets, Theme};
 
 use common::row_center as trace_row_center;
 use common::{
@@ -1242,7 +1251,7 @@ fn back_returns_home_keeping_query() {
     driver.draw();
     driver.draw();
 
-    // The `Traces` button is the way back.
+    // The `Back` button is the way back.
     driver.click(part_center(&driver, TracePart::Back));
     assert_eq!(screen(&mut driver), Screen::Home);
     driver.draw();
@@ -1665,4 +1674,431 @@ fn clear_all_clears_a_frozen_view_too() {
 fn map_empty_message(driver: &Driver<MainWindow>) -> Option<(&'static str, &'static str)> {
     let map = map_of(driver);
     driver.read(|cx| map.read(cx).empty_message(cx))
+}
+
+// --- the sidebar, the keys and Back (M4 plan, Task 7) -----------------------------------
+
+/// Draws until what is pending (a read, its result, the frame that shows it) is
+/// done.
+fn settle(driver: &mut Driver<MainWindow>) {
+    for _ in 0..4 {
+        driver.draw();
+    }
+}
+
+/// Where the sidebar entry `item` is in the window now.
+fn nav_bounds(driver: &Driver<MainWindow>, item: NavItem) -> gpui::Bounds<Pixels> {
+    driver
+        .read_root(|main| main.nav_bounds(item))
+        .unwrap_or_else(|| panic!("the sidebar has no `{}` entry on the screen", item.label()))
+}
+
+/// A click on the sidebar entry `item`, and the frames it takes to show the
+/// screen.
+fn click_nav(driver: &mut Driver<MainWindow>, item: NavItem) {
+    driver.click(nav_bounds(driver, item).center());
+    settle(driver);
+}
+
+/// A key chord (`cmd-2`), and the frames it takes to show what it did.
+fn press(driver: &mut Driver<MainWindow>, chord: &str) {
+    driver.key(chord);
+    settle(driver);
+}
+
+const LOGS: Screen = Screen::Logs { query: None };
+const RULES: Screen = Screen::Rules { draft: None };
+
+/// What the user typed in the Logs bar in the tests below.
+const LOG_QUERY: &str = "{service_name=\"payments-api\"} | level = \"error\"";
+
+fn logs_of(driver: &Driver<MainWindow>) -> Entity<loctel_ui::app::LogsModel> {
+    driver.read_root(|main| main.logs().clone())
+}
+
+fn logs_query(driver: &Driver<MainWindow>) -> String {
+    let logs = logs_of(driver);
+    driver.read(|cx| logs.read(cx).query_text().to_owned())
+}
+
+fn windows_open(driver: &Driver<MainWindow>) -> usize {
+    driver.read(|cx| cx.windows().len())
+}
+
+#[test]
+fn the_sidebar_lists_the_three_screens() {
+    let driver = home_driver(&Theme::dark());
+    assert_eq!(
+        NavItem::ALL.map(NavItem::label),
+        ["Map & traces", "Logs", "Discard rules"]
+    );
+    assert_eq!(
+        NavItem::ALL.map(NavItem::screen),
+        [Screen::Home, LOGS, RULES]
+    );
+    assert_eq!(
+        NavItem::ALL.map(NavItem::shortcut),
+        ["cmd-1", "cmd-2", "cmd-3"]
+    );
+
+    // Top to bottom under the strip the traffic lights sit in, each as high as
+    // the entries always were and as wide as the sidebar less its padding.
+    let mut top = INSET + TRAFFIC_LIGHT_SPACE;
+    for item in NavItem::ALL {
+        let bounds = nav_bounds(&driver, item);
+        assert!(
+            close_to(f32::from(bounds.origin.y), top, 1.5),
+            "{} starts at {top}, not {:?}",
+            item.label(),
+            bounds.origin.y
+        );
+        assert!(close_to(
+            f32::from(bounds.size.height),
+            NAV_ITEM_HEIGHT,
+            0.01
+        ));
+        assert!(
+            f32::from(bounds.origin.x) > INSET && f32::from(bounds.right()) < INSET + SIDEBAR_WIDTH,
+            "{} is inside the sidebar: {bounds:?}",
+            item.label()
+        );
+        top = f32::from(bounds.bottom()) + NAV_ITEM_GAP;
+    }
+}
+
+fn close_to(a: f32, b: f32, tolerance: f32) -> bool {
+    (a - b).abs() <= tolerance
+}
+
+#[test]
+fn nav_items_are_lit_by_their_screens() {
+    let draft = Draft {
+        name: "Noise".to_owned(),
+        language: RuleLanguage::LogQl,
+        query: "{service_name=\"web-bff\"}".to_owned(),
+        scope: DropScope::Trace,
+        enabled: true,
+    };
+    let lit = |screen: &Screen| -> Vec<&'static str> {
+        NavItem::ALL
+            .into_iter()
+            .filter(|item| item.is_active(screen))
+            .map(NavItem::label)
+            .collect()
+    };
+    assert_eq!(lit(&Screen::Home), ["Map & traces"]);
+    // A trace is reached from the map and the table, and stays under them.
+    assert_eq!(lit(&Screen::Trace(failing_trace_id())), ["Map & traces"]);
+    assert_eq!(lit(&LOGS), ["Logs"]);
+    assert_eq!(
+        lit(&Screen::Logs {
+            query: Some(LOG_QUERY.to_owned())
+        }),
+        ["Logs"]
+    );
+    assert_eq!(lit(&RULES), ["Discard rules"]);
+    assert_eq!(
+        lit(&Screen::Rules { draft: Some(draft) }),
+        ["Discard rules"]
+    );
+}
+
+#[test]
+fn sidebar_switches_screens_and_keeps_state() {
+    let mut driver = home_driver(&Theme::dark());
+    assert_eq!(screen(&mut driver), Screen::Home);
+
+    // The home screen: a query that narrows the table to the failing checkout.
+    type_query(&mut driver, "{ status = error }");
+    assert_eq!(row_ids(&driver).len(), 1);
+
+    // Logs: a query typed there, and the live tail switched off.
+    click_nav(&mut driver, NavItem::Logs);
+    assert_eq!(screen(&mut driver), LOGS);
+    let logs = logs_of(&driver);
+    driver.update_root(|_, _, cx| {
+        logs.update(cx, |logs, cx| {
+            logs.set_query(LOG_QUERY, cx);
+            logs.set_tail(false, cx);
+        });
+    });
+    settle(&mut driver);
+    assert_eq!(logs_query(&driver), LOG_QUERY);
+
+    // Discard rules: a new rule with a name in the editor, not saved.
+    click_nav(&mut driver, NavItem::Rules);
+    assert_eq!(screen(&mut driver), RULES);
+    let rules = driver.read_root(|main| main.rules().clone());
+    driver.update_root(|_, _, cx| {
+        rules.update(cx, |rules, cx| {
+            rules.new_rule(cx);
+            rules.set_name("Drop the noise", cx);
+        });
+    });
+    settle(&mut driver);
+
+    // Back to the first screen: it is as it was left.
+    click_nav(&mut driver, NavItem::MapAndTraces);
+    assert_eq!(screen(&mut driver), Screen::Home);
+    assert_eq!(query_text(&driver), "{ status = error }");
+    assert_eq!(input_text(&driver), "{ status = error }");
+    assert_eq!(row_ids(&driver).len(), 1);
+
+    // Logs again: the query and the tail setting stayed.
+    click_nav(&mut driver, NavItem::Logs);
+    assert_eq!(screen(&mut driver), LOGS);
+    assert_eq!(logs_query(&driver), LOG_QUERY);
+    assert!(
+        !driver.read(|cx| logs.read(cx).tail()),
+        "the tail stays off"
+    );
+    assert!(
+        driver.read(|cx| logs
+            .read(cx)
+            .rows()
+            .iter()
+            .all(|row| row.service == "payments-api")),
+        "the list is the query's"
+    );
+
+    // And the editor is open on its draft, unsaved.
+    click_nav(&mut driver, NavItem::Rules);
+    assert_eq!(screen(&mut driver), RULES);
+    let name = driver.read(|cx| {
+        rules
+            .read(cx)
+            .editor()
+            .map(|editor| editor.draft().name.clone())
+    });
+    assert_eq!(name.as_deref(), Some("Drop the noise"));
+
+    // A click on the entry that is lit shows the same screen.
+    click_nav(&mut driver, NavItem::Rules);
+    assert_eq!(screen(&mut driver), RULES);
+    assert!(driver.read(|cx| rules.read(cx).editor().is_some()));
+}
+
+#[test]
+fn a_sidebar_click_on_a_trace_leaves_it() {
+    let mut driver = trace_driver();
+    click_nav(&mut driver, NavItem::Logs);
+    assert_eq!(screen(&mut driver), LOGS);
+    assert!(
+        driver.read_root(|main| main.trace_view().is_none()),
+        "the trace screen is closed"
+    );
+    click_nav(&mut driver, NavItem::MapAndTraces);
+    assert_eq!(screen(&mut driver), Screen::Home);
+}
+
+#[test]
+fn keyboard_shortcuts_switch_screens() {
+    let mut driver = home_driver(&Theme::dark());
+
+    press(&mut driver, "cmd-2");
+    assert_eq!(screen(&mut driver), LOGS);
+    press(&mut driver, "cmd-3");
+    assert_eq!(screen(&mut driver), RULES);
+    press(&mut driver, "cmd-1");
+    assert_eq!(screen(&mut driver), Screen::Home);
+
+    // From the trace screen, whose view has the keyboard.
+    open_trace(&mut driver, failing_trace_id());
+    press(&mut driver, "cmd-2");
+    assert_eq!(screen(&mut driver), LOGS);
+    // Its view is gone, and the keys still work.
+    press(&mut driver, "cmd-3");
+    assert_eq!(screen(&mut driver), RULES);
+    press(&mut driver, "cmd-1");
+    assert_eq!(screen(&mut driver), Screen::Home);
+
+    // With the query input of the table holding the keyboard, and text in it.
+    driver.click(part(&driver, TablePart::QueryInput));
+    driver.type_text("{ status");
+    press(&mut driver, "cmd-2");
+    assert_eq!(screen(&mut driver), LOGS);
+    press(&mut driver, "cmd-1");
+    assert_eq!(
+        input_text(&driver),
+        "{ status",
+        "the chord was not typed, and the text stayed"
+    );
+
+    // A click in an empty part of the window gives the keys to the window too.
+    driver.click(point(px(INSET + SIDEBAR_WIDTH / 2.0), px(700.0)));
+    press(&mut driver, "cmd-3");
+    assert_eq!(screen(&mut driver), RULES);
+}
+
+/// The window over a store with nothing in it: a click low in the table lands on
+/// the table's own empty area, not on a row.
+fn empty_driver() -> Driver<MainWindow> {
+    let backend = Rc::new(FixedBackend::new(Store::new(
+        loctel_store::StoreConfig::default(),
+        Arc::new(loctel_store::ManualClock::new(0)),
+    )));
+    Driver::new(WINDOW, &Theme::dark(), move |window, cx| {
+        cx.new(|cx| MainWindow::new(backend, None, window, cx))
+    })
+}
+
+#[test]
+fn shortcuts_work_after_a_click_in_a_part_of_a_screen_that_goes_away() {
+    // What the real window did: a click in the table's empty area gives the
+    // keyboard to a handle of the home screen; leaving the home screen takes it
+    // out of the frame but not out of the app, so the window has to take the
+    // keyboard back or the keys would have nowhere to be heard.
+    let mut driver = empty_driver();
+    driver.click(point(px(700.0), px(800.0)));
+    press(&mut driver, "cmd-2");
+    assert_eq!(screen(&mut driver), LOGS);
+    press(&mut driver, "cmd-3");
+    assert_eq!(screen(&mut driver), RULES);
+    press(&mut driver, "cmd-1");
+    assert_eq!(screen(&mut driver), Screen::Home);
+
+    // The same from the query input, whose handle lives as long as the window.
+    driver.click(part(&driver, TablePart::QueryInput));
+    press(&mut driver, "cmd-3");
+    assert_eq!(screen(&mut driver), RULES);
+    press(&mut driver, "cmd-2");
+    assert_eq!(screen(&mut driver), LOGS);
+}
+
+#[test]
+fn the_settings_shortcut_opens_one_settings_window() {
+    let mut driver = home_driver(&Theme::dark());
+    assert_eq!(windows_open(&driver), 1);
+
+    press(&mut driver, "cmd-,");
+    assert_eq!(windows_open(&driver), 2, "the Settings window is open");
+    assert_eq!(screen(&mut driver), Screen::Home, "and the screen stayed");
+
+    // Asking again brings that window forward and opens no second one.
+    press(&mut driver, "cmd-,");
+    assert_eq!(windows_open(&driver), 2);
+}
+
+/// On the Logs screen: expands a log of the failing checkout (unless it is
+/// expanded already, as a line the user left open is when they come back to the
+/// screen) and clicks its `Open trace`: the trace screen, opened from the Logs
+/// screen.
+fn open_trace_from_logs(driver: &mut Driver<MainWindow>) {
+    let logs = logs_of(driver);
+    let (at, id) = driver
+        .read(|cx| {
+            logs.read(cx)
+                .rows()
+                .iter()
+                .enumerate()
+                .find(|(_, row)| row.trace_id == Some(failing_trace_id()))
+                .map(|(at, row)| (at, row.id))
+        })
+        .expect("a log of the failing checkout is listed");
+    let view = driver.read_root(|main| main.logs_view().clone());
+    if driver.read(|cx| logs.read(cx).expanded()) != Some(id) {
+        let row = driver
+            .read(|cx| view.read(cx).row_center(at))
+            .expect("the row is in view");
+        driver.click(row);
+        settle(driver);
+    }
+    let open = driver
+        .read(|cx| view.read(cx).bounds_of(LogsPart::OpenTrace))
+        .expect("the expanded line has `Open trace`")
+        .center();
+    driver.click(open);
+    settle(driver);
+}
+
+#[test]
+fn trace_back_returns_to_logs_when_opened_from_logs() {
+    let mut driver = home_driver(&Theme::dark());
+    click_nav(&mut driver, NavItem::Logs);
+    // The user typed a query: going back must not put another one in its place.
+    let logs = logs_of(&driver);
+    let query = "{service_name=\"payments-api\"}";
+    driver.update_root(|_, _, cx| logs.update(cx, |logs, cx| logs.set_query(query, cx)));
+    settle(&mut driver);
+
+    open_trace_from_logs(&mut driver);
+    assert_eq!(screen(&mut driver), Screen::Trace(failing_trace_id()));
+
+    driver.click(part_center(&driver, TracePart::Back));
+    settle(&mut driver);
+    assert_eq!(screen(&mut driver), LOGS, "Back is to the Logs screen");
+    assert_eq!(logs_query(&driver), query, "with its query as it was");
+    assert!(
+        driver.read_root(|main| main.trace_view().is_none()),
+        "and the trace screen is closed"
+    );
+
+    // Esc is the same as the button.
+    open_trace_from_logs(&mut driver);
+    assert_eq!(screen(&mut driver), Screen::Trace(failing_trace_id()));
+    driver.key("escape");
+    settle(&mut driver);
+    assert_eq!(screen(&mut driver), LOGS);
+    assert_eq!(logs_query(&driver), query);
+}
+
+#[test]
+fn trace_back_returns_home_when_opened_from_home() {
+    let mut driver = trace_driver();
+    driver.click(part_center(&driver, TracePart::Back));
+    settle(&mut driver);
+    assert_eq!(screen(&mut driver), Screen::Home);
+
+    // The way a trace was opened last time does not matter: from Logs it went
+    // back to Logs, and from the table it goes back to the table.
+    click_nav(&mut driver, NavItem::Logs);
+    open_trace_from_logs(&mut driver);
+    driver.click(part_center(&driver, TracePart::Back));
+    settle(&mut driver);
+    assert_eq!(screen(&mut driver), LOGS);
+    click_nav(&mut driver, NavItem::MapAndTraces);
+    driver.click(row_center(&driver, 0));
+    settle(&mut driver);
+    assert!(matches!(screen(&mut driver), Screen::Trace(_)));
+    driver.click(part_center(&driver, TracePart::Back));
+    settle(&mut driver);
+    assert_eq!(screen(&mut driver), Screen::Home);
+}
+
+#[test]
+fn the_back_button_says_back() {
+    assert_eq!(BACK_LABEL, "Back");
+}
+
+#[test]
+fn the_sidebar_icons_are_bundled() {
+    use gpui::AssetSource as _;
+    // Map is among Kit's default icons; the list and the funnel are not, so
+    // `KitAssets` carries them on top.
+    for item in NavItem::ALL {
+        let path = item.icon().path();
+        let loaded = KitAssets.load(&path).unwrap_or_else(|error| {
+            panic!(
+                "the icon of `{}` ({path}) is not bundled: {error}",
+                item.label()
+            )
+        });
+        let bytes = loaded.expect("the icon loads");
+        assert!(
+            std::str::from_utf8(&bytes).unwrap().contains("<svg"),
+            "{path}"
+        );
+    }
+    // And what the components draw is still there.
+    for path in [
+        "icons/arrow-left.svg",
+        "icons/chevron-down.svg",
+        "icons/copy.svg",
+    ] {
+        assert!(KitAssets.load(path).unwrap().is_some(), "{path}");
+    }
+    assert_eq!(
+        NavItem::ALL.map(|item| item.icon().path().to_string()),
+        ["icons/map.svg", "icons/list.svg", "icons/funnel.svg"]
+    );
 }

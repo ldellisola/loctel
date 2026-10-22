@@ -1,10 +1,15 @@
 //! The sidebar: the room for the window's traffic lights, the navigation and,
 //! at the bottom, the status box.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+
 use gpui::{
-    AnyElement, FontWeight, InteractiveElement as _, IntoElement, ParentElement, Rgba,
-    StatefulInteractiveElement as _, Styled, div, px,
+    AnyElement, Bounds, FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement,
+    Pixels, Rgba, StatefulInteractiveElement as _, Styled, canvas, div, px,
 };
+use gpui_kit::component::Icon;
 
 use super::nav::NavItem;
 use super::shell::{MainWindow, Screen};
@@ -18,11 +23,22 @@ pub const TRAFFIC_LIGHT_SPACE: f32 = 52.0;
 /// The height of a navigation entry, in pixels.
 pub const NAV_ITEM_HEIGHT: f32 = 34.0;
 
+/// The space between two navigation entries, in pixels.
+pub const NAV_ITEM_GAP: f32 = 2.0;
+
+/// The size of the icon in front of an entry's text, in pixels.
+const NAV_ICON_SIZE: f32 = 16.0;
+
+/// Where the navigation entries were laid out in the latest frame, in window
+/// coordinates (for the tests, through `MainWindow::nav_bounds`).
+pub(super) type NavFrame = RefCell<HashMap<NavItem, Bounds<Pixels>>>;
+
 /// The sidebar's contents: inside the frame the shell draws.
 pub(super) fn sidebar_contents(
     theme: &Theme,
     screen: &Screen,
     status: &StatusModel,
+    frame: &Rc<NavFrame>,
     cx: &mut gpui::Context<MainWindow>,
 ) -> impl IntoElement {
     div()
@@ -31,54 +47,83 @@ pub(super) fn sidebar_contents(
         .flex_col()
         .child(div().h(px(TRAFFIC_LIGHT_SPACE)).flex_none())
         .child(
-            div().flex().flex_col().gap(px(2.0)).px(px(10.0)).children(
-                NavItem::ALL
-                    .iter()
-                    .map(|&item| nav_item(theme, item, screen, cx)),
-            ),
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(NAV_ITEM_GAP))
+                .px(px(10.0))
+                .children(
+                    NavItem::ALL
+                        .iter()
+                        .map(|&item| nav_item(theme, item, screen, frame, cx)),
+                ),
         )
         .child(div().flex_1())
         .child(status_box(theme, status))
 }
 
-/// One entry of the navigation, lit when it is the current screen's.
+/// One entry of the navigation: its icon and its text, lit when it is the
+/// current screen's. Its bounds go into `frame` while the frame is prepainted.
 fn nav_item(
     theme: &Theme,
     item: NavItem,
     screen: &Screen,
+    frame: &Rc<NavFrame>,
     cx: &mut gpui::Context<MainWindow>,
 ) -> AnyElement {
     let active = item.is_active(screen);
+    let measure = {
+        let frame = Rc::clone(frame);
+        canvas(
+            move |bounds, _window, _cx| {
+                frame.borrow_mut().insert(item, bounds);
+            },
+            |_, (), _, _| {},
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+    };
+    let icon_color = if active {
+        theme.accent
+    } else {
+        theme.text_secondary
+    };
+    let icon = Icon::new(item.icon())
+        .size(px(NAV_ICON_SIZE))
+        .text_color(Hsla::from(icon_color));
     let row = div()
         .id(item.label())
+        .relative()
         .h(px(NAV_ITEM_HEIGHT))
         .flex()
         .items_center()
+        .gap(px(10.0))
         .px(px(12.0))
         .rounded(px(10.0))
         .cursor_pointer()
         .text_size(px(13.0))
         .on_click(cx.listener(move |main, _, _, cx| main.navigate(item.screen(), cx)));
-    if active {
+    let row = if active {
         row.bg(Rgba {
             a: 0.18,
             ..theme.accent
         })
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(theme.text)
-        .child(item.label())
-        .into_any_element()
     } else {
-        row.text_color(theme.text_secondary)
-            .hover(|style| {
-                style.bg(Rgba {
-                    a: 0.06,
-                    ..theme.text
-                })
+        row.text_color(theme.text_secondary).hover(|style| {
+            style.bg(Rgba {
+                a: 0.06,
+                ..theme.text
             })
-            .child(item.label())
-            .into_any_element()
-    }
+        })
+    };
+    row.child(div().flex_none().child(icon))
+        .child(item.label())
+        .child(measure)
+        .into_any_element()
 }
 
 /// The status box: what the engine is doing in one line (the words the macOS

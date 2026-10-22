@@ -9,9 +9,11 @@ the service map above the trace table, and the trace view) in a shell with a
 glass sidebar and toolbar, all in `src/app` and `src/views` over the pure models
 in `src/model`; Milestone 4 adds a third, the Logs screen (Task 4, see "The Logs
 screen"), and a fourth, the Discard rules screen (Task 5, see "The Discard rules
-screen"), reached for now through `navigate`, the trace view's `Open in Logs` and
-the Logs screen's `Discard lines like this…` (the sidebar entries are Task 7's);
-"Screens and views at a glance" below is the map of them, and
+screen"), all three reached from the sidebar (Task 7: `Map & traces`, `Logs` and
+`Discard rules`, ⌘1 to ⌘3, with ⌘, for Settings; see "Navigation" under "The main
+window") and from each other (the trace view's `Open in Logs`, the Logs screen's
+`Discard lines like this…`); "Screens and views at a glance" below is the map of
+them, and
 the sections after it say how each one works. The window opens from the Linux
 `loctel` and from the macOS menu bar item's `Open loctel` (see "The real window"
 below and [`macos.md`](macos.md)); the look of the glass parts is done and
@@ -44,7 +46,7 @@ are what shows you what moved (the `upgrade-gpui` skill has the steps; decision
 | `app` | the main window's shell (see "The main window"): `MainWindow`, `Screen`, `UiBackend`, `open_main_window`, `Backdrop`/`GlassRegion`, `kit_theme`; the home screen's live data (see "Live data"): `HomeModel`, `HomeData`, `TimeRange`; the open trace's (see "The trace view"): `TraceModel`; the Logs screen's (see "The Logs screen"): `LogsModel`, `LogsControls`; and the Discard rules screen's (see "The Discard rules screen"): `RulesModel`, `RuleEditor`, `PreviewState`; and `open_settings_window` (see "The Settings window") |
 | `views` | the views of the main window's screens (see "The service map", "The trace table", "The trace view", "The Logs screen" and "The Discard rules screen"): `MapView`, with its `Camera`, `TraceTableView`, `TraceView` with its `WaterfallView`, `InspectorView` and `SpanLogsView`, `LogsView` with its `HistogramView`, `RulesView` with its `RuleEditorView`, and (see "The Settings window") `SettingsView` |
 | `Theme` | the colours below. `Theme::dark()`, `Theme::light()` and `Theme::for_appearance(WindowAppearance)`. It is also a GPUI global once `kit_theme::apply` has run |
-| `KitAssets` | GPUI Kit's bundled icons, to register with `Application::with_assets` |
+| `KitAssets` | the icons to register with `Application::with_assets`: GPUI Kit's default bundle (what its components draw) plus the list and the funnel, which the sidebar uses and the default bundle leaves out (decision 0040). `testing::headless_app` registers it too |
 | `register_fonts(cx)`, `FONT_FAMILY` | the bundled typeface (below) |
 | `testing` (feature `screenshot`) | `render_png` and `assert_snapshot`; for the main window `render_window_png`, `Driver` (click, drag, scroll, pinch, type), `headless_app`, `FixedBackend` (with `rule_set()`, the rules in memory, for a test that wants them to have dropped something, and `fail_bind` and `fail_save`, which make `apply_settings` report a listener `Failed` or fail to write), `RecordingBackdrop` (see "Screenshot tests") |
 
@@ -65,8 +67,8 @@ has its own section further down, which is where the rules are.
 status box) and the toolbar are on every screen.
 
 ```
- sidebar:  Map & traces  (the one entry; Logs and Discard rules are Task 7's, and reached by `navigate` until then)
-              |
+ sidebar:  Map & traces (⌘1)  |  Logs (⌘2)  |  Discard rules (⌘3)      ⌘,  opens the Settings window
+              |  Map & traces:
               v
  Screen::Home ---------------------------------------------------------------.
    MapView        (top panel)     click a service  -> its filter in the query bar
@@ -79,19 +81,20 @@ status box) and the toolbar are on every screen.
    WaterfallView + SpanLogsView   (left)
    InspectorView                  (right)
               |
-              | Esc, the `Traces` button, or the sidebar entry  -> Screen::Home
+              | Esc, the `Back` button -> the screen the trace was opened from (Home, or Logs)
+              | the sidebar entry, or ⌘1 to ⌘3 -> that screen
               | `Traces through this span name` -> Screen::Home with
               |   { name = "..." } written into the query bar
               | `Open in Logs` -> Screen::Logs { query: Some(`{service_name=..} | span_id = ..`) }
               '--------------------------------------------------------------'
 
- Screen::Logs { query }  (Milestone 4: no sidebar entry yet)
+ Screen::Logs { query }  (Milestone 4; sidebar `Logs`, ⌘2)
    LogsView   LogQL bar, level toggles, histogram, the list; toolbar: Live tail, range, Clear all
               |  expand a row, then:
               |    `Open trace` (or the trace link of a row) -> Screen::Trace(id), the log's span selected
               |    `Discard lines like this…`                -> Screen::Rules { draft: Some(..) }
               |    `Show lines around this one`              -> context mode, `Back to search` returns
- Screen::Rules { draft }  (Milestone 4: no sidebar entry yet)
+ Screen::Rules { draft }  (Milestone 4; sidebar `Discard rules`, ⌘3)
    RulesView  header and `New rule`, banners, a card per rule (switch, name, chip, count, query);
               |  beside it, while a rule is open: RuleEditorView (fields, live validation, preview)
               |    click a card -> the editor opens on it; the switch toggles it and nothing else
@@ -99,17 +102,18 @@ status box) and the toolbar are on every screen.
               |    arriving with a draft (`Discard lines like this…`) -> the editor opens on it, unsaved
 
  The Settings window  (Milestone 4 Task 6: not a screen but a window of its own, 520 by 360;
-                       nothing opens it yet: ⌘, in the main window is Task 7's, the popover's
-                       `Settings…` is Task 9's)
+                       ⌘, in the main window opens it (Task 7), the popover's `Settings…`
+                       will (Task 9))
    SettingsView   three port inputs with the state of their endpoints, the login switch (macOS),
                   `Apply` and `Close`;  app::open_settings_window opens it or focuses the open one
 ```
 
 | From | The user does | To |
 |---|---|---|
-| any | clicks `Map & traces` in the sidebar | `Home` |
+| any | clicks `Map & traces`, `Logs` or `Discard rules` in the sidebar, or presses ⌘1, ⌘2 or ⌘3 | `Home`, `Logs { query: None }` or `Rules { draft: None }`: each as it was left |
+| any | presses ⌘, | the Settings window opens, or comes forward; the screen stays |
 | `Home` | clicks a row of the table | `Trace(id)` |
-| `Trace` | Esc, or `Traces` | `Home`, as it was left (query, toggles, rows, the map's camera) |
+| `Trace` | Esc, or `Back` | the screen the trace was opened from: `Home` as it was left (query, toggles, rows, the map's camera), or `Logs` as it was left (its query, levels, tail, the line that was open) |
 | `Trace` | `Traces through this span name` | `Home`, with `span_name_filter(name)` in the bar |
 | `Trace` | `Open in Logs` | `Logs { query: Some(span_logs_query(service, span)) }` |
 | `Logs` | `Open trace`, or a click on a row's trace link | `Trace(id)` with the log's span selected (`MainWindow::open_trace_at`) |
@@ -636,10 +640,11 @@ screens of Tasks 6 to 8 go into its content area. Decision 0024 has the choices.
   and between the panels, and `PANEL_RADIUS` = 16 on each.
   - The **sidebar** is `SIDEBAR_WIDTH` = 220 wide, the window's full height less
     the inset. From the top it has `TRAFFIC_LIGHT_SPACE` (52, where the macOS
-    traffic lights sit; plain room on Linux), the navigation (one entry,
-    `Map & traces`, `NAV_ITEM_HEIGHT` 34, lit with the accent at 18%; Logs and
-    Discard rules arrive in Milestone 4 Task 7) and, at the bottom, the **status
-    box**.
+    traffic lights sit; plain room on Linux), the navigation (three entries,
+    `Map & traces`, `Logs` and `Discard rules`, each `NAV_ITEM_HEIGHT` 34 high with
+    `NAV_ITEM_GAP` 2 between; an icon (16 px) and the text; the one that is lit has
+    the accent at 18% behind it, the text in semibold and the icon in the accent
+    colour; see "Navigation" below) and, at the bottom, the **status box**.
   - The status box shows `status_line` and `rules_line` (the words of the macOS
     menu) and a row per endpoint (`OTLP gRPC`, `OTLP HTTP`, `MCP`) with its
     address, a red dot and address when it failed. It reads a `StatusModel` from
@@ -679,7 +684,7 @@ map, the table and the store (and works while frozen).
 **Screens.** `Screen` is `Home`, `Trace(TraceId)`, `Logs { query: Option<String> }`
 or `Rules { draft: Option<Draft> }` (the last two are Milestone 4's);
 `MainWindow::screen()` and `navigate(screen, cx)` read and change it, and
-clicking the navigation entry shows `Home`. The home screen's views live as long
+clicking a navigation entry shows its screen (see "Navigation"). The home screen's views live as long
 as the window; the trace screen is made when it is first drawn and dropped when
 the window leaves it (see "The trace view"). The Logs screen's model and view
 live as long as the window too (`main.logs()`, `main.logs_view()`, made in
@@ -698,6 +703,58 @@ every time (a draft that was open is replaced); `draft: None` shows the screen a
 it was left. The toolbar's title is `toolbar_title`:
 `Logs` and `Discard rules` join the two above, and on the Logs screen the
 controls at its right are `LogsControls`.
+
+**Navigation** (`app/nav.rs`, `app/sidebar.rs`; M4 Task 7, decision 0040).
+
+| Entry | Icon (Lucide, `gpui_kit::assets::IconName`) | Key | Screen a click shows | Lit on |
+|---|---|---|---|---|
+| `Map & traces` | `Map` | ⌘1 (`cmd-1`) | `Home` | `Home` and every `Trace(_)` |
+| `Logs` | `List` | ⌘2 | `Logs { query: None }` | `Logs { .. }` |
+| `Discard rules` | `Funnel` | ⌘3 | `Rules { draft: None }` | `Rules { .. }` |
+
+`NavItem` (`ALL`, `label`, `icon`, `shortcut`, `screen`, `is_active`) is the one
+list the sidebar, the keys and the tests read. A trace stays under `Map & traces`
+even when it was opened from a log (the toolbar says `Map & traces › <id>` there
+too); only `Back` knows where it came from.
+
+- **State is kept.** Every screen's views and model live as long as the window
+  (the trace screen apart), so switching screens loses nothing for the session:
+  the home query, toggles and camera, the Logs query, levels, range, tail and
+  expanded line, and an open rules editor with its draft. An entry's `screen`
+  carries no query and no draft, which is what makes it "as it was left";
+  `Screen::Logs { query: Some(..) }` and `Screen::Rules { draft: Some(..) }` are
+  the ways to arrive *with* something, and they replace what was there.
+  (`sidebar_switches_screens_and_keeps_state`)
+- **Keys.** ⌘1, ⌘2, ⌘3 and ⌘, are GPUI actions (`ShowMapAndTraces`, `ShowLogs`,
+  `ShowRules`, `OpenSettings`) bound by `app::init` in the key context
+  `MainWindow`, which the shell's root element carries, so they work in the main
+  window and nowhere else (the Settings window has no such context). They are
+  `cmd-…` on every platform (the Super key on Linux, where
+  `xdotool key super+2` sends one). Chords with the command key are not typed
+  into an input. The root takes the keyboard at creation, and back whenever what
+  had it leaves the frame (`Context::on_focus_lost`: GPUI calls it after a frame
+  in which nothing is focused any more, for instance after a click in the table's
+  empty area and a switch to Logs, or the dropped trace screen); a click on bare
+  window gives it to the root too, since the root tracks focus. So the keys do not
+  depend on where the last click was.
+  (`keyboard_shortcuts_switch_screens`, `shortcuts_work_after_a_click_in_a_part_of_a_screen_that_goes_away`,
+  `the_settings_shortcut_opens_one_settings_window`)
+- **Back.** The trace screen's back button says `Back` (`BACK_LABEL`) and so does
+  Esc: it returns to the screen the trace was opened *from*, which the shell notes
+  when a trace opens from another screen (`trace_origin()`): `Home` for a click on
+  a row of the table, `Logs` for `Open trace` or the trace link of a log. What
+  comes back is `NavItem::screen()`, so the user's own query in the Logs bar is not
+  replaced. A trace opened from Logs, then left by the sidebar, then another trace
+  opened from the table, goes back to the table: the origin is noted at each
+  opening. (`trace_back_returns_to_logs_when_opened_from_logs`,
+  `trace_back_returns_home_when_opened_from_home`)
+- **For tests.** `MainWindow::nav_bounds(item)` is where an entry was drawn in
+  the latest frame (like the other views' `bounds_of`), `trace_origin()` the
+  screen `Back` returns to.
+- **Not verified on a Mac:** that ⌘1 to ⌘3 and ⌘, reach the shell from a real
+  keyboard (the tests send the keystrokes through GPUI's own dispatch) and do
+  not collide with something the system does with them (macos.md, "Unverified
+  until the M4 Mac check").
 
 **Lifecycle.** The window is opened by `loctel-app`, not by the shell. On Linux
 `loctel` without `--headless` opens it at launch; on macOS the menu's `Open
@@ -1134,7 +1191,7 @@ default window):
 
 | Part | What |
 |---|---|
-| header, first line | the `Traces` back button (Esc does the same), the root span's name (semibold, cut), the badge and, on the right, the indicator |
+| header, first line | the `Back` button (Esc does the same; it returns to the screen the trace was opened from), the root span's name (semibold, cut), the badge and, on the right, the indicator |
 | header, second line | `1.84 s · 15 spans · 5 services · 14:32:07.412`, the trace ID in the monospace face cut in the middle (`c7aad7a8…77315102`) and a `Copy ID` button |
 | badge | red `Failed in service · span name peer +N` with a `!` for a failed trace, amber `Errors inside` for one with errors under a fine root; none otherwise |
 | indicator | `Receiving spans…` in the accent colour while the trace may still get spans, `Complete` in green |
@@ -1334,9 +1391,8 @@ toolbar's `LogsControls` (`bounds_of(ToolbarPart::LiveTail | Range | ClearAll)`)
 logs at `BASE` and 200 lines of `LogFlood` spread over the ten minutes before them,
 on a clock 30 s after `BASE`) and every test below.
 
-**References** (1440 by 900, at 2x, over that store, with the sidebar of the time:
-`Map & traces` is the one entry and is not lit, because the Logs screen is not under
-it; Task 7 regenerates them with the sidebar's new entries): `logs_dark.png` and
+**References** (1440 by 900, at 2x, over that store, with the three-entry sidebar
+of Task 7, `Logs` lit): `logs_dark.png` and
 `logs_light.png` (the list at the top, newest first, with the checkout's three
 errors, the warning and three infos over the flood's `INF` and `DBG` lines; the
 histogram with the checkout's bar last, its three errors in red at the bottom),
@@ -1453,9 +1509,8 @@ through the rules with `FixedBackend::rule_set()` so the cards have counts) and
 every test; a change of the file behind the editor is `FixedBackend::set_rules`,
 which moves the generation as a reload does.
 
-**References** (1440 by 900, at 2x, with the sidebar of the time: `Map & traces`
-is the one entry and is not lit, because the Rules screen is not under it; Task 7
-regenerates them with the sidebar's new entries): `rules_dark.png` and
+**References** (1440 by 900, at 2x, with the three-entry sidebar of Task 7,
+`Discard rules` lit): `rules_dark.png` and
 `rules_light.png` (the three rules, no editor: the 1,500 spans in 1,500 traces of
 the health checks, `1,217 lines dropped` for the log rule, the third `Off` with
 its switch off, `31% of incoming data dropped`), `rules_editor_dark.png` (the first
@@ -1734,7 +1789,7 @@ complete; "empty store" has nothing in it.
 |---|---|---|---|
 | `status_view_dark` | `screenshots.rs` | a fixed `StatusModel`: `otlp-http` failed, 412 spans/s, 2 rules, 31% dropped | the standalone status view (900 by 600): the red `Port problem` pill, the four numbers, the rules line, the three endpoints with the failure in words |
 | `status_view_light` | `screenshots.rs` | the same model, paused, no failed listener, one rule with an error | the same view in the light theme, with the pill `Paused` and the red rules line. It is not the dark picture re-coloured: it covers the other readings of the pill and the rules row |
-| `shell_dark`, `shell_light` | `screens.rs` | empty store, healthy engine status | the window shell and the home screen with nothing in it: the sidebar with the entry lit and the status box, the toolbar with its title and controls, `Waiting for telemetry` over the map and `No traces yet` in the table (`0 traces · newest first`) |
+| `shell_dark`, `shell_light` | `screens.rs` | empty store, healthy engine status | the window shell and the home screen with nothing in it: the sidebar with its three entries (icon and text) and `Map & traces` lit, and the status box, the toolbar with its title and controls, `Waiting for telemetry` over the map and `No traces yet` in the table (`0 traces · newest first`) |
 | `shell_glass_dark`, `shell_glass_light` | `screens.rs` | the same, with a `RecordingBackdrop`, over a flat stand-in for the desktop | the glass look: the sidebar and the toolbar clear (the stand-in colour shows through, with a hairline and a highlight ring), the panels solid. On a Mac the stand-in is Apple's glass |
 | `home_dark`, `home_light` | `screens.rs` | home store | the whole home screen: the toolbar with its four controls, the checkout's nine nodes in four columns with `web-bff`, `orders-api` and `payments-api` and the edges between them in red, `card-gateway` dashed, `orders-api` to `postgresql` along the lane between `inventory-api` and `payments-api` (not behind them), the `Fit` button, the TraceQL bar, the seven traces newest first with the failed one's `Failed in payments-api · POST card-gateway +1`, the service dots and the duration bars |
 | `home_payments_selected_dark` | `interactions.rs` | home store, a click on `payments-api` | the 3 px accent ring on the node, `{ resource.service.name = "payments-api" }` in the bar (with its clear button), and the table filtered to three traces |
@@ -1744,7 +1799,7 @@ complete; "empty store" has nothing in it.
 | `toolbar_dark`, `toolbar_light` | `screens.rs` | home store | a crop (2420 by 136) of the toolbar strip: the title, and at the right the green `Live` pill, `Last 15 minutes` with its caret, `Pause` with its icon and `Clear all` |
 | `toolbar_menu_dark`, `toolbar_menu_light` | `screens.rs` | home store, a click on the range button | the same strip with the range menu open under it (`Last 5 minutes`, `Last 15 minutes` lit, `Last hour`, `Everything`) over the map, where the long edge `orders-api` to `postgresql` runs through its lane |
 | `toolbar_paused_dark`, `toolbar_paused_light` | `screens.rs` | home store, a click on `Pause` | the strip with the amber dot and `Paused` and the accent-filled `Resume` |
-| `trace_dark`, `trace_light` | `screens.rs` | home store, the failing checkout opened | the trace view: the `Traces` button, the root name, the red `Failed in` badge, `Complete`, `1.84 s · 15 spans · 5 services · 08:00:00.000`, the ruler, 15 waterfall rows in tree order with the failed-in `POST` to `card-gateway` (236 ms) selected, the inspector with its attributes and resource, and `No logs from this span` |
+| `trace_dark`, `trace_light` | `screens.rs` | home store, the failing checkout opened | the trace view: the `Back` button, the root name, the red `Failed in` badge, `Complete`, `1.84 s · 15 spans · 5 services · 08:00:00.000`, the ruler, 15 waterfall rows in tree order with the failed-in `POST` to `card-gateway` (236 ms) selected, the inspector with its attributes and resource, and `No logs from this span` |
 | `trace_charges_selected_dark` | `screens.rs` | the same, a click on `POST /charges` | the inspector's exception card (type, message, stack trace, `Copy`) and the span's four logs with their `INF`, `WRN` and `ERR` badges |
 | `trace_errors_path_only_dark` | `screens.rs` | the same, `Errors path only` on | the toggle lit and the seven erroring spans only, the selection kept |
 | `huge_trace_middle_dark` | `screens.rs` | meshgen `HugeTrace`, 100,000 spans, scrolled to row 50,000 | `36 ms · 100,000 spans · 4 services`, rows `work item 56102` and on at the middle of the list with the Kit scrollbar there, and no blank rows |
@@ -1798,8 +1853,12 @@ and a pair of screenshots. In this order, which keeps the tests first:
    of the existing views, so a test can click it without guessing pixels.
 4. **The shell.** Add the `Screen` variant (`app/shell.rs`), draw it in
    `MainWindow::render`, give it a `toolbar_title` (`app/toolbar.rs`), and, when
-   it is a sidebar entry, a `NavItem` (`app/nav.rs`: `ALL`, `label`, `screen`,
-   `is_active`). A screen reached from another one (as a trace is from the
+   it is a sidebar entry, a `NavItem` (`app/nav.rs`: `ALL`, `label`, `icon`,
+   `shortcut`, `screen`, `is_active`), with its action, its binding in
+   `nav::bind_keys` and its handler on the shell's root element; the icon comes
+   from Kit's Lucide catalog (`gpui_kit::assets::IconName`), and one that the
+   default bundle lacks goes into `src/assets.rs` too (the list and the funnel
+   did). A screen reached from another one (as a trace is from the
    table) is not an entry: it stays lit under its parent through `is_active`.
    Decide whether its views live for the window (like the home screen's) or are
    made on arrival and dropped on leaving (like the trace's), and say which in

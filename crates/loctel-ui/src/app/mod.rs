@@ -60,14 +60,14 @@ pub use logs_data::{
     CONTEXT_AFTER, CONTEXT_BEFORE, ContextInfo, HISTOGRAM_BUCKETS, HISTOGRAM_REFRESH, LogsModel,
     LogsModelEvent, TAIL_REFRESH,
 };
-pub use nav::NavItem;
+pub use nav::{NavItem, OpenSettings, SETTINGS_SHORTCUT, ShowLogs, ShowMapAndTraces, ShowRules};
 pub use rules_data::{PREVIEW_DEBOUNCE, PreviewState, RULES_REFRESH, RuleEditor, RulesModel};
 pub use settings_window::{SETTINGS_SIZE, open_settings_window};
 pub use shell::{
     Backdrop, DEFAULT_SIZE, GlassRegion, INSET, MIN_SIZE, MainWindow, PANEL_RADIUS, SIDEBAR_WIDTH,
     Screen, TOOLBAR_HEIGHT, content_width,
 };
-pub use sidebar::{NAV_ITEM_HEIGHT, TRAFFIC_LIGHT_SPACE};
+pub use sidebar::{NAV_ITEM_GAP, NAV_ITEM_HEIGHT, TRAFFIC_LIGHT_SPACE};
 pub use toolbar::{
     CLEAR_ALL_LABEL, HomeControls, LIVE_LABEL, LIVE_TAIL_LABEL, LogsControls, PAUSE_LABEL,
     PAUSED_LABEL, RESUME_LABEL, ToolbarPart, live_label, pause_label, toolbar_title,
@@ -88,6 +88,7 @@ pub fn init(cx: &mut App) {
     }
     crate::register_fonts(cx);
     gpui_kit::init(cx);
+    nav::bind_keys(cx);
     cx.set_global(Ready);
 }
 

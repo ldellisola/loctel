@@ -343,6 +343,17 @@ Mac. The Milestone 4 section of the Mac checklist should confirm, once it exists
   registers or unregisters on `set_enabled`, exactly as the two functions it wraps
   do: the "Start at login" item of the M1 list still stands.
 
+- **The main window's shortcuts** (M4 Task 7): ⌘1, ⌘2 and ⌘3 show Map & traces,
+  Logs and Discard rules, and ⌘, opens the Settings window, from anywhere in the
+  main window: with the focus in an input, on the trace screen, after a click on
+  nothing. They are GPUI key bindings in the window's own key context, and the
+  tests send them through GPUI's dispatch, not from a keyboard. Whether macOS or
+  GPUI takes ⌘, or the digit chords first (the app has no menu bar) is what a Mac
+  must say. They do nothing in the Settings window.
+- **The sidebar's icons** (a map, a list and a funnel, from Kit's Lucide icons)
+  draw in the real window: the list and the funnel come from `KitAssets`'s own
+  list on top of Kit's default bundle (decision 0040).
+
 ## Tests
 
 - `cargo test -p loctel-macos` (runs on Linux): `glass` (the y flip of the

@@ -123,7 +123,7 @@ pub fn render_png(
 pub fn headless_app() -> HeadlessAppContext {
     let mut cx = HeadlessAppContext::with_platform(
         text_system(),
-        Arc::new(gpui_kit::assets::Assets),
+        Arc::new(crate::KitAssets),
         gpui_platform::current_headless_renderer,
     );
     cx.update(|cx| {

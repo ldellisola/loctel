@@ -51,6 +51,7 @@
 //! See `docs/areas/ui.md` for the theme tokens and the screenshot workflow.
 
 pub mod app;
+mod assets;
 pub mod menu_text;
 pub mod model;
 mod status_view;
@@ -60,9 +61,6 @@ pub mod views;
 #[cfg(feature = "screenshot")]
 pub mod testing;
 
-/// The icons GPUI Kit's components draw (chevrons, a clear button, sort
-/// arrows). An app registers them with `Application::with_assets`, or its
-/// components draw no icons; the screenshot harness does.
-pub use gpui_kit::assets::Assets as KitAssets;
+pub use assets::KitAssets;
 pub use status_view::{ListenerLine, StatusModel, StatusView, open_status_window};
 pub use theme::{FONT_FAMILY, Theme, register_fonts};
