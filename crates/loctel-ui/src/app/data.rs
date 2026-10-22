@@ -168,6 +168,9 @@ pub struct HomeModel {
     generation: u64,
     /// The latest read has not come back yet.
     reading: bool,
+    /// A read has been applied: [`data`](HomeModel::data) is what the store held,
+    /// not the empty data of a model made a moment ago.
+    loaded: bool,
 }
 
 impl HomeModel {
@@ -191,6 +194,7 @@ impl HomeModel {
             paused: false,
             generation: 0,
             reading: false,
+            loaded: false,
         };
         model.refresh_now(cx);
 
@@ -210,6 +214,13 @@ impl HomeModel {
     /// What the screen shows now.
     pub fn data(&self) -> &HomeData {
         &self.data
+    }
+
+    /// Whether the first read of the store has come back. Until then
+    /// [`data`](Self::data) is empty because nothing was read, not because the
+    /// store has nothing: a view that says "no traces" waits for this.
+    pub fn loaded(&self) -> bool {
+        self.loaded
     }
 
     /// The text in the query bar, as typed (even when it does not parse).
@@ -237,6 +248,16 @@ impl HomeModel {
 
     pub fn paused(&self) -> bool {
         self.paused
+    }
+
+    /// Whether the table is narrowed by anything the user set: a query that
+    /// runs (the last one that parsed, while the text is not valid), `Errors
+    /// only` or `Slower than 1 s`. The time range is not counted: it is a
+    /// window, with a control of its own. The trace table says `No traces
+    /// match` (and offers `Clear filters`) when this is true and nothing is
+    /// shown, and `No traces yet` when it is false.
+    pub fn has_filters(&self) -> bool {
+        self.applied.is_some() || self.errors_only || self.slow_only
     }
 
     /// The session's service colours: the one list the table, the map and the
@@ -304,6 +325,18 @@ impl HomeModel {
             self.range = range;
             self.settings_changed(cx);
         }
+    }
+
+    /// Takes off every filter [`has_filters`](Self::has_filters) counts: the
+    /// query bar is emptied, `Errors only` and `Slower than 1 s` go off (and a
+    /// service the map had selected is no longer). The range and the pause stay.
+    /// One read follows, whatever changed.
+    pub fn clear_filters(&mut self, cx: &mut Context<Self>) {
+        self.errors_only = false;
+        self.slow_only = false;
+        // An empty bar always parses: this empties the text, ends the
+        // selection, redraws and starts the one read (after the toggles changed).
+        self.set_query("", cx);
     }
 
     /// Freezes the view (`true`) or lets it run again (`false`, which reads at
@@ -391,6 +424,7 @@ impl HomeModel {
             return;
         }
         self.reading = false;
+        self.loaded = true;
 
         let utc_offset = self.backend.utc_offset();
         let (rows, map) = {

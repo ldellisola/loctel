@@ -35,7 +35,7 @@ pub use data::{HOME_MAX_ROWS, HOME_REFRESH, HomeData, HomeModel, SLOW_TRACE, Tim
 pub use nav::NavItem;
 pub use shell::{
     Backdrop, DEFAULT_SIZE, GlassRegion, INSET, MIN_SIZE, MainWindow, PANEL_RADIUS, SIDEBAR_WIDTH,
-    Screen, TOOLBAR_HEIGHT,
+    Screen, TOOLBAR_HEIGHT, content_width,
 };
 pub use sidebar::{NAV_ITEM_HEIGHT, TRAFFIC_LIGHT_SPACE};
 pub use toolbar::toolbar_title;

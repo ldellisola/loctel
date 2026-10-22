@@ -8,9 +8,9 @@ Status: Milestones 1 and 2 have one view, the **status view**, and the Linux
 window that shows it. Milestone 2 added the discard rules line to it and to the
 macOS menu; the rules screen is Milestone 4. The main window (Map & traces, Trace view) is Milestone 3
 (in progress: the pure models in `src/model`, the window's shell in
-`src/app`, the home screen's live data and the service map view in `src/views`
-are done; the trace table and the trace view are not; see "Models", "The main
-window", "Live data" and "The service map" below), the remaining screens and the popover Milestone 4. The macOS menu bar
+`src/app`, the home screen's live data, the service map view and the trace
+table in `src/views` are done; the trace view is not; see "Models", "The main
+window", "Live data", "The service map" and "The trace table" below), the remaining screens and the popover Milestone 4. The macOS menu bar
 item is in `loctel-macos`; it only borrows the strings from `menu_text`.
 
 GPUI comes as the weekly `gpui-pre` snapshot, `gpui-pre`, `gpui-pre-platform`
@@ -32,7 +32,7 @@ are what shows you what moved (the `upgrade-gpui` skill has the steps; decision
 | `menu_text::format_rate(f64)` | `412` is `412`, `1234` is `1.2k`, `0.4` is `0`. One decimal under ten thousand, none above, never `.0` (`1k`, `10k`, `1.3M`); NaN, infinity and negatives read `0` |
 | `model` | the pure models of the main window: `format`, `colors`, `trace_table`, `query_bar`, `map_layout`, `waterfall`, `inspector` (see "Models" below) |
 | `app` | the main window's shell (see "The main window"): `MainWindow`, `Screen`, `UiBackend`, `open_main_window`, `Backdrop`/`GlassRegion`, `kit_theme`; and the home screen's live data (see "Live data"): `HomeModel`, `HomeData`, `TimeRange` |
-| `views` | the views of the main window's screens (see "The service map"): `MapView`, with its `Camera` |
+| `views` | the views of the main window's screens (see "The service map" and "The trace table"): `MapView`, with its `Camera`, and `TraceTableView` |
 | `Theme` | the colours below. `Theme::dark()`, `Theme::light()` and `Theme::for_appearance(WindowAppearance)`. It is also a GPUI global once `kit_theme::apply` has run |
 | `KitAssets` | GPUI Kit's bundled icons, to register with `Application::with_assets` |
 | `register_fonts(cx)`, `FONT_FAMILY` | the bundled typeface (below) |
@@ -126,6 +126,13 @@ then ` peer` for a span with a peer (a client or producer span), then ` +N` when
 `more > 0`: `payments-api · POST card-gateway +1`. The text is whole; the view
 cuts it to the width it has.
 
+`TraceRow::services_text()` is the names of the services joined with `, ` in the
+order of the dots (the tooltip of the `Services` column), and
+`count_line(shown, truncated)` is the line on the right of the toggle row:
+`7 traces · newest first` (`1 trace` for one, `1,000 traces` at the limit), or
+`Showing the newest 1,000` instead when more traces matched than the table
+holds.
+
 ### Query bar (`model::query_bar`)
 
 `validate(text)` reads the bar: `Empty` for text that is all whitespace,
@@ -136,6 +143,11 @@ text as typed (blanks included), and the message has no column in it:
 feature that loctel does not support yet is an `Invalid` too, never a quiet
 mismatch. The bar keeps the last good results on an `Invalid` (Milestone 3
 plan, review focus 4).
+
+`error_line(&QueryState)` is the line under the input: `at column 12: expected
+a value` for an `Invalid`, `None` for the other two. `EXAMPLE_QUERY`
+(`{ status = error && duration > 1s }`) is the input's placeholder; a test pins
+that it parses, so the hint never shows syntax the bar rejects.
 
 `service_filter(service)` is `{ resource.service.name = "<name>" }`, written
 into the bar when a service is clicked. `"` and `\` in the name are escaped
@@ -407,6 +419,7 @@ the value it has):
 | `set_errors_only(bool)` | only failed traces and traces with errors inside |
 | `set_slow_only(bool)` | only traces of `SLOW_TRACE` (1 s) or longer, 1 s included |
 | `set_query(text)` | validates at once (`data().query` is new when the call returns) and reads when the text is empty or parses |
+| `clear_filters()` | takes off what `has_filters()` counts: the query is emptied (and a selected service is no longer), `Errors only` and `Slower than 1 s` go off; one read. The range and the pause stay |
 | `select_service(Some(name))` | writes `service_filter(name)` into the query and remembers the selection (`selected_service()`) |
 | `select_service(None)` | clears the selection: the query goes back to empty, but only while it is still that service's filter; a query the user typed is left alone |
 | `set_paused(bool)` | freezes the timer (below); un-pausing reads at once |
@@ -417,7 +430,10 @@ together, all of which must hold, with a limit of 1,000. **The map is filtered
 by the range alone**: it is the picture of everything in the window, and the
 table is the list of what was asked for. Reading accessors for the controls:
 `query_text()` (as typed), `selected_service()`, `range()`, `errors_only()`,
-`slow_only()`, `paused()`.
+`slow_only()`, `paused()`; `has_filters()` (a query that runs, `Errors only` or
+`Slower than 1 s`: the range is a window, not a filter) and `loaded()` (the
+first read is back, so an empty `data()` means an empty store and not "not read
+yet": the table says nothing until then, rather than `No traces yet`).
 
 **Refreshing.** A timer reads every `HOME_REFRESH` (500 ms) until the model is
 dropped (the window closed), unless paused or a read is still running.
@@ -463,8 +479,8 @@ trace and back keeps the map's place.
 **Layout of the home screen.** The content area is a column of two floating
 panels (radius 16, `INSET` apart): the map panel, `MAP_SHARE` = 52% of the
 height (427 px in a 1440 by 900 window, enough for the checkout's 416), and
-under it the panel of the trace table (a placeholder until Task 7). The Trace
-screen keeps its one panel.
+under it the panel of the trace table ("The trace table" below), which fills the
+rest. The Trace screen keeps its one panel.
 
 **What is drawn** (all colours are `Theme` tokens):
 
@@ -517,10 +533,88 @@ store clock moved 70 s after the traces so every trace is complete and
 `card-gateway` is a node).
 
 **References:** `home_dark.png` and `home_light.png` (the whole home screen),
-`home_payments_selected_dark.png` (after a click on `payments-api`), and the
-changed `shell_dark.png` and `shell_light.png` (the home screen of an empty
-store: the empty map message). The trace table is a placeholder in all of them
-until Task 7 regenerates them.
+`home_payments_selected_dark.png` (after a click on `payments-api`: the ring on
+the node and the service's filter in the query bar and the table), and
+`shell_dark.png` and `shell_light.png` (the home screen of an empty store: the
+empty map message and `No traces yet`). The trace table in them is "The trace
+table" below.
+
+## The trace table
+
+`views::TraceTableView` (`src/views/trace_table_view.rs`, Milestone 3 Task 7) is
+the lower half of the home screen: the TraceQL bar, the two toggles and the
+table of traces. Decision 0027 has the choices. `MainWindow` owns it
+(`main.table()`) and shows the trace's screen when it emits
+`TraceTableEvent::Open(id)`, so the view does not know the shell. It holds no
+data: the rows, the query's state and the toggles are the `HomeModel`'s, and
+the view writes what the user does into the model and draws what the model
+says. (The one thing it keeps is the input's text, which the input owns: the
+model's text is copied into the input when something else wrote it, such as a
+click on the map, and the input's goes to the model as it is typed.)
+
+**The panel**, top to bottom (the panel is the content width, 1188 px inside its
+hairlines at the default window):
+
+| Part | What |
+|---|---|
+| query row | a `TraceQL` chip (accent at 16%), a GPUI Kit `Input` with a clear button, in the monospace face and with `EXAMPLE_QUERY` as its placeholder, and a primary `Run` button |
+| error line | only while the text does not parse: `at column N: message` in `error_text`, 12 px, under the input |
+| toggle row | Kit `Toggle`s `Errors only` and `Slower than 1 s` (outline; lit with the accent when on) and, on the right, `7 traces · newest first` or `Showing the newest 1,000` |
+| table | a Kit `DataTable`, 6 columns, header 32 px, rows 36 px, no sorting, no resizing or moving of columns, no row selection |
+
+**Typing validates and applies live.** Every change of the input goes to
+`HomeModel::set_query`: an empty bar or a query that parses filters the table
+at once, one that does not leaves the last good rows (the table never turns into
+an empty table that looks like "no traces") and the line under the input says
+where. Enter and `Run` read the store again (`refresh_now`), which is the way to
+see new traces while paused. The input's clear button empties the query.
+
+**Columns** (`COLUMNS`; `Started`, `Spans`, `Duration` and the dots are fixed
+widths):
+
+| Column | Width | Cell |
+|---|---|---|
+| `Started` | 116 | `TraceRow::started`, the monospace face, 12 px, `text_secondary` |
+| `Trace` | about 40% of the rest | the root span's name, semibold; `(root not arrived)` in `text_tertiary` while it has not; cut with an ellipsis |
+| `Failed in` | the other 60% | `failed_in` in `error_text`; or `errors inside` in `warn` (amber); empty for a trace that is fine |
+| `Services` | 92 | an 8 px dot per service in its colour (`Theme::service_palette`, from the row's colour index), at most 5 and then `+N`; the tooltip is `services_text()` |
+| `Spans` | 60 | the span count, right-aligned |
+| `Duration` | 140 | the text, and under it a 4 px bar as long as the row's `duration_fraction` (at least 2 px): `error` for a failed trace, `warn` with errors inside, `accent` otherwise |
+
+`column_widths(inner)` gives the six widths for a table `inner` pixels wide:
+`Trace` and `Failed in` share what the four others and Kit's 12 px last column
+leave (never less than 140 and 170), so the table fills its panel and has no
+horizontal scroll down to the smallest window (`inner` of 730; the minimum
+window's panel is 748). The width comes from the window's width
+(`content_width`), not from a measurement, so the first frame is right.
+
+**Rows.** A click on a row (anywhere in it) emits `TraceTableEvent::Open` for its
+trace, and the shell navigates to `Screen::Trace(id)`. A row is not
+*selected* (the table's own selection is off): rows arrive at the top while the
+table is open and a selected index would point at another trace a moment later.
+
+**Empty.** With no rows: `No traces yet` while nothing is filtered
+(`HomeModel::has_filters()` is false); `No traces match` and a `Clear filters`
+button (`HomeModel::clear_filters`) when something is. The header stays. Until
+the first read is back the table says nothing.
+
+**For tests.** `bounds_of(part)` and `center_of(part)` give where a `TablePart`
+(`QueryInput`, `Run`, `ErrorsOnly`, `SlowOnly`, `Table`, `ClearFilters`) is in
+the window, measured by a canvas over each part in the latest frame (`None`
+when it is not there, as `ClearFilters` is while the table has rows);
+`row_center(index)` is the middle of a row of the unscrolled table. Also
+`input_text`, `error_line`, `empty_state`, `count_line` and `column_widths`.
+`tests/interactions.rs` types into the real input, toggles, clicks rows,
+`Run`, the clear button and `Clear filters`, and hovers the dots.
+
+**References:** `home_errors_only_dark.png` (after a click on `Errors only`: one
+row, the toggle lit), `home_query_error_dark.png` (`{ status = ` typed: the error
+line under the focused input and the seven rows kept), `home_no_match_dark.png`
+(a query that matches nothing: `No traces match` and the button), and the
+`home_*` and `shell_*` ones above. The monospace face is the theme's
+(`mono_font_family`); on Linux nothing monospace is bundled and the harness has
+no system fonts, so the references show it in Inter. How it looks on a Mac is
+unverified.
 
 ## Theme tokens
 
@@ -704,6 +798,11 @@ The repo skill `run-and-screenshot` covers running with meshgen data.
   the code assumes (a trackpad sends pixel deltas, a mouse wheel lines), and
   that the zoom feels right. The tests send the events GPUI documents; a real
   trackpad has not.
+- The trace table on a Mac: the monospace face of the `Started` column and the
+  query input (the theme's `mono_font_family`; Linux shows Inter), Kit's input
+  and toggles with a real keyboard and IME, the tooltip of the dots, and that a
+  click on a row opens the trace with a trackpad. The tests drive GPUI's own
+  event path on Linux only.
 - Everything here was checked on Linux with software rendering. How the status
   view looks and behaves on macOS (fonts, scale, window chrome) is unverified
   until a milestone check on a real Mac; the macOS app opens no window in

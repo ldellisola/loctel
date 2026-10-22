@@ -48,6 +48,45 @@ pub struct TraceRow {
     pub complete: bool,
 }
 
+impl TraceRow {
+    /// The names of the row's services, in the order of its dots, joined with
+    /// `, `: the tooltip of the `Services` column (the dots are only colours).
+    /// Empty for a row with no service.
+    pub fn services_text(&self) -> String {
+        self.services
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+/// The line on the right of the toggle row: `N traces \u{b7} newest first`
+/// (`1 trace` for one), or `Showing the newest 1,000` instead when more traces
+/// matched than the table holds. `shown` is the number of rows in the table and
+/// `truncated` whether more matched; both numbers are written with a thousands
+/// separator.
+pub fn count_line(shown: usize, truncated: bool) -> String {
+    if truncated {
+        return format!("Showing the newest {}", thousands(shown));
+    }
+    let noun = if shown == 1 { "trace" } else { "traces" };
+    format!("{} {noun} \u{b7} newest first", thousands(shown))
+}
+
+/// `1234` as `1,234`.
+fn thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, digit) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
 /// The table's rows for `summaries`, in the same order (the store gives them
 /// newest first).
 ///

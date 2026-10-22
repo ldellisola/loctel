@@ -9,6 +9,11 @@ use std::sync::Arc;
 
 use loctel_query::traceql::{self, TraceQuery};
 
+/// The query the bar's empty input suggests (its placeholder). It is a real
+/// query: a test pins that it parses, so the hint never teaches a syntax the
+/// bar rejects.
+pub const EXAMPLE_QUERY: &str = "{ status = error && duration > 1s }";
+
 /// The result of reading the bar's text.
 #[derive(Clone, Debug, PartialEq)]
 pub enum QueryState {
@@ -56,4 +61,14 @@ pub fn service_filter(service: &str) -> String {
         escaped.push(c);
     }
     format!("{{ resource.service.name = \"{escaped}\" }}")
+}
+
+/// The line under the input while the text is not a query: `at column 12:
+/// <message>` (the column counts from 1). `None` for an empty bar and for a
+/// query that parses: there is nothing to say.
+pub fn error_line(state: &QueryState) -> Option<String> {
+    match state {
+        QueryState::Invalid { column, message } => Some(format!("at column {column}: {message}")),
+        QueryState::Empty | QueryState::Valid(_) => None,
+    }
 }

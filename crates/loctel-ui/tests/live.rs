@@ -851,3 +851,101 @@ fn truncation_flag_over_1000() {
     let data = f.data();
     assert!(data.rows.is_empty() && !data.truncated);
 }
+
+// --- Clear filters (the trace table's empty state) -----------------------------
+
+#[test]
+fn has_filters_and_clear_filters() {
+    let mut f = Fixture::new(BASE + MINUTE);
+    f.ingest(&generate(&Scenario::CheckoutFailure, SEED, BASE));
+    f.ingest(&generate(
+        &Scenario::CheckoutSuccess,
+        SEED,
+        BASE + 5 * SECOND,
+    ));
+    f.tick();
+    assert!(!f.read(|home| home.has_filters()), "nothing set");
+    assert_eq!(f.rows().len(), 2);
+
+    // Each of the three things the user can narrow the table with counts.
+    f.update(|home, cx| home.set_errors_only(true, cx));
+    assert!(f.read(|home| home.has_filters()), "errors only");
+    f.update(|home, cx| home.set_errors_only(false, cx));
+    assert!(!f.read(|home| home.has_filters()));
+    f.update(|home, cx| home.set_slow_only(true, cx));
+    assert!(f.read(|home| home.has_filters()), "slower than 1 s");
+    f.update(|home, cx| home.set_slow_only(false, cx));
+    f.set_query("{ status = error }");
+    assert!(f.read(|home| home.has_filters()), "a query");
+    // A text that does not parse is no filter: the rows are the last good
+    // query's, which here is the same one.
+    f.set_query("{ status = ");
+    assert!(
+        f.read(|home| home.has_filters()),
+        "the last good query still filters"
+    );
+    f.set_query("   ");
+    assert!(!f.read(|home| home.has_filters()), "blanks are no query");
+
+    // All three at once, and nothing matches.
+    f.update(|home, cx| {
+        home.set_errors_only(true, cx);
+        home.set_slow_only(true, cx);
+    });
+    f.set_query("{ resource.service.name = \"no-such-service\" }");
+    f.settle();
+    assert!(f.rows().is_empty(), "nothing matches");
+    assert!(f.read(|home| home.has_filters()));
+
+    // Clear filters: the query, both toggles, in one read.
+    f.update(|home, cx| home.clear_filters(cx));
+    f.settle();
+    assert!(!f.read(|home| home.has_filters()));
+    assert!(!f.read(|home| home.errors_only() || home.slow_only()));
+    assert_eq!(f.read(|home| home.query_text().to_owned()), "");
+    assert_eq!(f.data().query, QueryState::Empty);
+    assert_eq!(f.rows().len(), 2, "the whole list is back");
+}
+
+#[test]
+fn clear_filters_keeps_the_range_and_the_pause_and_ends_a_selection() {
+    let mut f = Fixture::new(BASE + MINUTE);
+    f.ingest(&generate(&Scenario::CheckoutFailure, SEED, BASE));
+    f.tick();
+    f.update(|home, cx| {
+        home.set_range(TimeRange::LastHour, cx);
+        home.select_service(Some("payments-api".to_owned()), cx);
+    });
+    f.settle();
+    assert_eq!(
+        f.read(|home| home.selected_service().map(str::to_owned)),
+        Some("payments-api".to_owned())
+    );
+
+    f.update(|home, cx| home.clear_filters(cx));
+    f.settle();
+    assert_eq!(
+        f.read(|home| home.range()),
+        TimeRange::LastHour,
+        "not a filter"
+    );
+    assert_eq!(
+        f.read(|home| home.selected_service().map(str::to_owned)),
+        None
+    );
+    assert_eq!(f.read(|home| home.query_text().to_owned()), "");
+}
+
+#[test]
+fn loaded_says_the_first_read_is_in() {
+    // An empty store: the data is empty before the read and after it, and only
+    // `loaded` tells the two apart.
+    let clock = Arc::new(ManualClock::new(BASE));
+    let backend = Rc::new(FixedBackend::new(Store::new(StoreConfig::default(), clock)));
+    let mut cx = headless_app();
+    let home = cx.new(|cx| HomeModel::new(backend, cx));
+    assert!(!cx.read_entity(&home, |home, _| home.loaded()), "not yet");
+    cx.run_until_parked();
+    assert!(cx.read_entity(&home, |home, _| home.loaded()), "read");
+    assert!(cx.read_entity(&home, |home, _| home.data().rows.is_empty()));
+}

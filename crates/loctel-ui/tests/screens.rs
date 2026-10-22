@@ -1,8 +1,8 @@
 //! The main window's screens: the shell (M3 plan, Task 4: the sidebar, the
 //! toolbar and the content area) and the home screen with the service map above
-//! the trace table (Task 6), rendered through GPUI Kit's `Root` in the headless
-//! harness. The references are `snapshots/shell_*.png` and `home_*.png`; build
-//! them with `cargo xtask screenshots --update` and look at them before
+//! the trace table (Tasks 6 and 7), rendered through GPUI Kit's `Root` in the
+//! headless harness. The references are `snapshots/shell_*.png` and `home_*.png`;
+//! build them with `cargo xtask screenshots --update` and look at them before
 //! committing (`docs/areas/ui.md`).
 
 mod common;
@@ -21,7 +21,9 @@ use loctel_ui::app::{
 use loctel_ui::testing::{
     Driver, FixedBackend, RecordingBackdrop, assert_snapshot, render_window_png,
 };
-use loctel_ui::views::{EMPTY_HINT, EMPTY_TITLE};
+use loctel_ui::views::{
+    COLUMNS, EMPTY_HINT, EMPTY_TITLE, HEADER_HEIGHT, ROW_HEIGHT, TablePart, column_widths,
+};
 use loctel_ui::{StatusModel, Theme};
 
 use common::{WINDOW, home_store};
@@ -414,4 +416,79 @@ fn empty_map_message() {
     });
     let map = driver.read_root(|main| main.map().clone());
     assert_eq!(driver.read(|cx| map.read(cx).empty_message(cx)), None);
+}
+
+// --- the home screen: the trace table ------------------------------------------
+
+#[test]
+fn the_table_has_the_planned_columns_and_rows() {
+    assert_eq!(
+        COLUMNS,
+        [
+            "Started",
+            "Trace",
+            "Failed in",
+            "Services",
+            "Spans",
+            "Duration"
+        ]
+    );
+    assert_eq!(ROW_HEIGHT, 36.0, "the plan's row height");
+    const { assert!(HEADER_HEIGHT < ROW_HEIGHT) };
+}
+
+#[test]
+fn the_columns_share_the_width_of_the_panel() {
+    // The width the columns can have in a window of each size: they fit it
+    // (never a horizontal scroll) and use it, down to the smallest window.
+    for inner in [730.0, 748.0, 900.0, 1188.0, 1600.0, 2400.0] {
+        let widths = column_widths(inner);
+        let total: f32 = widths.iter().sum();
+        assert!(total <= inner, "{inner}: the columns ({total}) fit");
+        assert!(total >= inner - 12.0 - 2.0, "{inner}: and use it ({total})");
+        assert!(widths.iter().all(|&w| w >= 56.0), "{inner}: {widths:?}");
+    }
+    // The two that share what the fixed ones leave: the failure text has more.
+    let widths = column_widths(1188.0);
+    assert!(
+        widths[2] > widths[1],
+        "Failed in is wider than Trace: {widths:?}"
+    );
+}
+
+#[test]
+fn the_table_panel_holds_the_query_bar_toggles_and_table() {
+    let backend = Rc::new(FixedBackend::new(home_store()));
+    let driver = Driver::new(WINDOW, &Theme::dark(), move |window, cx| {
+        cx.new(|cx| MainWindow::new(backend, None, window, cx))
+    });
+    let table = driver.read_root(|main| main.table().clone());
+    let map = driver.read_root(|main| main.map().clone());
+    let bounds = |part| {
+        driver
+            .read(|cx| table.read(cx).bounds_of(part))
+            .unwrap_or_else(|| panic!("no {part:?} on the screen"))
+    };
+    let (input, run) = (bounds(TablePart::QueryInput), bounds(TablePart::Run));
+    let (errors, slow) = (bounds(TablePart::ErrorsOnly), bounds(TablePart::SlowOnly));
+    let list = bounds(TablePart::Table);
+    let map_area = driver.read(|cx| map.read(cx).view_bounds());
+
+    // Top to bottom: the map, the query row, the toggle row, the table.
+    assert!(input.origin.y >= map_area.origin.y + map_area.size.height);
+    assert!(errors.origin.y >= input.origin.y + input.size.height);
+    assert!(list.origin.y >= errors.origin.y + errors.size.height);
+    // The input and the button share a row, the toggles another.
+    assert_eq!(input.origin.y, run.origin.y, "same row");
+    assert!(input.origin.x + input.size.width <= run.origin.x);
+    assert_eq!(errors.origin.y, slow.origin.y, "same row");
+    assert!(errors.origin.x + errors.size.width <= slow.origin.x);
+    // The table fills the rest of the panel, down to its bottom edge (the
+    // window's inset away).
+    let window_bottom = px(WINDOW.1 as f32 - INSET);
+    assert!(
+        list.origin.y + list.size.height >= window_bottom - px(2.0),
+        "the table reaches the bottom of its panel: {list:?}"
+    );
+    assert!(list.origin.y + list.size.height <= window_bottom);
 }

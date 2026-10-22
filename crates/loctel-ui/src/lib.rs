@@ -21,8 +21,9 @@
 //!   the table's rows, read every 500 ms behind a time range, two toggles and
 //!   the query bar).
 //! - [`views`] holds the views of the main window's screens: the live
-//!   [`MapView`](views::MapView) of the home screen so far (the trace table and
-//!   the trace view follow).
+//!   [`MapView`](views::MapView) and the [`TraceTableView`](views::TraceTableView)
+//!   (the TraceQL bar, the two toggles and the table) of the home screen so far
+//!   (the trace view follows).
 //! - [`menu_text`] holds the exact strings for the status line, the discard
 //!   rules line and the rates, so the macOS menu and the view cannot drift apart.
 //! - [`Theme`] holds the colours; [`register_fonts`] the bundled typeface.

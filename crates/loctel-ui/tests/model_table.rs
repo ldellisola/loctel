@@ -14,8 +14,10 @@ use loctel_store::{
     FailedIn, ManualClock, PageRequest, Store, StoreConfig, TraceFilter, TraceStatus, TraceSummary,
 };
 use loctel_ui::model::colors::ServiceColors;
-use loctel_ui::model::query_bar::{QueryState, service_filter, validate};
-use loctel_ui::model::trace_table::{self, TraceRow, failed_in_text};
+use loctel_ui::model::query_bar::{
+    EXAMPLE_QUERY, QueryState, error_line, service_filter, validate,
+};
+use loctel_ui::model::trace_table::{self, TraceRow, count_line, failed_in_text};
 
 /// 2027-01-15T08:00:00Z. The failing checkout starts here.
 const BASE: u64 = 1_800_000_000_000_000_000;
@@ -506,4 +508,90 @@ fn service_filter_is_a_query_that_means_that_service() {
         );
         assert!(search(&query).is_empty(), "{odd:?} is not a service here");
     }
+}
+
+// --- what the trace table view says (Task 7) -----------------------------------
+
+#[test]
+fn count_line_cases() {
+    // `N traces · newest first`, in the singular for one.
+    assert_eq!(count_line(0, false), "0 traces \u{b7} newest first");
+    assert_eq!(count_line(1, false), "1 trace \u{b7} newest first");
+    assert_eq!(count_line(2, false), "2 traces \u{b7} newest first");
+    assert_eq!(count_line(999, false), "999 traces \u{b7} newest first");
+    // Exactly the limit and nothing more matched: still the count, with the
+    // thousands separator the footnote uses.
+    assert_eq!(count_line(1_000, false), "1,000 traces \u{b7} newest first");
+    // More matched than the table shows: the footnote takes the count's place.
+    assert_eq!(count_line(1_000, true), "Showing the newest 1,000");
+}
+
+#[test]
+fn count_line_follows_the_rows_of_the_table() {
+    let f = fixture();
+    f.settle();
+    let rows = trace_table::rows(&f.summaries(), &mut ServiceColors::new(), 0);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        count_line(rows.len(), false),
+        "2 traces \u{b7} newest first"
+    );
+}
+
+#[test]
+fn services_text_lists_every_service_in_the_rows_order() {
+    let f = fixture();
+    f.settle();
+    let rows = trace_table::rows(&f.summaries(), &mut ServiceColors::new(), 0);
+    let failed = row_of(&rows, f.failure);
+    // The names, in the order of the dots, as the tooltip of the column says
+    // them.
+    let names: Vec<&str> = failed
+        .services
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert_eq!(failed.services_text(), names.join(", "));
+    assert!(
+        failed.services_text().starts_with("web-bff, orders-api"),
+        "{}",
+        failed.services_text()
+    );
+
+    let none = TraceRow {
+        services: Vec::new(),
+        ..failed.clone()
+    };
+    assert_eq!(none.services_text(), "");
+}
+
+#[test]
+fn error_line_reads_column_and_message() {
+    // Nothing to say about an empty bar or a query that runs.
+    assert_eq!(error_line(&validate("")), None);
+    assert_eq!(error_line(&validate("{ status = error }")), None);
+
+    // `at column N: message`, the column from 1, the message the parser's.
+    let text = "{ status = ";
+    let QueryState::Invalid { column, message } = validate(text) else {
+        panic!("{text:?} should not parse");
+    };
+    assert_eq!(column, 12);
+    assert_eq!(
+        error_line(&validate(text)),
+        Some(format!("at column 12: {message}"))
+    );
+    assert_eq!(
+        error_line(&validate("{ status = error } | select(span.foo)")),
+        Some("at column 22: select is not supported yet".to_owned())
+    );
+}
+
+#[test]
+fn the_example_query_is_a_query_that_runs() {
+    assert!(
+        matches!(validate(EXAMPLE_QUERY), QueryState::Valid(_)),
+        "{EXAMPLE_QUERY}: {:?}",
+        validate(EXAMPLE_QUERY)
+    );
 }

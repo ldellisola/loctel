@@ -20,7 +20,7 @@ use super::kit_theme;
 use super::sidebar::sidebar_contents;
 use super::toolbar::toolbar_contents;
 use crate::theme::FONT_FAMILY;
-use crate::views::MapView;
+use crate::views::{MapView, TraceTableEvent, TraceTableView};
 use crate::{StatusModel, Theme};
 
 /// The gap between the window's edge and the panels, and between the panels,
@@ -37,6 +37,14 @@ pub const TOOLBAR_HEIGHT: f32 = 48.0;
 /// screen; the trace table has the rest. At the default window size the map has
 /// 427 px, enough for the checkout's 416.
 const MAP_SHARE: f32 = 0.52;
+
+/// The width of the content area (the toolbar, and the panels under it) in a
+/// window `window_width` pixels wide: the window less the inset on both sides,
+/// the sidebar and the gap between the sidebar and the content.
+pub fn content_width(window_width: f32) -> f32 {
+    window_width - 3.0 * INSET - SIDEBAR_WIDTH
+}
+
 /// The window's default size, in logical pixels.
 pub const DEFAULT_SIZE: (f32, f32) = (1440.0, 900.0);
 /// The smallest the window can be made, in logical pixels.
@@ -88,16 +96,21 @@ pub struct MainWindow {
     home: Entity<HomeModel>,
     /// The service map of the home screen.
     map: Entity<MapView>,
+    /// The trace table of the home screen.
+    table: Entity<TraceTableView>,
     regions: Rc<RegionReport>,
     /// Keeps the appearance observer alive.
     _appearance: Subscription,
+    /// Keeps the table's "open this trace" subscription alive.
+    _open: Subscription,
 }
 
 impl MainWindow {
     /// The shell showing [`Screen::Home`], with the theme of `window`'s
     /// appearance applied (Kit's too), refreshing its status box from `backend`
     /// every second. It makes the home screen's [`HomeModel`] and the service
-    /// map over it. With a `backdrop`, the sidebar's and the toolbar's bounds
+    /// map and the trace table over it; a click on a row of the table shows that
+    /// trace's screen. With a `backdrop`, the sidebar's and the toolbar's bounds
     /// are reported to it when they change.
     pub fn new(
         backend: Rc<dyn UiBackend>,
@@ -129,14 +142,21 @@ impl MainWindow {
         let status = StatusModel::from_status(&backend.status());
         let home = cx.new(|cx| HomeModel::new(Rc::clone(&backend), cx));
         let map = cx.new(|cx| MapView::new(home.clone(), cx));
+        let table = cx.new(|cx| TraceTableView::new(home.clone(), window, cx));
+        let open = cx.subscribe(&table, |main, _table, event: &TraceTableEvent, cx| {
+            let TraceTableEvent::Open(id) = event;
+            main.navigate(Screen::Trace(*id), cx);
+        });
         MainWindow {
             backend,
             screen: Screen::Home,
             status,
             home,
             map,
+            table,
             regions: Rc::new(RegionReport::new(backdrop)),
             _appearance: appearance,
+            _open: open,
         }
     }
 
@@ -167,6 +187,11 @@ impl MainWindow {
     /// The service map of the home screen.
     pub fn map(&self) -> &Entity<MapView> {
         &self.map
+    }
+
+    /// The trace table of the home screen.
+    pub fn table(&self) -> &Entity<TraceTableView> {
+        &self.table
     }
 
     /// Switches to the look of `appearance` (dark for `Dark` and
@@ -205,7 +230,7 @@ impl Render for MainWindow {
             .child(toolbar_contents(&theme, &self.screen));
 
         let content = match &self.screen {
-            Screen::Home => home_screen(&theme, &self.map),
+            Screen::Home => home_screen(&theme, &self.map, &self.table),
             Screen::Trace(_) => div()
                 .flex_1()
                 .w_full()
@@ -260,8 +285,8 @@ fn panel(theme: &Theme) -> Div {
 }
 
 /// The home screen: the service map on top and, under it, the panel of the
-/// trace table (a placeholder until the table view arrives, Task 7).
-fn home_screen(theme: &Theme, map: &Entity<MapView>) -> AnyElement {
+/// trace table, which fills the rest.
+fn home_screen(theme: &Theme, map: &Entity<MapView>, table: &Entity<TraceTableView>) -> AnyElement {
     div()
         .flex_1()
         .w_full()
@@ -281,19 +306,9 @@ fn home_screen(theme: &Theme, map: &Entity<MapView>) -> AnyElement {
                 .w_full()
                 .flex_1()
                 .min_h_0()
-                .child(table_placeholder(theme)),
+                .child(table.clone()),
         )
         .into_any_element()
-}
-
-/// What the table's panel holds until its view exists.
-fn table_placeholder(theme: &Theme) -> impl IntoElement {
-    div()
-        .size_full()
-        .p(px(16.0))
-        .text_size(px(13.0))
-        .text_color(theme.text_tertiary)
-        .child("Traces")
 }
 
 /// The two regions the shell reports.
