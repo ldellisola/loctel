@@ -83,13 +83,14 @@ gpui-kit = "=0.8.0"
 # macOS shell (loctel-macos, loctel-app on macOS). `gpui-tray` is the status
 # item. It is generic over which GPUI it is built for, and `gpui-kit` is the
 # backend feature for `gpui-pre` (its docs call it "GPUI Kit's `gpui-pre`
-# types"); `menu-state` forwards checkmarks and disabled items, which the menu
-# needs. The objc2 crates are the ones the tray crate already uses, so there is
-# one copy of each.
+# types"); `menu-state` (checkmarks and disabled items) is left on from when the
+# status item had a menu: since Milestone 4 it has none and opens the popover
+# (decision 0042). The objc2 crates are the ones the tray crate already uses, so
+# there is one copy of each.
 gpui-tray = { version = "0.2", default-features = false, features = ["gpui-kit", "menu-state"] }
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSBitmapImageRep", "NSColor", "NSGlassEffectView", "NSGraphics", "NSImage", "NSImageRep", "NSResponder", "NSView", "NSWorkspace", "objc2-core-foundation"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSError", "NSGeometry", "NSString", "NSURL"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSBitmapImageRep", "NSColor", "NSEvent", "NSGlassEffectView", "NSGraphics", "NSImage", "NSImageRep", "NSResponder", "NSScreen", "NSView", "objc2-core-foundation"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSDictionary", "NSError", "NSGeometry", "NSString", "NSValue"] }
 objc2-service-management = "0.3.2"
 # Liquid Glass (loctel-macos `glass.rs`): the window's AppKit view comes from
 # GPUI's raw window handle (the same 0.6 GPUI uses), and the glass frames are

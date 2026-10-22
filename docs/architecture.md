@@ -37,8 +37,8 @@ crate updates this table and the diagram below it.
 | `loctel-meshgen` | test tooling | Fake microservice mesh scenarios (library and `meshgen` binary) | implemented: six scenarios and a sender over gRPC, HTTP protobuf and HTTP JSON (see "Test tooling" below) |
 | `loctel-e2e` | test tooling | End-to-end tests through real OTLP and a real MCP client (`publish = false`) | implemented: a `Harness` over a real engine (with or without a rules file) and the tests of the transports, assembly, service map, agent flow, pause, release fixture, discard rules and queries (see "Test tooling" below) |
 | `loctel-ui` | UI | GPUI views, the pure view models and the headless screenshot harness | implemented: the status view (with the discard rules line, from Milestone 2), the shared menu text, the theme, the pure models of the main window (`model`: formats, service colours, trace table rows, query bar state, map layout, waterfall rows, inspector text and the trace view's text), the main window's shell (`app`: sidebar, toolbar, `UiBackend`, the GPUI Kit theme bridge, `open_main_window`, and the live data entities `HomeModel`, `TraceModel` and, from Milestone 4, `LogsModel`), the views of its two screens (`views`: the service map, the trace table, and the trace view with its waterfall, inspector and span logs; Milestone 3) and `testing::{render_png, render_window_png, Driver, headless_app, assert_snapshot}` behind the `screenshot` feature (see "UI" below) |
-| `loctel-macos` | macOS | Status item, activation policy, login item (`cfg(target_os = "macos")`) | implemented, never run: the menu bar item and its menu (with the discard rules line, Open loctel and Edit discard rules…), the main window's lifecycle (`window::open_or_focus`: the Dock while it is open, Accessory after it closes), Liquid Glass behind the main window's sidebar and toolbar (`glass::attach`), the login item and the first-launch step; empty off macOS apart from plain-Rust parts that the Linux tests cover (see "macOS shell" below) |
-| `loctel-app` | binary | The `loctel` binary: headless mode and GUI, bundle metadata | implemented: headless mode, on Linux the main window (it also quits cleanly on SIGINT and SIGTERM) and on macOS the menu bar app that opens the main window from its menu (see "Headless mode", "UI" and "macOS shell" below); `[package.metadata.bundle]` and `bundle/` hold what goes into `loctel.app` (see "Release pipeline" below) |
+| `loctel-macos` | macOS | Status item, activation policy, login item (`cfg(target_os = "macos")`) | implemented, never run: the menu bar item (no menu since Milestone 4: a click opens the popover, `popover::toggle`, placed from the mouse by `popover::anchor`), the windows' lifecycle (`window::open_or_focus`, `show_screen`, `open_settings`: the Dock while the main or Settings window is open, Accessory after the last closes), Liquid Glass behind the main window's sidebar and toolbar and the popover's panel (`glass::attach`), the login item and the first-launch step; empty off macOS apart from plain-Rust parts that the Linux tests cover (see "macOS shell" below) |
+| `loctel-app` | binary | The `loctel` binary: headless mode and GUI, bundle metadata | implemented: headless mode, on Linux the main window (it also quits cleanly on SIGINT and SIGTERM) and on macOS the menu bar app that opens the main window from its popover (see "Headless mode", "UI" and "macOS shell" below); `[package.metadata.bundle]` and `bundle/` hold what goes into `loctel.app` (see "Release pipeline" below) |
 | `xtask` | tooling | Screenshots, next-version, release notes, MCP smoke test | implemented: `screenshots [--update]`, `run-shot`, `next-version`, `release-notes` and `mcp-smoke --url URL` (see "UI" and "Release pipeline" below) |
 
 Who depends on whom (an arrow reads "depends on"; edges that only tests use
@@ -93,7 +93,7 @@ and type-checked but has never run:
      |    |             keeps logs and the service map, evicts oldest whole trace
      |    |
      v    v
- loctel-mcp   loctel-ui  (main window, status view, menu text)  <-- loctel-macos (menu bar item, window, glass)
+ loctel-mcp   loctel-ui  (main window, status view, menu text)  <-- loctel-macos (menu bar item, popover, windows, glass)
      |
      v
  AI agents  (MCP 2026-07-28, http://127.0.0.1:4319/mcp, read-only)
@@ -639,8 +639,8 @@ their reasons are in
 - **One entry point.** `loctel_macos::install(cx, engine, settings_path)`, called
   by `loctel-app` inside `Application::run` after it set
   `ActivationPolicy::Accessory` and `QuitMode::Explicit`. It opens no window.
-- **The main window** is `loctel_macos::open_or_focus(cx, engine)`: the menu's
-  `Open loctel` and GPUI's reopen event (`Application::on_reopen`, registered by
+- **The main window** is `loctel_macos::open_or_focus(cx, engine, settings_path)`: the
+  popover's `Open loctel` (through `window::show_screen`) and GPUI's reopen event (`Application::on_reopen`, registered by
   `loctel-app`) call it. It switches to `ActivationPolicy::Regular` (Dock and
   ⌘-Tab), opens `loctel_ui::app::open_main_window` and activates the app; when
   the window closes the policy goes back to `Accessory` and the app keeps
@@ -652,12 +652,17 @@ their reasons are in
   the main queue, never inside a GPUI frame. Without glass the window is
   `Blurred` and the panels are opaque. See "Liquid Glass" in `areas/macos.md`
   and [`decisions/0030-liquid-glass.md`](decisions/0030-liquid-glass.md).
-- **The menu** is the status line and the discard rules line under it (both
-  `menu_text`, the same functions the Linux window uses), Open loctel, Copy MCP address,
-  Pause or Resume, Edit discard rules… (opens `engine.rules_path()` in the
-  default text editor; greyed out when the rules have no file), Start at login
-  (checkmark from the system) and Quit, rebuilt on every click and when its
-  state changes (checked every 2 s).
+- **The popover** replaces the menu of Milestones 1 and 2 (decision
+  [0042](decisions/0042-popover.md)). The status item has no menu; its activation
+  callback is `popover::toggle`, which closes the popover or opens it as a GPUI
+  `PopUp` window under the click: `NSEvent.mouseLocation` and the screen's
+  `visibleFrame` into the pure `popover::anchor`, because `gpui-tray` reports no
+  frame for its item. The window holds `loctel_ui::views::PopoverView` (the status
+  and rules lines are `menu_text`'s, the same functions the Linux window uses) in
+  glass; its actions (`MacActions`) open the main window or Settings, pause, copy
+  the MCP address, clear, switch the login item and quit. It closes on
+  deactivation, Esc and after an action that opens a window. See "The popover" in
+  `areas/macos.md`.
 - **Start at login** is `SMAppService.mainAppService`, and the system is the
   source of truth. The first launch turns it on once (`first_launch_done`).
 - **Checked from Linux.** `script/check-macos.sh` type-checks and lints the

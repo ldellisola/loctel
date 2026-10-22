@@ -23,8 +23,10 @@ standalone view with its own screenshot tests (Milestone 2 added the discard
 rules line to it and to the macOS menu). Milestone 4 adds two windows of their own:
 the Settings window (Task 6, see "The Settings window") and the menu bar popover's
 view (Task 8, see "The popover"), which is cross-platform and tested here; what
-opens it under the menu bar icon is `loctel-macos` (Task 9). The macOS menu bar
-item is in `loctel-macos`; it only borrows the strings from `menu_text`.
+opens it under the menu bar icon and what its actions do is `loctel-macos` (Task 9,
+[`macos.md`](macos.md), "The popover"). The macOS menu bar item is in `loctel-macos`;
+it has no menu since Milestone 4, and the strings of `menu_text` are the popover's
+status and rules lines.
 
 GPUI comes as the weekly `gpui-pre` snapshot, `gpui-pre`, `gpui-pre-platform`
 and `gpui-pre-wgpu`, all pinned to exactly `=0.3.9` (zed@93d7456), and GPUI Kit
@@ -44,7 +46,7 @@ are what shows you what moved (the `upgrade-gpui` skill has the steps; decision
 | `menu_text::rules_line(&StatusModel)` | the discard rules in one line, the first that applies: `Discard rules file has an error`; `1 discard rule on · 1 has an error` (for more than one, `3 discard rules on · 2 have errors`); `No discard rules on`; `1 discard rule on · 31% dropped` or `3 discard rules on · 0% dropped`. The percentage is the share the rules dropped of what arrived since launch, rounded to a whole number; a value that is not a number reads `0%` and one outside 0 to 1 is cut to it. A file error wins over a rule error, a rule error over "no rules on" |
 | `menu_text::format_rate(f64)` | `412` is `412`, `1234` is `1.2k`, `0.4` is `0`. One decimal under ten thousand, none above, never `.0` (`1k`, `10k`, `1.3M`); NaN, infinity and negatives read `0` |
 | `model` | the pure models of the main window: `format`, `colors`, `trace_table`, `query_bar`, `map_layout`, `waterfall`, `inspector`, `trace_view`, and (Milestone 4) `logs`, `histogram`, `rules`, `settings`, `popover` (see "Models" below) |
-| `app` | the main window's shell (see "The main window"): `MainWindow`, `Screen`, `UiBackend`, `open_main_window`, `Backdrop`/`GlassRegion`, `kit_theme`; the home screen's live data (see "Live data"): `HomeModel`, `HomeData`, `TimeRange`; the open trace's (see "The trace view"): `TraceModel`; the Logs screen's (see "The Logs screen"): `LogsModel`, `LogsControls`; and the Discard rules screen's (see "The Discard rules screen"): `RulesModel`, `RuleEditor`, `PreviewState`; and `open_settings_window` (see "The Settings window") |
+| `app` | the main window's shell (see "The main window"): `MainWindow`, `Screen`, `UiBackend`, `open_main_window`, `show_screen`, `Backdrop`/`GlassRegion`, `kit_theme`; the home screen's live data (see "Live data"): `HomeModel`, `HomeData`, `TimeRange`; the open trace's (see "The trace view"): `TraceModel`; the Logs screen's (see "The Logs screen"): `LogsModel`, `LogsControls`; and the Discard rules screen's (see "The Discard rules screen"): `RulesModel`, `RuleEditor`, `PreviewState`; and `open_settings_window` (see "The Settings window") |
 | `views` | the views of the main window's screens (see "The service map", "The trace table", "The trace view", "The Logs screen" and "The Discard rules screen"): `MapView`, with its `Camera`, `TraceTableView`, `TraceView` with its `WaterfallView`, `InspectorView` and `SpanLogsView`, `LogsView` with its `HistogramView`, `RulesView` with its `RuleEditorView`, and (see "The Settings window" and "The popover") `SettingsView` and `PopoverView` with its `PopoverActions` |
 | `Theme` | the colours below. `Theme::dark()`, `Theme::light()` and `Theme::for_appearance(WindowAppearance)`. It is also a GPUI global once `kit_theme::apply` has run |
 | `KitAssets` | the icons to register with `Application::with_assets`: GPUI Kit's default bundle (what its components draw) plus the list and the funnel, which the sidebar uses and the default bundle leaves out (decision 0040). `testing::headless_app` registers it too |
@@ -103,13 +105,14 @@ status box) and the toolbar are on every screen.
               |    arriving with a draft (`Discard lines like this…`) -> the editor opens on it, unsaved
 
  The Settings window  (Milestone 4 Task 6: not a screen but a window of its own, 520 by 360;
-                       ⌘, in the main window opens it (Task 7), the popover's `Settings…`
-                       will (Task 9))
+                       ⌘, in the main window opens it (Task 7), and so does the popover's
+                       `Settings…` (Task 9: `loctel_macos::window::open_settings`))
    SettingsView   three port inputs with the state of their endpoints, the login switch (macOS),
                   `Apply` and `Close`;  app::open_settings_window opens it or focuses the open one
 
  The menu bar popover  (Milestone 4 Task 8: a panel of its own, 336 wide, that `loctel-macos`
-                        opens under the menu bar icon (Task 9); it replaces the M1 and M2 menu)
+                        opens under the menu bar icon (Task 9, `popover::toggle`); it replaces the
+                        M1 and M2 menu)
    PopoverView    title and status pill, four stats, the endpoints (`Copy` on MCP), the rules line,
                   |    the rules line         -> PopoverActions::open_main(Screen::Rules { draft: None })
                   |    `Open loctel`, ⌘O      -> open_main(Screen::Home)
@@ -827,6 +830,14 @@ the window with the options above and builds `MainWindow` inside GPUI Kit's
 platform's `Backdrop` (macOS Liquid Glass, `loctel_macos::glass::attach`) or `None`. It leaves
 `reduce_motion` at the system's value. The app must register `KitAssets` with
 `Application::with_assets` for Kit's icons to draw.
+
+**Showing a screen from outside.** `app::show_screen(window: AnyWindowHandle,
+screen, cx)` is `MainWindow::navigate` reached from the handle of a window that
+`open_main_window` opened (the root's `Root` view, then the `MainWindow` in it): the
+macOS shell keeps only the handle, and the popover's `Open loctel` and rules line
+open the main window on a `Screen` through it. It is an error for a window that has
+closed and for one that is not a main window (Settings). `tests/interactions.rs`
+(`show_screen_*`) pins both.
 
 **Theme.** `Theme::for_appearance` picks dark for `Dark` and `VibrantDark`,
 light for the others. `MainWindow` applies it at creation and from the
@@ -1622,8 +1633,8 @@ takes the focus from a menu bar app) is unverified.
 `views::PopoverView` (`src/views/popover_view.rs`, Milestone 4 Task 8) is the menu
 bar popover: the panel that replaces the M1 and M2 menu. It is cross-platform on
 purpose. The view, its content (`model::popover`) and everything it asks of the
-app (`PopoverActions`) are built and screenshotted on Linux; what is left for
-`loctel-macos` (Task 9) is to put it in a window under the menu bar icon and to
+app (`PopoverActions`) are built and screenshotted on Linux; what `loctel-macos`
+(Task 9, decision 0042) does is put it in a window under the menu bar icon and
 implement `PopoverActions`. The popover on a Mac is unverified (see "Unverified").
 Decision 0041 has the choices the plan left open.
 
@@ -1664,7 +1675,8 @@ clipboard itself.
 | `Quit loctel`, ⌘Q | `quit()` |
 | Esc | `close()` (a question that is open is forgotten) |
 
-The popover closes when it loses focus (Task 9: the window's deactivation), on Esc,
+The popover closes when it loses focus (Task 9: the window's deactivation, in
+`loctel-macos`), on Esc,
 and after an action that opens a window, which is the `close()` after those three
 rows. It does not close for pause, `Copy`, the switch or a confirmed clear.
 

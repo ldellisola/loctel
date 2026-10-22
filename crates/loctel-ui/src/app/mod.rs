@@ -22,7 +22,9 @@
 //!   Clear all, over the [`HomeModel`]; [`LogsControls`] the Logs toolbar's
 //!   Live tail pill, range and Clear all, over the [`LogsModel`].
 //! - [`MainWindow`] is the root view; [`Screen`] says what it shows.
-//! - [`open_main_window`] opens it.
+//! - [`open_main_window`] opens it, and [`show_screen`] shows a screen in a main
+//!   window that is already open, from its handle alone (what the macOS popover's
+//!   `Open loctel` and its rules line do).
 //! - [`open_settings_window`] opens the Settings window (Milestone 4), 520 by 360
 //!   and not resizable, or focuses the one that is open; what it shows is
 //!   [`SettingsView`](crate::views::SettingsView).
@@ -47,9 +49,10 @@ mod trace_data;
 
 use std::rc::Rc;
 
+use anyhow::Context as _;
 use gpui::{
-    App, AppContext as _, Bounds, Global, TitlebarOptions, WindowBounds, WindowHandle,
-    WindowOptions, px, size,
+    AnyWindowHandle, App, AppContext as _, Bounds, Global, TitlebarOptions, WindowBounds,
+    WindowHandle, WindowOptions, px, size,
 };
 use gpui_kit::base::Root;
 
@@ -121,6 +124,28 @@ pub fn open_main_window(
         let main = cx.new(|cx| MainWindow::new(backend, backdrop, window, cx));
         cx.new(|cx| Root::new(main, window, cx))
     })
+}
+
+/// Shows `screen` in the main window `window`, which is a window that
+/// [`open_main_window`] opened: [`MainWindow::navigate`], reached from the
+/// window's handle alone. A platform shell that keeps only the handle (the macOS
+/// one) uses it to open the main window on a screen of its own choice.
+///
+/// Fails when the window has closed, or when it is not a main window (the
+/// Settings window, say).
+pub fn show_screen(window: AnyWindowHandle, screen: Screen, cx: &mut App) -> anyhow::Result<()> {
+    let window = window
+        .downcast::<Root>()
+        .context("the window is not a loctel window")?;
+    window.update(cx, |root, _window, cx| {
+        let main = root
+            .view()
+            .clone()
+            .downcast::<MainWindow>()
+            .map_err(|_| anyhow::anyhow!("the window does not show the main window"))?;
+        main.update(cx, |main, cx| main.navigate(screen, cx));
+        Ok(())
+    })?
 }
 
 /// The title bar: the title everywhere; on macOS the bar is transparent and

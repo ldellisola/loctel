@@ -33,11 +33,12 @@ use loctel_rules::{DropScope, RuleLanguage};
 use loctel_store::{PageRequest, Store, TraceFilter};
 use loctel_ui::app::{
     HomeModel, INSET, MainWindow, NAV_ITEM_GAP, NAV_ITEM_HEIGHT, NavItem, SIDEBAR_WIDTH, Screen,
-    TOOLBAR_HEIGHT, TRAFFIC_LIGHT_SPACE, TimeRange, ToolbarPart,
+    TOOLBAR_HEIGHT, TRAFFIC_LIGHT_SPACE, TimeRange, ToolbarPart, UiBackend, open_main_window,
+    open_settings_window, show_screen,
 };
 use loctel_ui::model::query_bar::{QueryState, service_filter};
 use loctel_ui::model::rules::Draft;
-use loctel_ui::testing::{Driver, FixedBackend, assert_snapshot};
+use loctel_ui::testing::{Driver, FixedBackend, assert_snapshot, headless_app};
 use loctel_ui::views::{
     BACK_LABEL, CLEAR_FILTERS, Camera, EMPTY_NO_DATA, EMPTY_NO_MATCH, INSPECTOR_MAX_WIDTH,
     INSPECTOR_MIN_WIDTH, LogsPart, MAX_ZOOM, MIN_ZOOM, MapView, TablePart, TracePart,
@@ -2100,5 +2101,67 @@ fn the_sidebar_icons_are_bundled() {
     assert_eq!(
         NavItem::ALL.map(|item| item.icon().path().to_string()),
         ["icons/map.svg", "icons/list.svg", "icons/funnel.svg"]
+    );
+}
+
+#[test]
+fn show_screen_navigates_the_window_open_main_window_opened() {
+    // What the popover's `open_main` does once the main window is open (M4 plan,
+    // Task 9): the macOS shell holds only the window's handle, and shows a screen
+    // through it.
+    let mut cx = headless_app();
+    let backend: Rc<dyn UiBackend> = Rc::new(FixedBackend::new(home_store()));
+    let window = cx
+        .update(|cx| open_main_window(Rc::clone(&backend), cx, |_| None))
+        .expect("the main window opens");
+    let screen = |cx: &mut gpui::HeadlessAppContext| {
+        cx.update(|cx| {
+            window.update(cx, |root, _, cx| {
+                let main = root
+                    .view()
+                    .clone()
+                    .downcast::<MainWindow>()
+                    .expect("the root shows the main window");
+                main.read(cx).screen().clone()
+            })
+        })
+        .expect("the window is open")
+    };
+    assert_eq!(screen(&mut cx), Screen::Home);
+
+    cx.update(|cx| show_screen(window.into(), Screen::Rules { draft: None }, cx))
+        .expect("the rules screen shows");
+    assert_eq!(screen(&mut cx), Screen::Rules { draft: None });
+
+    let query = Some(r#"{service_name="payments-api"}"#.to_owned());
+    cx.update(|cx| show_screen(window.into(), Screen::Logs { query }, cx))
+        .expect("the logs screen shows");
+    assert!(matches!(screen(&mut cx), Screen::Logs { .. }));
+
+    cx.update(|cx| show_screen(window.into(), Screen::Home, cx))
+        .expect("the home screen shows");
+    assert_eq!(screen(&mut cx), Screen::Home);
+}
+
+#[test]
+fn show_screen_refuses_a_window_that_is_not_the_main_window_or_is_gone() {
+    let mut cx = headless_app();
+    let backend: Rc<dyn UiBackend> = Rc::new(FixedBackend::new(home_store()));
+    // The Settings window is a loctel window with another view in its `Root`.
+    let settings = cx
+        .update(|cx| open_settings_window(Rc::clone(&backend), cx))
+        .expect("the settings window opens");
+    let error = cx
+        .update(|cx| show_screen(settings.into(), Screen::Home, cx))
+        .expect_err("the Settings window has no screens");
+    assert!(format!("{error:#}").contains("main window"), "{error:#}");
+
+    // A window that has closed.
+    cx.update(|cx| settings.update(cx, |_, window, _| window.remove_window()))
+        .expect("the window closes");
+    cx.run_until_parked();
+    assert!(
+        cx.update(|cx| show_screen(settings.into(), Screen::Home, cx))
+            .is_err()
     );
 }

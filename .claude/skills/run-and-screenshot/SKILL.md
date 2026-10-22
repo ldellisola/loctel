@@ -136,8 +136,8 @@ the real window; the screenshot tests drive their window with `Driver` instead
 - The first frame takes about two seconds, so never capture sooner than that
   after the window appears.
 - This is the Linux development window, not the product. On a Mac the app is a
-  menu bar item whose `Open loctel` opens the same window (and shows loctel in
-  the Dock while it is open): all of that is unverified until a milestone check
-  on a real Mac.
+  menu bar item whose popover (a click on the icon) has `Open loctel`, which
+  opens the same window (and shows loctel in the Dock while it is open): all of
+  that is unverified until a milestone check on a real Mac.
 - To compare pixels in a test instead of looking, write a screenshot test: see
   `docs/areas/ui.md` and the `update-screenshots` skill.

@@ -6,10 +6,12 @@
 //!
 //! Without `--headless` on macOS it is the product: a menu bar item and no
 //! window at launch, no Dock icon (`loctel_macos::install`), running until the
-//! menu's Quit. `Open loctel` in the menu opens the main window, and while it
-//! is open loctel shows in the Dock and in Cmd-Tab (`loctel_macos::open_or_focus`
-//! also runs when the Dock icon is clicked with no window open). It prints the
-//! same startup lines as headless mode.
+//! popover's `Quit loctel`. A click on the icon opens the popover (status, rates,
+//! endpoints, the rules line and the actions); its `Open loctel` opens the main
+//! window, and while that or the Settings window is open loctel shows in the Dock
+//! and in Cmd-Tab (`loctel_macos::open_or_focus` also runs when the Dock icon is
+//! clicked with no window open). It prints the same startup lines as headless
+//! mode.
 //!
 //! Without `--headless` on Linux it opens the main window
 //! (`loctel_ui::app::open_main_window`: the service map, the trace table and
@@ -102,8 +104,9 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
 
 /// The macOS app: the engine, and the menu bar item over it. It starts as an
 /// accessory app (no Dock icon, no menu bar of its own, no window) and quits
-/// only when the menu says so, never because a window closed. `Open loctel`
-/// opens the main window and shows loctel in the Dock for as long as it is open
+/// only when the popover says so (`Quit loctel`, or command-Q in it), never
+/// because a window closed. The popover's `Open loctel` opens the main window and
+/// shows loctel in the Dock for as long as it is open
 /// (`loctel_macos::open_or_focus`); a click on the Dock icon with no window
 /// open does the same. Prints the listener lines like headless mode does, then
 /// runs until Quit.
