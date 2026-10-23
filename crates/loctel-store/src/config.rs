@@ -20,6 +20,14 @@ pub struct StoreConfig {
     /// it to [`SPILLING_MAX_LOG_RECORDS`](Self::SPILLING_MAX_LOG_RECORDS) when it
     /// has a run directory ([`with_spill_limits`](Self::with_spill_limits)).
     pub max_log_records: usize,
+    /// Most log records kept, in all, while a store that spills holds sealed
+    /// logs in memory because they could not be written (a full disk, or a
+    /// segment directory that could not be made). `max_log_records` of such a
+    /// store is set for logs in segments, which cost about 15 bytes of memory
+    /// each, and a log in memory costs far more: so while any is held, the lower
+    /// of the two applies, until the last of them is evicted. A store with no
+    /// [`spill_dir`](Self::spill_dir) has only `max_log_records` (decision 0053).
+    pub max_log_records_in_memory: usize,
     /// How long a trace must go without a new span to count as complete.
     pub completeness_quiet: Duration,
     /// Where segment files go. `None` keeps everything in memory (tests, and
@@ -70,6 +78,7 @@ impl Default for StoreConfig {
         Self {
             max_traces: 200_000,
             max_log_records: 5_000_000,
+            max_log_records_in_memory: 5_000_000,
             completeness_quiet: Duration::from_secs(10),
             spill_dir: None,
             spill_after: Duration::from_secs(30),

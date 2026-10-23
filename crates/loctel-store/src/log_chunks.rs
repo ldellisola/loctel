@@ -686,6 +686,14 @@ impl LogStore {
                 .sum::<usize>()
     }
 
+    /// Some sealed chunk that holds logs is in memory: its write to a segment
+    /// failed, or the store has no segment files.
+    pub(crate) fn holds_sealed_in_memory(&self) -> bool {
+        self.sealed
+            .iter()
+            .any(|chunk| chunk.meta.count > 0 && chunk.location().is_none())
+    }
+
     /// The open chunk, then the sealed ones (in the order they were sealed),
     /// leaving out the ones that hold nothing.
     pub(crate) fn chunk_refs(&self) -> impl Iterator<Item = ChunkRef<'_>> {

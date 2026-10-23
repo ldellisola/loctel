@@ -79,6 +79,22 @@ under what the app ships, and `expect_held` fails if that limit ever drops below
 budget loads. Their other raised limits (`max_traces`, the 64 GiB disk cap) stay, for
 the reasons above. This supersedes the 100M logs of decision 0049.
 
+### While the disk is full: 5,000,000
+
+The 20M holds because a log in a segment costs about 15 bytes of memory. A chunk of logs
+whose write fails (the volume is full, the run directory is gone) stays in memory, where a
+log costs its whole record (body, attributes, resource and indexes), many times the 15
+bytes, and a write that fails once is not tried again for a minute
+(`spill_retry`), so on a full disk every chunk sealed in that minute stays in memory too.
+With the count at 20M, a full disk could have grown memory to several gigabytes. So `StoreConfig` has `max_log_records_in_memory`
+(5,000,000, the limit of a store in memory, which the budgets of Milestone 4 were measured
+at): while a store that has a `spill_dir` holds any sealed chunk in memory, the log limit is
+the lower of the two, and the oldest logs (on disk or not) go until the store is under it.
+The chunks stay in memory once the disk works again, so the lower limit holds until the
+last of them is evicted, and then the 20M is back. This came out of the final review of
+Milestone 5; `tests/disk_cap.rs`
+(`logs_that_cannot_be_written_are_held_up_to_the_memory_limit`) pins it.
+
 ## Consequences
 
 - The Logs list of a running app scrolls through 10 million lines and keeps going to 20

@@ -492,45 +492,45 @@ fn logs_around_evicted_target() {
         let around = store.logs_around(l1, 3, 3);
         assert!(around.lines.is_empty());
         assert_eq!(around.target, None);
+    });
 
-        // The target removed from the middle: the lines on both sides of where
-        // it was, nothing at its place.
-        each_mode(|store, _c| {
-            let mut logs = numbered(9);
-            logs[4] = in_span(logs[4].clone(), 7, 7);
-            store.ingest_logs(logs);
-            let target = store
-                .search_logs_keyed(
-                    &LogFilter {
-                        trace_id: Some(tid(7)),
-                        ..LogFilter::default()
-                    },
-                    &first(1),
-                )
-                .items[0]
-                .0;
-            assert_eq!(store.remove_trace(tid(7)).logs, 1);
-            let around = store.logs_around(target, 3, 3);
-            assert_eq!(
-                bodies(&around.lines),
-                vec!["l2", "l3", "l4", "l6", "l7", "l8"]
-            );
-            assert_eq!(around.target, None);
+    // The target removed from the middle: the lines on both sides of where
+    // it was, nothing at its place.
+    each_mode(|store, _c| {
+        let mut logs = numbered(9);
+        logs[4] = in_span(logs[4].clone(), 7, 7);
+        store.ingest_logs(logs);
+        let target = store
+            .search_logs_keyed(
+                &LogFilter {
+                    trace_id: Some(tid(7)),
+                    ..LogFilter::default()
+                },
+                &first(1),
+            )
+            .items[0]
+            .0;
+        assert_eq!(store.remove_trace(tid(7)).logs, 1);
+        let around = store.logs_around(target, 3, 3);
+        assert_eq!(
+            bodies(&around.lines),
+            vec!["l2", "l3", "l4", "l6", "l7", "l8"]
+        );
+        assert_eq!(around.target, None);
+    });
 
-            // The neighbours evicted but the target held: it is the oldest line.
-            with_cap(3, |store, _c| {
-                store.ingest_logs(numbered(6));
-                let oldest = store
-                    .search_logs_keyed(&LogFilter::default(), &first(100))
-                    .items
-                    .last()
-                    .unwrap()
-                    .0;
-                let around = store.logs_around(oldest, 3, 1);
-                assert_eq!(bodies(&around.lines), vec!["l4", "l5"]);
-                assert_eq!(around.target, Some(0));
-            });
-        });
+    // The neighbours evicted but the target held: it is the oldest line.
+    with_cap(3, |store, _c| {
+        store.ingest_logs(numbered(6));
+        let oldest = store
+            .search_logs_keyed(&LogFilter::default(), &first(100))
+            .items
+            .last()
+            .unwrap()
+            .0;
+        let around = store.logs_around(oldest, 3, 1);
+        assert_eq!(bodies(&around.lines), vec!["l4", "l5"]);
+        assert_eq!(around.target, Some(0));
     });
 }
 

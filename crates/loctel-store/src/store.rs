@@ -210,7 +210,8 @@ impl Store {
     /// Adds log records, in any order. A record identical to one already
     /// held (an exporter retry: same time, body, trace, span and service) is
     /// ignored. When the batch is applied, the oldest records beyond
-    /// `max_log_records` are evicted. The logs go to the open chunk, which is
+    /// `max_log_records` (or `max_log_records_in_memory`, while logs that
+    /// could not be written are held) are evicted. The logs go to the open chunk, which is
     /// sealed when it has `log_chunk_max` of them or has been open for
     /// `log_chunk_age`, and written to a segment file if the store has them.
     pub fn ingest_logs(&self, logs: Vec<LogRecord>) {
@@ -231,7 +232,8 @@ impl Store {
                 }
             }
         }
-        inner.evict_logs_beyond(self.shared.config.max_log_records, now);
+        let max = self.shared.log_limit(&inner);
+        inner.evict_logs_beyond(max, now);
         self.shared.spill_step_if_due(&mut inner, now);
         self.shared.enforce_disk_cap(&mut inner);
     }
@@ -841,6 +843,18 @@ impl Shared {
         self.enforce_disk_cap(&mut inner);
     }
 
+    /// The most logs the store keeps now: `max_log_records`, or the lower
+    /// `max_log_records_in_memory` while a store that spills holds sealed logs
+    /// it could not write.
+    fn log_limit(&self, inner: &Inner) -> usize {
+        let config = &self.config;
+        if config.spill_dir.is_some() && inner.logs.holds_sealed_in_memory() {
+            config.max_log_records.min(config.max_log_records_in_memory)
+        } else {
+            config.max_log_records
+        }
+    }
+
     /// Keeps the segment files to the disk cap: while they take more, deletes
     /// the oldest one, whole, with what is in it.
     fn enforce_disk_cap(&self, inner: &mut Inner) {
@@ -865,7 +879,7 @@ impl Shared {
     /// kept in `spill_error`. Then nothing is written, by this step or by the
     /// seal of a chunk of logs, until `spill_retry` has passed: the traces wait in
     /// memory, up to `max_traces` (a chunk of logs whose write failed stays in
-    /// memory for good, up to `max_log_records`), and the first call after that
+    /// memory for good, up to `max_log_records_in_memory`), and the first call after that
     /// tries again.
     fn spill_step_if_due(&self, inner: &mut Inner, now: u64) {
         if !self.step_due(now) {

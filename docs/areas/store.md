@@ -119,7 +119,10 @@ The rules that hold it together:
 - **Memory is bounded by what is hot, and by two limits that always applied.**
   `max_traces` and `max_log_records` still evict the oldest whole trace and the oldest
   logs (20,000,000 logs in a store that has a run directory, decision 0053), so a store
-  whose disk is full (see "A failing disk") keeps working in memory up to them. `HOT_MAX_SPANS` is how a flood of complete traces leaves memory before
+  whose disk is full (see "A failing disk") keeps working in memory up to them. While a
+  store that spills holds logs it could not write, the log limit is the lower
+  `max_log_records_in_memory` (5,000,000), because a log in memory costs far more than one
+  in a segment. `HOT_MAX_SPANS` is how a flood of complete traces leaves memory before
   `SPILL_AFTER` runs out.
 - **Eviction by the cap is by whole segment.** A trace is one record in one file, so a
   trace is held whole or not at all, and a chunk of logs likewise. The price is that the
@@ -203,6 +206,7 @@ store.clear();
   |---|---|---|
   | `max_traces` | 200,000 | past this, the oldest trace is evicted whole |
   | `max_log_records` | 5,000,000 | past this, the oldest log records are evicted; 20,000,000 in a store that has a run directory (see below) |
+  | `max_log_records_in_memory` | 5,000,000 | the log limit, in all, of a store that spills while it holds sealed logs it could not write (see below) |
   | `completeness_quiet` | 10 s | quiet time after which a trace is complete |
   | `spill_dir` | `None` | where the segment files go; `None` keeps everything in memory |
   | `spill_after` | 30 s | how long a complete trace stays in memory before it is spilled |
@@ -224,6 +228,14 @@ store.clear();
   resident), so the app keeps 200,000 traces, 2M spans of the budgets' shape. Why 20M, the
   measurements and the memory it costs (about 150 MB per ten million logs): decision
   [0053](../decisions/0053-the-app-keeps-twenty-million-logs.md).
+
+  The 20M is for logs in segments. A chunk whose write failed (a full disk) stays in
+  memory, where a log costs far more, so while a store that has a `spill_dir` holds any
+  such chunk, it keeps no more than `max_log_records_in_memory` (5,000,000, the limit of a
+  store in memory) logs in all, the oldest going first as always. The chunks stay in memory
+  after the disk comes back, so the lower limit holds until the last of them is evicted;
+  then the 20M applies again (`logs_that_cannot_be_written_are_held_up_to_the_memory_limit`
+  in `tests/disk_cap.rs`).
 
   `StoreConfig::spilling_for_tests(dir)` (hidden from the docs) is the config
   the tests spill with: `spill_after` 0, `segment_max_bytes` 4 KiB,

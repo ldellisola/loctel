@@ -558,6 +558,48 @@ fn spill_write_failure_keeps_ingesting_and_reports() {
 }
 
 #[test]
+fn logs_that_cannot_be_written_are_held_up_to_the_memory_limit() {
+    // `max_log_records` of a store that spills is set for logs in segments
+    // (20 million in the app, decision 0053). A log the store could not write
+    // costs far more memory than that, so while it holds any, it keeps no more
+    // than `max_log_records_in_memory` logs in all.
+    let dir = TempDir::new().unwrap();
+    let (store, _clock) = store_with_config(StoreConfig {
+        max_log_records: 40,
+        max_log_records_in_memory: 20,
+        ..StoreConfig::spilling_for_tests(dir.path().to_path_buf())
+    });
+    // On disk: five chunks of seven, held up to `max_log_records`.
+    store.ingest_logs(lines(0, 35));
+    assert_eq!(store.stats().logs, 35);
+    assert_eq!(store.log_chunks().on_disk, 5);
+
+    // The volume is full: two chunks stay in memory, and the oldest logs go
+    // until the store holds the memory limit.
+    store.inject_write_failure(true);
+    store.ingest_logs(lines(35, 49));
+    let stats = store.stats();
+    assert_eq!(stats.spill_error.as_deref(), Some(FULL));
+    assert_eq!(stats.logs, 20, "held up to max_log_records_in_memory");
+    assert_eq!(held_lines(&store), (29..49).rev().collect::<Vec<_>>());
+
+    // Space comes back. New chunks go to disk, but the two in memory stay, and
+    // so does the limit, until they are evicted in their turn.
+    store.inject_write_failure(false);
+    store.ingest_logs(lines(49, 56));
+    assert_eq!(store.stats().spill_error, None);
+    assert_eq!(held_lines(&store), (36..56).rev().collect::<Vec<_>>());
+    store.ingest_logs(lines(56, 84));
+    assert_eq!(held_lines(&store), (64..84).rev().collect::<Vec<_>>());
+
+    // They are gone: the store keeps `max_log_records` again.
+    store.ingest_logs(lines(84, 98));
+    assert_eq!(store.stats().logs, 34);
+    assert_eq!(held_lines(&store), (64..98).rev().collect::<Vec<_>>());
+    assert_consistent(&store, dir.path());
+}
+
+#[test]
 fn a_failing_write_does_not_stop_the_cap_from_working() {
     // The cap deletes files, which a full volume does not prevent: it is how
     // the space comes back.
