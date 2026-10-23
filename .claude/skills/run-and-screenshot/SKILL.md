@@ -25,6 +25,30 @@ target/debug/meshgen --scenario checkout-failure --transport grpc --endpoint htt
 kill %1                                    # SIGTERM or SIGINT: clean exit 0
 ```
 
+Unless you pass `--no-spill`, loctel keeps older traces and logs in temporary segment
+files in `$TMPDIR/loctel/run-<pid>-<secs>/`, deletes that folder when it exits, and
+deletes the folders of runs that were killed the next time it starts (the cap is
+`disk_cap_bytes` of the settings file, 4 GiB unless the file says otherwise). The store
+only moves data out of memory when something calls it (an ingest, a read, or the
+window's refresh every 500 ms), so a headless run that nobody talks to has no files yet:
+send it a trace, wait for it to go cold (10 s of quiet and 30 s more; logs go when a chunk of
+65,536 or ten seconds of them seals), send anything again (that ingest runs the step) and look:
+
+```bash
+export TMPDIR=/tmp/loctel-scratch; mkdir -p $TMPDIR      # so the folder is easy to find, and yours
+target/debug/loctel --headless ... &                      # as above (with the same TMPDIR)
+target/debug/meshgen --scenario huge-trace --transport http-protobuf --endpoint http://127.0.0.1:41727
+sleep 45                                                  # 10 s quiet to be complete, 30 s more to spill
+target/debug/meshgen --scenario checkout-success --transport grpc --endpoint http://127.0.0.1:41727  # any ingest runs the spill step
+sleep 2; ls -la $TMPDIR/loctel/run-*/                     # traces-000000.seg, about 1.7 MB for 100,000 spans
+kill %1; ls $TMPDIR/loctel/                               # the run folder is gone
+```
+
+`get_status` over MCP reports `disk_bytes`, `disk_cap_bytes` and `spill_error`. Use
+`--no-spill` when you want the old all-in-memory behaviour (to compare, or to rule the
+files out when a bug might be theirs); a store with no files answers every call the same
+way, only without the lower half of "Storage, end to end" in `docs/areas/store.md`.
+
 To see a discard rule work, add one to the rules file (a new file holds no
 rules, only the example commented out; `docs/areas/rules.md`), wait for the
 engine to notice the edit (it looks every 2 seconds), send the `health-checks`

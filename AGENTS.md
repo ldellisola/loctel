@@ -81,6 +81,12 @@ cargo run -p loctel-app -- --headless --grpc-port 0 --http-port 0 --mcp-port 0 \
   --settings /tmp/loctel-settings.toml --rules /tmp/loctel-rules.toml
 ```
 
+The run keeps older traces and logs in temporary segment files, in a directory of its
+own under `$TMPDIR/loctel/` that it deletes on exit (at most the disk cap, 4 GB, of
+them; `--no-spill` keeps everything in memory instead, and
+[`docs/areas/store.md`](docs/areas/store.md), "Storage, end to end", is the picture).
+Point `TMPDIR` at a scratch directory if you want to look at the files.
+
 The run also serves MCP (the `mcp` line it prints has the address; the default
 is `http://127.0.0.1:4319/mcp`). To point Claude Code at it, and for the tools
 and their limits, see [`docs/areas/mcp.md`](docs/areas/mcp.md):

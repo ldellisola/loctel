@@ -26,7 +26,13 @@ view (Task 8, see "The popover"), which is cross-platform and tested here; what
 opens it under the menu bar icon and what its actions do is `loctel-macos` (Task 9,
 [`macos.md`](macos.md), "The popover"). The macOS menu bar item is in `loctel-macos`;
 it has no menu since Milestone 4, and the strings of `menu_text` are the popover's
-status and rules lines.
+status and rules lines. Milestone 5 (Tasks 7 and 8) adds no screen but changes four
+things on the ones above: the Logs list scrolls through ten million lines (see "A list
+of more lines than the paged list holds"), the trace view says so when the disk cap
+removed the trace it shows, Settings has a `Storage` section with the disk cap and the
+popover's fourth tile is the disk, and both themes are held to a contrast check (see
+"Contrast"). All of it is tested here; the Mac side is on the Milestone 5 list of the Mac
+checklist.
 
 GPUI comes as the weekly `gpui-pre` snapshot, `gpui-pre`, `gpui-pre-platform`
 and `gpui-pre-wgpu`, all pinned to exactly `=0.3.9` (zed@93d7456), and GPUI Kit

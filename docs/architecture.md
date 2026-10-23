@@ -101,8 +101,11 @@ and type-checked but has never run:
      |    |          and its reload, status, shutdown; owns the runtime.
      |    v
      |  loctel-store -- assembles traces, marks complete, finds failed-in span,
-     |    |             keeps logs and the service map, evicts oldest whole trace
-     |    |
+     |    |    |        keeps logs and the service map, evicts oldest whole trace;
+     |    |    |        complete traces and sealed log chunks move to segment files
+     |    |    |        (see "Store") and the disk cap deletes the oldest of them
+     |    |    v
+     |    |  $TMPDIR/loctel/run-<pid>-<secs>/*.seg   (temporary: deleted on quit)
      v    v
  loctel-mcp   loctel-ui  (main window, status view, menu text)  <-- loctel-macos (menu bar item, popover, windows, glass)
      |
@@ -126,7 +129,11 @@ the query needs the whole trace. The two cannot disagree about what a query
 means.
 
 Telemetry is never persisted. Only `settings.toml` and `rules.toml` (the discard
-rules) are written to disk.
+rules) are kept on disk. Since Milestone 5 the store also writes **temporary**
+segment files, copies of the older traces and logs that keep memory bounded: they live
+in a per-run directory of the system's temporary directory, are limited by the disk cap
+(4 GiB, the user's to set), and are deleted when loctel quits (or, after a crash, when it
+next starts). Nothing reads them after the run that wrote them.
 
 ## Domain model
 
@@ -167,12 +174,31 @@ rules) are written to disk.
 `loctel-store` depends on `loctel-model`, `loctel-query`, `parking_lot`,
 `serde` and (Milestone 5, for the segment files) `postcard`, `zstd`, `memmap2`,
 `crc32fast` and `libc`. The details (API, rules and the reasons) are in
-[`areas/store.md`](areas/store.md). What other crates rely on:
+[`areas/store.md`](areas/store.md) ("Storage, end to end" has the whole picture). In short,
+since Milestone 5:
+
+```
+ spans ---> TRACE INDEX (every trace, in memory) + HOT TRACES (memory)
+                         |  spill step: complete and quiet for 30 s more,
+                         |  or the oldest complete ones over 2,000,000 hot spans
+                         v
+ logs  ---> OPEN CHUNK (memory) --seal: 65,536 logs or 10 s--> sealed chunk, with its
+            CHUNK META (counts, per-second cells, blocks) kept in memory
+                         |
+                         v
+   segment files in $TMPDIR/loctel/run-<pid>-<secs>/   traces-NNNNNN.seg, logs-NNNNNN.seg
+   [u32 len][u32 crc32][zstd(postcard)] records, 64 MiB a file
+                         |
+   disk bytes over the cap (4 GiB)? delete the OLDEST file whole, with what is in it
+   a late span for a cold trace? read it back hot; its old record is dead until its file goes
+```
+
+What other crates rely on:
 
 - **One entry point.** Everything goes through `Store` (`Clone + Send +
-  Sync`, clones share data). The internals are replaced in Milestone 5, so
-  nothing else may depend on them: the API is frozen, and every test of the
-  crate runs against a store in memory and one that spills.
+  Sync`, clones share data). Milestone 5 replaced the internals, so nothing else
+  may depend on them: the API is frozen, and every test of the crate runs against a
+  store in memory and one that spills.
 - **Hot and cold traces (Milestone 5).** With a `spill_dir`, a trace that has
   been complete for a while moves from memory to a temporary segment file, and
   comes back when a late span arrives. An index of every trace (start, end, count,

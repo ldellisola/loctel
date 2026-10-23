@@ -461,18 +461,18 @@ cannot hold to the Mac's 500 ms.
 
 | id | measure | budget | measured here |
 |---|---|---|---|
-| `ingest` | items accepted a second: OTLP HTTP protobuf, batches of 1,000 spans and 1,000 logs, one discard rule on, spill on, 20 s | >= 50,000 items/s | 389,000 items/s |
+| `ingest` | items accepted a second: OTLP HTTP protobuf, batches of 1,000 spans and 1,000 logs, one discard rule on, spill on, 20 s | >= 50,000 items/s | 405,000 items/s |
 | `ingest` | items sent and not accepted (rejected, failed, cut by a rule) | 0 | 0 |
-| `ingest` | p99 latency of a batch | < 250 ms | 95 ms |
-| `trace_open_hot` | `store.trace(id)` and `Waterfall::new`, a 100,000-span trace in memory, median of 5 | < 250 ms | 137 ms |
-| `trace_open_cold` | the same, the trace in a segment file (five traces, each read once), median of 5 | < 250 ms | 201 ms |
+| `ingest` | p99 latency of a batch | < 250 ms | 89 ms |
+| `trace_open_hot` | `store.trace(id)` and `Waterfall::new`, a 100,000-span trace in memory, median of 5 | < 250 ms | 109 ms |
+| `trace_open_cold` | the same, the trace in a segment file (five traces, each read once), median of 5 | < 250 ms | 193 ms |
 | `logs_count` | `log_count` over 10M logs, levels and service, median of 5 | < 50 ms | 0.005 ms |
-| `logs_at` | `logs_at(offset, 50)` at 100 random offsets over 10M logs, p95 | < 20 ms | 4.9 ms |
+| `logs_at` | `logs_at(offset, 50)` at 100 random offsets over 10M logs, p95 | < 20 ms | 3.8 ms |
 | `histogram` | 48 buckets over 10M logs, levels and service, a window of whole seconds, median of 5 | < 100 ms | 0.015 ms |
-| `traceql_first_page` | `{ status = error }` over 10M spans (1% of traces fail), limit 20, median of 5 | < 1 s | 110 ms |
-| `logql_first_page` | `{service_name="payments-api"} \|= "timeout"` over 10M logs, limit 50, median of 5 | < 1 s | 3.1 ms |
-| `startup_headless` | process start to the last listener line, release `loctel --headless`, median of 5 | < 300 ms | 5.4 ms |
-| `first_frame` | main window construction and the first headless render (lavapipe), release, a process each, median of 5 | < 1.5 s (Mac target 500 ms, by hand) | 504 ms |
+| `traceql_first_page` | `{ status = error }` over 10M spans (1% of traces fail), limit 20, median of 5 | < 1 s | 100 ms |
+| `logql_first_page` | `{service_name="payments-api"} \|= "timeout"` over 10M logs, limit 50, median of 5 | < 1 s | 3.5 ms |
+| `startup_headless` | process start to the last listener line, release `loctel --headless`, median of 5 | < 300 ms | 5.3 ms |
+| `first_frame` | main window construction and the first headless render (lavapipe), release, a process each, median of 5 | < 1.5 s (Mac target 500 ms, by hand) | 489 ms |
 | `rss_10m` | resident memory after 10M logs and 1M spans, spill on | < 1.5 GB | 920 MB |
 
 "Measured here" is one run on the development container (4 vCPU, release), for
