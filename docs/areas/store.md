@@ -1,17 +1,21 @@
 # Store (`loctel-store`)
 
-The in-memory store behind loctel. It takes spans in any order from any
+The store behind loctel. It takes spans in any order from any
 service, assembles them into traces, says when a trace has gone quiet, and
-evicts the oldest trace whole when it holds too many. It also holds log
-records, linked to spans by ID, and works out the service map and the services
-list from the traces, filters both by TraceQL and LogQL queries, and can
+evicts the oldest trace whole when it holds too many. Traces that are complete
+move out of memory into temporary segment files and come back when a late span
+arrives (Milestone 5, see "Hot and cold traces" below). It also holds log
+records, linked to spans by ID, in chunks of which only the newest is in memory
+(Milestone 5, see "Log chunks" below), and works out the service map and the
+services list from the traces, filters both by TraceQL and LogQL queries, and can
 remove traces, spans and their logs again (for the discard rules). Design references: §4 (order and lateness, completeness,
 logs), §5 (storage, eviction, clear all), §9.2 (the map) and §9.4 (what
 "failed" means).
 
-Everything outside the crate goes through `Store`. M5 replaces the internals
-with a spill-to-disk segment store, so keep the public API below stable and
-keep callers away from anything else.
+Everything outside the crate goes through `Store`. M5 replaced the internals
+with a spill-to-disk segment store, and kept the public API below frozen (M5 adds
+to it, never changes it): callers stay away from anything else, and every test of
+the crate runs against a store in memory and against one that spills.
 
 Status: trace assembly, completeness, dedup, eviction, failure
 classification, trace summaries, trace search, logs, the service map and the
@@ -19,7 +23,128 @@ services list are implemented. So are (Milestone 2) the TraceQL and LogQL query
 filters, matched spans, removal and the scans (see "Query filters", "Removal"
 and "Scans" below), and (Milestone 4) the log IDs, the level and window filters,
 the log histogram and the lines around a log, which the Logs screen is built on
-(see "Log IDs, levels, histogram and lines around" below).
+(see "Log IDs, levels, histogram and lines around" below). Milestone 5 is built (its Mac
+side is unverified, see the Mac checklist): the segment files and the run directory it
+spills into (see "Segment files" below), **traces**
+spill through them (see "Hot and cold traces" below) and **logs** are held in chunks,
+the sealed ones in segment files, with the count of a filter, the log at a position and
+the histogram answered from what is kept about each chunk (see "Log chunks" below; the
+log at a position is read from a block of about a thousand logs, not a whole chunk, see
+"Blocks"). The **disk cap** is enforced: the oldest segment files are deleted whole
+when the files take more than it, and a write that fails is waited out and reported
+(see "The disk cap" and "A failing disk" below). The searches over traces do bounded
+work: a summary is made only for a trace that is returned, and "recent failures" is one
+pass over the index (see "Bounded work" below). "Storage, end to end" below is the
+whole picture on one page, and the performance budgets that hold it to account are in
+[`testing.md`](testing.md) ("Performance budgets").
+
+## Storage, end to end
+
+What a span or a log goes through between the engine handing it over and the disk cap
+deleting it, and what each question asks. Everything in the picture is inside `Store`:
+no other crate sees it, and the API below is the same whether or not a `spill_dir` is
+set (with none, there is no lower half: everything stays in the upper one).
+
+```text
+   spans and logs, after the discard rules (EngineSink -> Store::ingest_spans / ingest_logs)
+          |                                              |
+          | spans                                        | logs
+          v                                              v
+ ========================================  memory  ==================================
+  TRACE INDEX: one entry for every      |  OPEN CHUNK: the newest logs, in time order
+  trace held, hot or cold (start, end,  |  (a late log goes in its place), with the
+  span count, status, services,         |  dedup keys and the span and trace indexes
+  failed-in, first exception,           |
+  last_arrival, where it is), ordered   |  CHUNK META of every chunk, open or sealed:
+  by start and by first arrival         |  range of ids, counts by level and service,
+                                        |  logs per second/service/level, traces, and
+  HOT TRACES: the spans of traces that  |  the blocks of a sealed one
+  are still arriving, or quiet for less |
+  than completeness_quiet (10 s) +      |  CACHES, filled on demand, least recently
+  SPILL_AFTER (30 s)                    |  used out first: 64 traces, 8 chunks,
+          |                             |  32 blocks
+          | spill step, at most once    |          |
+          | a second: a trace quiet for |          | seal: at 65,536 logs, or 10 s
+          | its time, or, over          |          | after the chunk's first log
+          | HOT_MAX_SPANS (2M spans),   |          |
+          | the oldest complete ones    |          |
+          v                                        v
+ ========================================   disk   ==================================
+  <temp dir>/loctel/run-<pid>-<start secs>/       (RunDir: made at start with mode
+                                                   0700, deleted on quit; a run that
+     traces-000001.seg   logs-000002.seg           crashed leaves its directory, which
+     traces-000003.seg   logs-000004.seg  ...      the next start deletes)
+
+     one trace = one record                       a record: [u32 len][u32 crc32]
+     one sealed chunk = one record of blocks      [zstd level 1 of postcard(payload)];
+     of ~1,000 logs, each its own zstd frame      a segment rolls at 64 MiB; numbers
+                                                  count up and are never reused
+          ^                                        |
+          | a late span for a cold trace:          | disk bytes over the cap (4 GiB;
+          | the trace is read back and is hot      | 1 to 100 GB in Settings): delete
+          | again, and its old record is dead      | the OLDEST segment file whole, with
+          | (it stays in its file and counts       | the cold traces and the chunks in
+          | toward the cap until the file goes)    | it, until under the cap; a new cap
+          +----------------------------------------+ applies at once
+```
+
+The questions, and what each one touches:
+
+```text
+ search_traces, summary, recent_failures, oldest_start_unix_nano
+       --> the trace index only                              (no file, no span)
+ search_traces with a TraceQL query
+       --> the index, then the records of the candidates, newest first, until the page is full
+ trace(id), with_trace_spans
+       --> hot: the spans in memory;  cold: the cache of 64 decoded traces, then the record
+ service_map, services, scan_traces
+       --> every trace that reaches into the window (scan_traces: from `since` on): the
+           spans in memory, or the record decoded, and not cached
+ log_count, log_histogram (an indexed filter: a window, levels, a service)
+       --> the chunk meta only, except the chunks a window edge cuts through
+ logs_at(filter, offset, 50) (an indexed filter)
+       --> the meta (prefix sums) to find the block, then one block of ~1,000 logs, or two
+ search_logs and the rest (a body text, a trace, a LogQL query)
+       --> a merge of the chunks, newest first, reading a sealed chunk only when it is next
+ stats()
+       --> counters kept as data arrives: traces, spans, logs, spilled_traces, disk_bytes,
+           spill_error
+```
+
+The rules that hold it together:
+
+- **The spill step, a seal and a deletion by the cap run under the store's write
+  lock**, a trace, a chunk or a segment file at a time (see "The spill step", "When a
+  chunk seals" and "The disk cap" for what each costs).
+- **Memory is bounded by what is hot, and by two limits that always applied.**
+  `max_traces` and `max_log_records` still evict the oldest whole trace and the oldest
+  logs (20,000,000 logs in a store that has a run directory, decision 0053), so a store
+  whose disk is full (see "A failing disk") keeps working in memory up to them. While a
+  store that spills holds logs it could not write, the log limit is the lower
+  `max_log_records_in_memory` (5,000,000), because a log in memory costs far more than one
+  in a segment. `HOT_MAX_SPANS` is how a flood of complete traces leaves memory before
+  `SPILL_AFTER` runs out.
+- **Eviction by the cap is by whole segment.** A trace is one record in one file, so a
+  trace is held whole or not at all, and a chunk of logs likewise. The price is that the
+  cap deletes the whole of the oldest file, and that dead records (a rehydrated trace's
+  old copy, a removed one) count toward the cap until their file goes.
+- **Every record has its CRC32.** A record that fails its check (a crash cut it, a bit
+  flipped) is skipped by every read and reported once per segment, and goes with its
+  file or when eviction reaches it. Nothing panics.
+- **The files are scratch.** Nothing is synced and nothing is kept across runs: the run
+  directory goes on quit, a crash's directory goes at the next start, and `--no-spill`
+  makes none (everything stays in memory, up to `max_traces` and `max_log_records`).
+
+The numbers (`SPILL_AFTER` 30 s, `HOT_MAX_SPANS` 2,000,000, `SEGMENT_MAX_BYTES` 64 MiB,
+`LOG_CHUNK_MAX` 65,536 records or 10 s, `CHUNK_CACHE` 8, zstd level 1, the 4 GiB
+default cap and the 1 to 100 GB it may be set to) are the milestone's Global
+Constraints; the fields that carry them are on `StoreConfig`, and the reasons are in
+decisions [0044](../decisions/0044-segment-file-format.md),
+[0045](../decisions/0045-trace-index-and-spill-policy.md),
+[0046](../decisions/0046-log-chunks.md),
+[0047](../decisions/0047-disk-cap-and-spill-errors.md),
+[0048](../decisions/0048-bounded-work-on-search.md) and
+[0050](../decisions/0050-log-chunks-as-blocks.md).
 
 ## API
 
@@ -31,17 +156,23 @@ store.ingest_spans(spans);               // Vec<loctel_model::Span>
 let snapshot = store.trace(trace_id);    // Option<TraceSnapshot>
 let summary = store.summary(trace_id);   // Option<TraceSummary>
 let page = store.search_traces(&TraceFilter::default(), &PageRequest { limit: 20, cursor: None });
+let found = store.recent_failures(since, 5); // RecentFailures { failed, errors_inside }, one pass
 store.ingest_logs(logs);                 // Vec<loctel_model::LogRecord>
 let page = store.search_logs(&LogFilter::default(), &PageRequest { limit: 50, cursor: None });
 let lines = store.logs_for_span(trace_id, span_id); // Vec<LogRecord>, oldest first
 let page = store.search_logs_keyed(&LogFilter::default(), &PageRequest { limit: 50, cursor: None }); // Page<(LogId, LogRecord)>
 let record = store.log(log_id);          // Option<LogRecord>
 let bars = store.log_histogram(&LogFilter::default(), since, until, 48); // Vec<HistogramBucket>
+let total = store.log_count(&LogFilter::default()); // Option<u64>: Some for an indexed filter
+let rows = store.logs_at(&LogFilter::default(), offset, 50); // Vec<(LogId, LogRecord)>, newest first from a position
 let around = store.logs_around(log_id, 3, 3); // Around { lines, target }
 let oldest = store.oldest_log_unix_nano(); // Option<u64>
 let map = store.service_map(TimeWindow { since_unix_nano }); // ServiceMap
 let services = store.services(TimeWindow { since_unix_nano }); // Vec<ServiceStats>
 let stats = store.stats();               // StoreStats
+store.set_disk_cap(bytes);               // applies at once: the oldest segment files go whole
+let on_disk = store.disk_bytes();        // what the segment files take, dead records included
+let cap = store.disk_cap_bytes();        // the cap now
 let oldest = store.oldest_start_unix_nano(); // Option<u64>, the earliest trace start held
 let now = store.now_unix_nano();         // the store's clock, for markers
 let removed = store.remove_trace(trace_id);               // Removed { spans, logs }
@@ -74,12 +205,54 @@ store.clear();
   | Field | Default | Meaning |
   |---|---|---|
   | `max_traces` | 200,000 | past this, the oldest trace is evicted whole |
-  | `max_log_records` | 5,000,000 | past this, the oldest log records are evicted |
+  | `max_log_records` | 5,000,000 | past this, the oldest log records are evicted; 20,000,000 in a store that has a run directory (see below) |
+  | `max_log_records_in_memory` | 5,000,000 | the log limit, in all, of a store that spills while it holds sealed logs it could not write (see below) |
   | `completeness_quiet` | 10 s | quiet time after which a trace is complete |
+  | `spill_dir` | `None` | where the segment files go; `None` keeps everything in memory |
+  | `spill_after` | 30 s | how long a complete trace stays in memory before it is spilled |
+  | `hot_max_spans` | 2,000,000 | spans of traces in memory before the oldest complete ones go early |
+  | `segment_max_bytes` | 64 MiB | a segment file is finished at this size and the next trace starts a new one |
+  | `disk_cap_bytes` | 4 GiB | the most the segment files may take: past it the oldest segment goes whole (see "The disk cap") |
+  | `spill_retry` | 60 s | how long the store waits after a failed write before it tries to write again (see "A failing disk") |
+  | `log_chunk_max` | 65,536 | logs the open chunk takes before it is sealed |
+  | `log_block_rows` | 1,024 | logs in a block of a chunk written to a segment: the unit `logs_at` reads (see "Blocks") |
+  | `log_chunk_age` | 10 s | how long the open chunk may stay open, from its first log, before it is sealed |
+
+  **The log limit of a store that spills.** 5,000,000 is the limit of a store in memory (what
+  `--no-spill` and a run directory that could not be made keep). The engine, once it has made
+  its run directory, calls `StoreConfig::with_spill_limits`, which raises `max_log_records` to
+  `StoreConfig::SPILLING_MAX_LOG_RECORDS`, 20,000,000, when it is still the default, so that the
+  app holds the 10M+ lines of design 9.2 and the disk cap, not the count, is what decides what
+  goes (five million bulk logs are 150 MB on disk). A limit set to anything else stays.
+  `max_traces` is not raised: a cold trace costs about 1.3 KB of memory (10M spans took 2.4 GB
+  resident), so the app keeps 200,000 traces, 2M spans of the budgets' shape. Why 20M, the
+  measurements and the memory it costs (about 150 MB per ten million logs): decision
+  [0053](../decisions/0053-the-app-keeps-twenty-million-logs.md).
+
+  The 20M is for logs in segments. A chunk whose write failed (a full disk) stays in
+  memory, where a log costs far more, so while a store that has a `spill_dir` holds any
+  such chunk, it keeps no more than `max_log_records_in_memory` (5,000,000, the limit of a
+  store in memory) logs in all, the oldest going first as always. The chunks stay in memory
+  after the disk comes back, so the lower limit holds until the last of them is evicted;
+  then the 20M applies again (`logs_that_cannot_be_written_are_held_up_to_the_memory_limit`
+  in `tests/disk_cap.rs`).
+
+  `StoreConfig::spilling_for_tests(dir)` (hidden from the docs) is the config
+  the tests spill with: `spill_after` 0, `segment_max_bytes` 4 KiB,
+  `hot_max_spans` 16, `log_chunk_max` 7 and `log_block_rows` 3 (so that every log test of the crate
+  runs over sealed chunks of several blocks) and `spill_retry` 0 (a failed write is tried again at
+  the next step), the rest the defaults.
 
 - `StoreStats`: `traces`, `spans` and `logs` are what the store holds now.
   `spans_received` and `logs_received` are lifetime totals of what it
-  accepted. See "Counting" below.
+  accepted. See "Counting" below. Since Milestone 5 it also says where the data
+  is: `spilled_traces` (the traces that are in segment files), `disk_bytes` (what
+  the files take, dead records included) and `spill_error` (why the last write to
+  a segment failed, until one works). It is no longer `Copy` (`spill_error` is a
+  `String`), and **`==` compares the five counters only**: the store's tests
+  compare a store in memory with one that spills, fed the same data, and they
+  must keep passing now that the second has files and the first has none. Compare
+  `spilled_traces`, `disk_bytes` and `spill_error` yourself when you mean them.
 
 ### `TraceSnapshot`
 
@@ -139,9 +312,10 @@ A trace is complete when `now - last_arrival >= completeness_quiet`, where
 `last_arrival` is the clock time at which its last new span was stored (design
 §4: "complete once no new span has arrived for it for 10 seconds").
 
-- It is computed on read from the store's clock. Nothing runs in the
-  background, and the span timestamps play no part: it is about when the
-  spans arrived, not when they happened.
+- It is computed on read from the store's clock. The span timestamps play no
+  part: it is about when the spans arrived, not when they happened. (A trace
+  that is spilled keeps the time its last span arrived in the index, so the
+  answer is the same for a trace in a segment file as for one in memory.)
 - A new span arriving for a complete trace makes it incomplete again.
 - If the clock steps backwards, the quiet time reads as 0 (not complete); it
   never underflows.
@@ -155,6 +329,9 @@ arrival** is removed, whole, never a few of its spans (design §5).
 
 - Order is by when the trace first appeared, not by recent activity or span
   timestamps. A busy old trace is still the first to go.
+- A trace in a segment file is evicted like any other: it leaves the index
+  without being read, and its record in the file is dead (see "Dead bytes"
+  below).
 - A batch is applied in full before eviction runs. Evicting in the middle of
   a batch would drop a trace and then resurrect a fragment of it from the
   batch's remaining spans.
@@ -315,12 +492,57 @@ Paging is keyset-based:
   circles; the MCP layer is free to reject such a cursor with a clear error
   before it gets here.
 
-Cost: the cheap conditions (`since`, `min_duration`, the cursor) use the trace
-start and duration that each entry keeps up to date, so they need no pass over
-the spans. The survivors are sorted, and the remaining work (service
-membership, the query, classification, the summary) is done newest first only
-until the page is full. The read lock is held for the call. M5 replaces this with an
-indexed segment store behind the same API.
+Cost: the search walks the trace index newest first, from the top or from the
+cursor, and stops at the first trace that starts before `since` and once the
+page is full and one more match has shown that there is a next page. It never
+sorts or copies the traces held. The cheap conditions (`since`, `min_duration`,
+`errors_only`, the cursor) are read from the index, for a trace in memory and one
+in a segment file alike; service membership of a trace in a segment file and its
+summary are too (see "Hot and cold traces"), and only a TraceQL query has to read
+the spans of a trace in a segment file, one trace at a time and only for traces
+the other conditions kept. The read lock is held for the call. See "Bounded work"
+for what a call makes.
+
+### Bounded work
+
+A search looks at many traces and returns few, so what it does for a trace it
+turns away is what it costs. Since Milestone 5, Task 5:
+
+- **A summary is made only for a trace that goes into the page.** A trace is
+  judged by the conditions above first, the cheap ones from the index, then
+  the service and the query, and only then summarized (for a trace in memory
+  that is a walk of its spans; for one in a segment file, a copy of the summary in
+  the index). The next page's "one more match" is found without making its
+  summary. So a page of `limit` makes `limit` summaries, however many traces were
+  turned away, and a search with `errors_only` over 50,000 traces of which 3
+  failed makes 3.
+- **The index knows whether a trace failed.** `errors_only` has to be answered
+  for every trace the walk meets, so `TraceMeta` holds the trace's status
+  (`Ok`, `ErrorsInside` or `Failed`), for a trace in memory as well as for one in
+  a segment file. A trace in memory keeps it up to date as spans come and go
+  (`TraceEntry` counts its erroring spans and tracks which parentless span is the
+  root, so asking costs nothing; a test holds it equal to `classify` over random
+  spans, removals included), and the index copies it after every change. Before,
+  a trace in memory was summarized to find out, and thrown away if it was fine.
+- **`Store::recent_failures(since_unix_nano, limit) -> RecentFailures`** is the
+  traces behind the MCP `recent_failures`: up to `limit` that failed and up to
+  `limit` with an error inside, each newest first, which is what two searches with
+  `errors_only` give once split by status. It is one pass over the index from the
+  newest trace, under one read of the store, that stops when both lists are full
+  and makes a summary only for the traces it puts in them. A trace that failed
+  after the `failed` list is full costs a lookup, and nothing else: with a
+  hundred thousand failed traces and no trace with an error inside (a service
+  that is down), it still makes `limit` summaries, not a hundred thousand.
+  `limit` 0 is two empty lists. It reads nothing from a segment file.
+- **`services` and `service_map`** do not sort or copy the traces held either:
+  they count the spans of the traces that reach into the window, one trace at a
+  time, and a trace that ended before the window is skipped from its index entry
+  (so a window of the last minute decodes the traces of the last minute, not all
+  of those in segment files).
+
+The hidden `Store::summaries_built()` counts the summaries reads have made (a
+search result or `summary`; the spill step writing a trace out is not a read), and
+is how the tests hold the above (`spill.rs` and the MCP `tools.rs`).
 
 ## Logs
 
@@ -388,14 +610,20 @@ first). Paging is a keyset, as for traces:
   the listing sooner.
 - A cursor the store did not produce yields an empty page with no cursor.
 
-Cost: the scan starts at the newest log older than `until` (and than the
+Cost: the walk starts at the newest log older than `until` (and than the
 cursor) and stops when the page is full or the logs are older than `since`, so a
-recent page costs about its size. A
-filter that matches rarely (`contains`, `service`, `trace_id`) scans every log
-that is newer than `since`. On the development container (one-off, release
-build, 1,000,000 logs held), a search that matches nothing took about 0.12 s,
-and ingest at the cap with eviction ran at roughly 600,000 logs/s. M5 replaces
-this with an indexed segment store behind the same API.
+recent page costs about its size: the open chunk, or one sealed chunk read from
+its segment, two when the page runs over a chunk's edge. A filter that matches
+rarely scans every log that is newer than `since`, but it passes over the chunks
+that cannot hold a match without reading them: one with no log of the `service`
+(or of the exact `service_name` of a LogQL selector), none at the `levels` or
+above the `min_severity`, or none of the `trace_id`. `contains`, `span_id` and the
+line filters of a LogQL query have no such shortcut, and read every chunk from
+`since` on: about 33 ms for each sealed chunk of 65,536 logs, the time to decode
+it (see "What it costs" under "Log chunks"). On the development container
+(one-off, release build, 10,000,000 logs held, 152 sealed chunks), the first
+page of `{service_name="payments-api"} |= "timeout=7"` took 0.8 ms, the
+service's logs being found in the newest chunk.
 
 ### `logs_for_span`
 
@@ -463,9 +691,13 @@ counts error and fatal. Rules:
   a log at exactly `since` is in bucket 0, one at exactly `until` is out, and
   a window that does not divide evenly still tiles: every log in it is counted
   once. The 48 buckets over 15 minutes of the mockup are 18.75 s wide.
-- Cost: a pass over the logs inside the window, each tested against the filter.
-  The Logs screen asks every 2 s. That is fine at the sizes M4 meets; M5's
-  segment store gets a real index for it.
+- Cost: for an **indexed** filter (see "`log_count` and `logs_at`") the bars
+  come from the counts kept per chunk and per second, and nothing is read when
+  each chunk lies inside the window and each of its seconds inside one bucket
+  (whole-second windows and buckets always do): see "Counts, positions and the
+  histogram from the metadata" under "Log chunks". For any other filter it is a
+  pass over the logs inside the window, each tested against the filter, reading
+  every chunk in it. The Logs screen asks every 2 s.
 
 **`Store::logs_around(LogId, before, after) -> Around`** is the "Show lines
 around" of the Logs screen. It ignores every filter (the lines in between are
@@ -481,18 +713,47 @@ Vec<(LogId, LogRecord)>, target: Option<usize> }`:
   empty. The Logs screen shows `This line is no longer held` when `target` is
   `None` (see Review Focus 5 of the M4 plan).
 
+### `log_count` and `logs_at`
+
+Added in Milestone 5 for the Logs screen at ten million lines (a scrollbar needs a
+total, and a row at a position, without walking to it).
+
+A filter is **indexed** when it sets only `since_unix_nano`, `until_unix_nano`,
+`levels` and `service` (`LogFilter::is_indexed()`): the conditions that the store
+keeps counts for. A `min_severity`, `contains`, `trace_id`, `span_id` or `query`
+makes a filter not indexed.
+
+- **`Store::log_count(&LogFilter) -> Option<u64>`**: how many held logs the
+  filter keeps, `Some` for an indexed filter and `None` for any other (a count
+  of those needs the logs; page through `search_logs` for them). The count is
+  exact, the same as the number of logs `search_logs` would list. It is worked out
+  from the metadata of the chunks and reads only the chunks that a window edge
+  cuts through, so with no window it reads nothing, and with one at most the two
+  chunks of its edges (more only if chunks overlap in time there).
+- **`Store::logs_at(&LogFilter, offset, limit) -> Vec<(LogId, LogRecord)>`**: up
+  to `limit` of the logs the filter keeps, from position `offset` of the list
+  newest first (the list `search_logs_keyed` pages through: position 0 is the
+  newest match). Fewer come at the end of the list and none past it; `limit` 0
+  gives none. For an indexed filter the position is found from the counts, and
+  only the chunk or chunks that hold the position and the rows are read (see
+  below). Any other filter is walked from the newest log with the filter applied
+  to every log and the first `offset` matches skipped: it costs the logs before
+  `offset` (and is slow past the first few thousand), and the Logs screen pages
+  those the old way.
+
+Both answer for the store as of the call, like every read: logs that arrive
+meanwhile are not in a result, and the position of a log moves down by one with
+each newer log that arrives.
+
 ### How logs are held
 
-A `BTreeMap` keyed by `LogId` (`(time, arrival number)`), a `HashSet` of the dedup keys
-of the held logs, and two indexes of those keys, each kept in time order: one
-per span (`logs_for_span`) and one per trace for every log that carries a trace
-ID, with or without a span ID (so a whole trace's logs can be removed without a
-pass over every log). Eviction takes the oldest log, which is at the front of
-both of its indexes; removal keeps them in step. The
-plan suggested a time-ordered `Vec` with an index of positions; positions go
-stale when a late log inserts in the middle, and evicting from the front of a
-`Vec` moves every record each time. The stable key avoids both. See
-[`decisions/0002-log-storage-structure.md`](../decisions/0002-log-storage-structure.md).
+Since Milestone 5, in chunks: see "Log chunks" below. (Before that, one
+`BTreeMap` keyed by `LogId`, with a `HashSet` of dedup keys and an index of the
+held logs of each span and of each trace; the open chunk is that still. The plan
+for Milestone 1 suggested a time-ordered `Vec` with an index of positions;
+positions go stale when a late log inserts in the middle, and evicting from the
+front of a `Vec` moves every record each time. The stable key avoids both, see
+[`decisions/0002-log-storage-structure.md`](../decisions/0002-log-storage-structure.md).)
 
 ## Query filters
 
@@ -682,10 +943,637 @@ listed with 0 requests. Dependencies are not services and are not listed. A
 service with no span in the window is not listed. It is computed from the same
 counts as the map (a test holds the two equal) but skips the dependency work.
 
+## Segment files
+
+Milestone 5 moves completed traces and sealed log chunks out of memory into
+temporary files, and keeps the disk use under a cap (design §5). The building
+blocks are two modules of this crate, `segment` and `run_dir`. Both are `pub`
+and hidden from the generated docs (`#[doc(hidden)]`) only so that tests can
+reach them; nothing outside the crate uses them, and `Store` is still the only
+entry point. **Status:** the modules and their tests exist, and `Store` spills
+traces and sealed chunks of logs through them (see "Hot and cold traces" and "Log
+chunks"), and the disk cap deletes the oldest of the files (see "The disk cap").
+The decision and its reasons are
+[`decisions/0044-segment-file-format.md`](../decisions/0044-segment-file-format.md).
+
+### The record
+
+A segment is an append-only file of records, with no header or footer:
+
+```text
+[u32 len][u32 crc32 of the compressed bytes][zstd(postcard(payload))]
+```
+
+Both numbers are little-endian, `len` is the length of the compressed bytes,
+and zstd runs at level 1. Record 0 starts at byte 0 and the next record starts
+where the last one ended, so the size of the file is the sum of its records
+(`Writer::bytes`, and what the disk cap counts). A `Location { seq, offset,
+len }` finds a record again: the segment's number, the byte its header starts
+at, and the length from its header (`Location::disk_bytes` adds the 8 header
+bytes). Files are `traces-{seq:06}.seg` and `logs-{seq:06}.seg`; a number is
+used once (`Writer::create` refuses an existing file).
+
+- `Writer::create(dir, kind, seq)`, `append(&payload) -> Location`, `bytes()`,
+  `seal()`. Each append is one write of a whole record, at the end of the file
+  (`pwrite`), so a `Reader` opened at any moment sees whole records. A write that
+  fails is taken back by cutting the file to the last good record, so the next
+  append lands where its `Location` says; if even that fails the writer refuses
+  more appends. Nothing is synced: segments do not outlive the run.
+- `Reader::open(path)` maps the file (`memmap2`) and learns what it holds from
+  its name. `read(location)` returns one payload; `iter()` walks the file in
+  order and gives `(Location, payload)`. Open a segment that is sealed: the map
+  covers the file as it was at `open`. An empty file opens and has no records.
+
+### A record of blocks
+
+A sealed chunk of logs is written as one record of **blocks** (Milestone 5, Task 6,
+[`decisions/0050-log-chunks-as-blocks.md`](../decisions/0050-log-chunks-as-blocks.md)):
+the same header, `[u32 len][u32 crc32 of the body]`, around a different body,
+
+```text
+[u32 n][u32 length of frame 0 .. n-1][zstd frame 0][zstd frame 1]...
+```
+
+where each frame is one block (an `encode_logs` blob of `log_block_rows` logs)
+compressed on its own. `Writer::append_blocks(&[Vec<u8>]) -> Location` writes it,
+`Reader::block_count(loc)`, `read_block(loc, index)` (one block, decompressed; the other
+frames are not touched) and `read_blocks(loc)` (all of them, in order) read it. The
+checksum is the record's, over the whole body, and every read of any block checks it. A
+body whose table does not fit it or whose lengths do not add up to it, an index past the
+last block, or a record that is not of blocks (its first bytes are not a table) is
+`Decode`; `read` and `iter` know only the one-frame record and say `Decode` for a record
+of blocks. Traces are still one frame.
+
+### Damage
+
+Every record is checked, and a record that fails is an error **value**, never a
+panic (Review Focus 2 of the M5 plan):
+
+| `SegmentError` | meaning | what `iter` does next |
+|---|---|---|
+| `Truncated` | the file ends inside the record's header or body (a crash mid-write), or a header promises more bytes than the file has | yields the error and stops: nothing can follow |
+| `Checksum` | the body does not match its CRC32 (or the stored CRC itself is wrong) | yields the error and goes on with the next record |
+| `Decode` | the checksum holds but the bytes are not zstd, not a blob, or `read` was given a `Location` whose length is not the record's | yields the error and goes on |
+
+The first problem a `Reader` meets is printed once on stderr
+(`loctel: <file>: the record at byte N: ...`), then only counted
+(`Reader::problems`). Callers skip the record: loading and search treat it as
+not there, and eviction still deletes the file whole.
+
+### Blobs
+
+`encode_trace(&[Span]) -> Vec<u8>` and `decode_trace(&[u8])`, and `encode_logs(&[LogRecordWithId])` and
+`decode_logs`, make the payloads: a postcard struct of a **table of resources**
+followed by the spans (or log records), each pointing at its resource by index.
+So a service's resource is written once per blob, not once per span; a 15-span
+checkout trace holds each of its services' resources once. Resources are the same
+when they are equal by value, not only when they are the same `Arc`, because the
+spans of a service arrive in many batches with a fresh `Arc` each. Decoding gives
+the spans of one resource a shared `Arc` again. Everything else round-trips
+equal, in the order given. A `LogRecordWithId` is a `LogRecord` with the `LogId`
+it is held under (time and arrival number, written out as they are, not worked
+out again). A blob that is cut short, or has bytes after it, is
+`SegmentError::Decode`.
+
+The shapes of the model types in postcard are the binary ones described in
+[`architecture.md`](../architecture.md) ("Domain model"): IDs are their raw
+bytes, and an attribute value is a tagged variant, so bytes and strings stay
+different things.
+
+### The run directory
+
+`RunDir::create(base)` makes `<base>/run-<pid>-<start_unix_secs>/`; the app will
+use `std::env::temp_dir()/loctel` as the base. It makes `base` when it is
+missing, with mode `0700` (the directories hold copies of traces and logs).
+Dropping the `RunDir` deletes the directory and everything in it.
+
+A run that is killed leaves its directory behind, so `create` first deletes
+every sibling directory named `run-<pid>-<anything>` whose pid is not a live
+process (`kill(pid, 0)`: success or `EPERM` means alive). It is careful:
+
+- only real directories with such a name go; a file, a symbolic link, another
+  name, a pid that is not a number, 0 or too big for a pid stays;
+- a directory that cannot be deleted is said on stderr and `create` goes on;
+- two `RunDir`s of one process in one second (tests) get different names, the
+  start time moving on by a second, and one run never deletes another's, since
+  they share a live pid.
+
+The known gaps are a pid that another process has taken over since (its
+directory stays until that process ends) and a program that is always the same
+pid, such as pid 1 in a container, which never finds its own old directory
+stale. Neither loses data; both leave a directory in the temp directory.
+
+Both modules are Unix only (`pwrite`, `kill`), like the rest of loctel (macOS and
+Linux). The macOS build compiles `zstd`'s C sources; `script/check-macos.sh` has
+no Apple SDK to do that with and compiles them with a stand-in
+(`script/stub-cc.sh`), see decision 0044.
+
+## Hot and cold traces
+
+With a `spill_dir` in the config (the app passes its run directory; tests and
+`--no-spill` runs leave it `None` and nothing below happens), a trace is in one
+of two places:
+
+- **hot**: its spans are in memory, in the store's map of hot traces. A trace is
+  hot while spans are still arriving, for `completeness_quiet` after the last
+  one, and for `spill_after` more.
+- **cold**: its spans are one record in a traces segment file (an encoded span
+  list, see "Blobs"), and only the index entry stays in memory.
+
+Nothing outside the crate can tell which a trace is, except that
+`Store::spilled_traces()` counts the cold ones. Every method gives the same
+answer for a cold trace as for the same trace hot (the test files run each body
+in both modes to hold that, see "Tests"); the rest of this section is how.
+
+### The trace index
+
+Every held trace, hot or cold, has an entry in the index
+(`src/trace_index.rs`, `TraceMeta`): its ID, the order it first arrived in, the
+earliest start, the latest end, the span count, `last_arrival` (the clock time
+its last new span arrived) and where it is (`Hot`, or `Cold` with the position of
+its record). Its **status** (did the request work) is there too, kept up to date for
+a trace in memory and fixed for a cold one. A cold trace's entry also holds the
+**summary it had when it left memory**: its services in the order of their first span
+(the service set), status, failed-in span, first exception and root. Nothing in a cold
+trace can change, since a new span brings it back to memory first, so that summary
+stays true.
+
+The index orders its entries three ways: by start (a `BTreeSet<(start, id)>`,
+walked backwards for "newest first" and for cursors), by first arrival (what
+eviction and `scan_traces` use) and, for the hot traces, by `last_arrival` (what
+the spill step uses). So these cost the traces they look at, not the traces held:
+
+| call | what it reads for a cold trace |
+|---|---|
+| `summary` | the index entry |
+| `search_traces` (time, service, errors only, duration, paging) | the index entry |
+| `recent_failures` | the index entries, newest first, and the summaries of the traces it returns |
+| `search_traces` with a TraceQL `query` | the index entry for every candidate, and the record for the ones the other conditions kept, newest first, until the page and one more match are found |
+| `oldest_start_unix_nano` | the index (the first key) |
+| `stats` | counters |
+| `trace`, `with_trace_spans` | the record (through the cache) |
+| `scan_traces` | the record, for every trace from `since` on (not cached) |
+| `service_map`, `services` | the record, for every trace that reaches into the window (not cached) |
+| `remove_trace`, eviction | the index entry only; the record is marked dead |
+| `remove_spans` | the record (through the cache), to see whether the trace has any of the spans |
+
+The two last "not cached" passes read every cold trace they touch, so the service
+map over a window that covers a lot of cold data decodes a lot of it, on every call
+(the window's refresh is every 2 s). That is the cost of keeping the cold
+traces' spans out of memory; a trace that ended before the window is never read.
+
+### The spill step
+
+A trace goes from hot to cold in the **spill step**. It runs at the end of every
+`ingest_spans` and `ingest_logs`, and ahead of every call about traces (`trace`,
+`summary`, `search_traces`, `with_trace_spans`, `scan_traces`, `service_map`,
+`services`, `oldest_start_unix_nano`, `remove_trace`, `remove_spans`) and of `stats`,
+so that a store that nobody writes to gives its memory back too. It runs at most once a second by the
+store's clock (every call in the test config, whose `spill_after` is 0: the interval
+is the smaller of a second and `spill_after`). The step takes the hot traces
+oldest first, by when their last span arrived, and spills one when
+
+- it has been quiet for `completeness_quiet + spill_after`, or
+- the hot traces hold more than `hot_max_spans` spans and it is complete (quiet for
+  `completeness_quiet`), without waiting for `spill_after`.
+
+It stops at the first trace that is neither, because the traces after it arrived
+later. A trace that is still being written is never spilled. Spilling encodes the
+trace, appends it to the open traces segment, and swaps its index entry to `Cold`
+with the summary computed from the spans. The work is done under the store's write
+lock, a trace at a time.
+
+If a write fails (the disk is full, the directory is gone) the trace stays hot, the
+step ends, and the store waits before it writes again and says why
+(`StoreStats::spill_error`, see "A failing disk"). The store never panics over it.
+Memory then grows with the data, up to `max_traces`, as it did before M5.
+
+### Rehydration
+
+A span for a cold trace, a slow service or a retried exporter, brings the trace back:
+
+1. The trace is read (through the cache) and, if it already has a span with that ID
+   (a retry), **nothing changes** and the trace stays cold.
+2. Otherwise it becomes hot again, with the first arrival and `last_arrival` it
+   had, and its old record is **dead**. Then the span is added as to any hot
+   trace, which moves `last_arrival` to now: the trace is **incomplete again**, and
+   will spill again when it goes quiet. `stats().spans` does not count the trace
+   twice (the spans were counted when they first came), and `spans_received` goes
+   up by the one new span.
+3. A cold trace that cannot be read (its record is damaged, see "Damage") is
+   forgotten: its spans leave the counts, and the new span starts a new, partial
+   trace, as for a trace that was evicted.
+
+`remove_spans` does the same, with one difference: it is not a new arrival, so the
+trace keeps its `last_arrival` (it stays complete and is spilled again by the
+next step) and a cold trace that has none of the spans is not brought back at all.
+
+### Dead bytes and segments
+
+A record cannot be taken out of its file. When its trace comes back to memory or is
+removed or evicted (or, for a chunk of logs, evicted whole or written again
+without logs a rule removed), the record is **dead**: still on disk, counted in the disk
+total (`Store::spill_disk_bytes`, hidden for now) and in `spill_dead_bytes`, until
+its whole segment is deleted. The disk cap deletes the oldest segment whole, which
+takes its traces and its log chunks with it (see "The disk cap"); a trace never
+straddles two segments.
+
+`src/segment_set.rs` keeps the books. One segment is open for writing for each kind of
+record; when an append makes it reach `segment_max_bytes` it is finished and the next
+append opens a new one. Segment numbers count up over all kinds and are never reused
+(not even after `clear`), so the order of the numbers is the order of the files'
+age. A segment is memory-mapped the first time one of its records is read, and
+mapped again when the file has grown past what the map covers (reading a record of
+the segment still being written). `clear` and dropping the last clone of the store
+delete the store's files.
+
+### The cache of decoded traces
+
+`trace`, `with_trace_spans` and the checks of `remove_spans` and of a late span
+decode a cold trace and keep the result in a cache of the last 64 decoded traces
+(and at most a million spans in all, so that a few huge traces cannot fill memory
+behind a small cache). It is keyed by the position of the record, so an entry can
+never be mistaken for a later version of its trace, and it forgets a trace's entry
+when its record dies. A search, `scan_traces` and the service map read through the
+cache without adding to it: they look at many traces once, and must not push out
+the trace the window has open.
+
+A hidden `Store::trace_decodes()` counts the traces decoded from a segment (a cache
+hit is not one), which is how the tests show a search stops early.
+
+## Log chunks
+
+The logs are a list of **chunks** (`src/log_chunks.rs`, the questions put to them
+in `src/logs.rs`), with or without a `spill_dir`:
+
+- The **open chunk** takes every new log, whatever its time. It is in memory, in
+  time order, as the logs were before Milestone 5 (a `BTreeMap` keyed by `LogId`,
+  the dedup keys, and an index of the held logs of each span and of each trace so
+  that removing a trace's logs is a lookup).
+- A **sealed chunk** is a closed open chunk: its logs sorted by `LogId` in one
+  immutable record, of a logs segment file when the store has them (a record of
+  **blocks**, see "Blocks" below: each block the format of "Blobs", a resource
+  table and then its logs) and in memory as they were when it has not, or when
+  the write failed. A sealed chunk keeps no index of spans or traces: it has the
+  metadata below, and its record is read when it is needed.
+
+Nothing outside the crate can tell which a log is in (the hidden
+`Store::log_chunks()` says how many chunks there are and how many are on disk, for
+tests), and every method of the store gives the same answer in both modes: the
+test config seals a chunk every 7 logs (`log_chunk_max`), so every log test of the
+crate runs over sealed chunks.
+
+### When a chunk seals
+
+- **At `log_chunk_max` logs** (65,536): the log that makes it full seals it, in the
+  same `ingest_logs` call (so a batch can seal several).
+- **At `log_chunk_age`** (10 s) on the store's clock since the chunk's **first**
+  log, so that a store nobody writes to still gives its last logs to the disk. It
+  is checked at the start of every `ingest_logs` (the batch then starts a chunk of
+  its own) and by the spill step, which runs ahead of reads at most once a second,
+  and runs with or without segment files; a chunk with no log in it never seals.
+
+Sealing happens under the write lock: build the metadata (already kept up to
+date), sort (already in order), encode, compress and append one record. A write
+that fails keeps the chunk in memory and sets the spill error (see "Hot and cold
+traces"); the chunk is not moved to disk later by the store yet.
+
+### Late logs: chunks overlap
+
+A late log (a slow exporter) goes to the open chunk, in its place in the open
+chunk's time order. So a chunk is not a range of time: the open chunk, and a
+sealed one that took late logs, can overlap the chunks next to them, and with a
+batch exporter that delays its logs by a few seconds every pair of neighbouring
+chunks overlaps a little. Everything that lists logs is therefore a **merge**:
+
+- `Cursor` (in `log_chunks.rs`) walks the chunks as one list, newest first or
+  oldest first, between two ids. It is a heap that has an entry per chunk that can
+  have a log in range, ordered by the next log the chunk would give; a sealed
+  chunk is **read only when its entry comes to the top**, so a page of the newest
+  logs reads one chunk (two at an edge) and the other chunks cost one entry each.
+  It lends each log until the next call (`next` returns a reference into the chunk,
+  not a copy), and the search clones only the logs it returns.
+- Search, `logs_around`, `log_histogram` for a filter that is not indexed,
+  `logs_at` and `scan_logs` use it. `Store::log` and `logs_for_span` look at the
+  chunks whose range or traces can hold the answer.
+- Paging is unchanged: the cursor is a `LogId`, and a page starts strictly below
+  it, wherever the logs below it are.
+
+### What is kept about a chunk
+
+Every chunk, the open one too, has a `ChunkMeta`, exact at every moment (inserts,
+eviction and removal update it, and a test compares it with a plain model after
+every operation of a random run):
+
+| Field | Meaning |
+|---|---|
+| `first`, `last` | the oldest and the newest `LogId` held: the chunk's range |
+| `count` | logs held |
+| `level_counts[7]` | logs at each level (`Severity` order, the bit order of `LevelSet`) |
+| `service_counts` | logs from each service (services are numbered in the order they are first seen: `ServiceIdx`) |
+| `cells` | logs per **second, service and level**, sorted, none of them 0 |
+| `traces` | the traces that have a log in a sealed chunk, sorted (a superset after trimming, never missing one) |
+
+The plan's per-second histogram has a count and an error count per second. The
+cells are that, with the service and the level kept in them: an indexed filter may
+name both, and counting a chunk exactly for "these levels from this service"
+needs the two together (`level_counts` and `service_counts` answer a filter that
+names only one of them, and let a chunk be passed over). A cell's second is the
+log's time in whole seconds, as a `u64`, so there is no range to overflow. A chunk
+holds about as many cells as it has seconds times services times levels in use
+(hundreds for a chunk of ten seconds; a chunk of logs spread over many hours of
+history has more).
+
+### Counts, positions and the histogram from the metadata
+
+For an **indexed** filter (see "`log_count` and `logs_at`") the three questions are
+answered from the metadata where the metadata is exact, and a chunk is read only
+where it is not. The answer is always what a pass over the logs gives.
+
+- **`log_count`.** A chunk that lies wholly inside the window (`first` at or above
+  `since`, `last` below `until`) counts as `count_matching`: `count` with no
+  condition, the sum of `level_counts` for the levels, `service_counts` for the
+  service, and the cells for both. A chunk the window does not touch counts 0, and
+  one that a window edge cuts through is read and its logs in the window counted.
+- **`logs_at`** works on **units** (see "Blocks") and reads a block or two, not a
+  chunk: units whose id ranges overlap are one group, every log of a group is newer
+  than every log of the groups after it, so the groups are counted from the newest
+  (each unit from its metadata: `count_matching`) until the one the position is in;
+  only its units are read, and the rows are the ones from the position on. A unit a
+  window edge cuts through is read to be counted. Decision 0050 has the algorithm
+  and why the binary search over chunk bounds of Task 3 (three to eight chunk reads
+  at ten million logs, 211 ms at p95) is gone.
+- **`log_histogram`.** A chunk inside the window and inside **one bucket** (its
+  first and last log fall in the same) adds its whole counts to that bucket. A chunk
+  inside the window that spans buckets adds its **cells** if each cell (a second of a
+  service at a level) can only fall in one bucket, which is true when no bucket edge
+  falls inside a second that has logs. A chunk at the edge of the window, or with a
+  bucket edge inside one of its seconds, is read and its logs put in their buckets
+  one by one. So the bars are exactly a scan's, and nothing is read when the window,
+  the bucket width and the chunks' seconds line up: **a window and a bucket count
+  that make every bucket a whole number of seconds, starting on a whole second, are
+  answered from the metadata alone**, and any other window reads each chunk that has
+  a bucket edge inside it (up to one per bucket, 47 for the usual 48, though the
+  cache only holds eight). The Logs screen should snap its window to whole seconds.
+
+A filter that is not indexed gets none of this: search and `logs_at` walk and test
+every log (skipping the chunks the metadata rules out), `log_count` is `None` and
+the histogram reads every chunk in the window.
+
+### Blocks
+
+A chunk written to a segment is a record of blocks of `log_block_rows` logs (1,024),
+each compressed on its own ("A record of blocks"), and the chunk keeps in memory what
+it knows of each: the first and the last id, and the logs per service and level
+(`BlockMeta`, about 3 MB for ten million logs). A **unit** is a block of such a chunk,
+or any other chunk whole: the open chunk, one in memory (no segment files, or the write
+failed) and one that lost its oldest logs by eviction (its first block is no longer the
+one that was written, so the chunk drops its blocks and is read as one run, as before). A
+chunk that is rewritten after a removal gets blocks again.
+
+Units are what `logs_at` counts and reads. Whole chunks are still what everything else
+reads (`decoded()`, which reads the blocks one after the other): search, `log_count` at a
+window edge, the histogram, `Store::log`, `logs_around`, removal, eviction. The hidden
+`Store::log_chunks()` says how many blocks the chunks on disk have (`blocks`) and how
+many single blocks have been decoded (`block_decodes`), which is how the tests show
+how little a position reads.
+
+### Eviction
+
+`max_log_records` still means exactly that: past it, the oldest logs by `LogId`
+go, after the whole batch is in. The oldest log is the first of one chunk, found by
+looking at the `first` of each; a run of the oldest chunk's logs older than the
+next chunk's first goes together.
+
+- In the **open chunk** the logs are popped as before.
+- A **sealed chunk** that loses only some of its logs is **trimmed from the front**:
+  its record is not written again; its first `skip` logs are counted out of the
+  metadata (the chunk is read, once, to know their levels and services; it is in the
+  cache from then on) and `first` moves. It is a few hundred nanoseconds a log
+  evicted, not a rewrite of 65,536.
+- A chunk that loses all its logs is dropped, its record dead (counted in the disk
+  total until its segment goes, see "Dead bytes and segments"). One that cannot be
+  read is dropped whole as soon as it is the oldest, whatever it counted.
+
+The dedup keys of evicted logs are forgotten (recomputed from the logs, which is
+why eviction reads the chunk), so a retry that arrives after its original was
+evicted is taken as new, as before.
+
+### Removal
+
+`remove_trace` and `remove_spans` take the logs out of the open chunk by its
+indexes as before, and out of each sealed chunk whose `traces` list has the trace:
+the chunk is read, its logs that match are removed (their dedup keys forgotten),
+the metadata is built again from the rest, and the rest is **written as a new
+record** (the old one dead), or the chunk dropped if nothing is left. That costs
+the size of the chunk, per chunk that holds a log of the trace; the discard rules
+remove what has just arrived, which is in the open chunk. `logs_for_span` and the
+removals find a trace's logs in a sealed chunk only through that chunk's `traces`
+list, which is why a sealed chunk keeps it.
+
+### The cache of decoded chunks
+
+A sealed chunk's logs are decoded once and kept in a cache of the last **8** chunks
+(`CHUNK_CACHE`, the least recently used goes first), keyed by the position of the
+record. Counts, `logs_at`, search, `Store::log`, `logs_around`, `logs_for_span`,
+the histogram and the eviction read through it and add to it; `scan_logs` (the
+rules' preview, which reads every chunk once) and the removals read through it and
+do not add. A chunk that is in memory (no
+segment files, or a failed write) is never decoded and never in the cache. The
+hidden `Store::log_chunks()` has the number cached and the number of decodes, which
+is how the tests show how few chunks a call reads.
+
+`logs_at` reads single blocks through a cache of its own, the last **32** decoded blocks
+(`BLOCK_CACHE`), keyed by the record and the number of the block: a screenful of rows
+is one block or two, and scrolling stays in them. It is not the cache above and not in
+its `cached`, and a removal or an eviction that makes a record dead takes its blocks
+out of it.
+
+### Damage and failed writes
+
+A record that cannot be read (checksum, truncated, undecodable) leaves its chunk
+**in the list**: reads skip it (the first problem of a segment is said on stderr,
+once, as for traces), and its logs are still in `stats().logs` and in the counts
+until the chunk is evicted, which drops it whole as the oldest. Nothing panics. A
+write that fails (the disk is full, the directory is gone) leaves the chunk in
+memory and the error in `spill_error`, and ingest goes on; a later seal that
+works clears it. Such a chunk **stays in memory** for good, even when the disk
+works again (the logs are bounded by `max_log_records`, and the chunks sealed from
+then on go to disk): see "A failing disk" for what waits and for how long.
+
+### What it costs
+
+One-off figures from the development container (4 vCPU, release build, **not a
+gate**; the budgets are measured by `cargo xtask perf`, see `docs/areas/testing.md`
+"Performance budgets"): 10,000,000 logs of 8
+services, 70-byte bodies, a trace and a span ID on each, in 152 sealed chunks and
+38,528 open, ingested in batches of 1,000 with segment files on:
+
+| | |
+|---|---|
+| ingest | 530,000 logs/s on one thread; resident memory 230 MB afterwards |
+| sealed chunks | 186 MB on disk (the bodies are repetitive); one chunk is read in about 33 ms: 6 ms of zstd, 20 ms of postcard and 12 ms making the logs |
+| `log_count`, levels and a service, no window | 0.17 ms |
+| `log_count` with a window cutting through two chunks | 73 ms (two reads) |
+| `logs_at`, 50 rows at a random position | p50 32 ms, p95 about 40 ms: one chunk read; 2 ms when it is in the cache (this was before Task 6: the budget run had it at 165 ms and 211 ms, three to eight chunk reads, and blocks made it 2.8 ms and 4.9 ms, see "Blocks") |
+| `log_histogram`, 48 buckets of whole seconds | 0.24 ms |
+| `log_histogram`, 48 buckets with edges inside seconds | 1.7 s (every chunk with an edge in it is read) |
+| the first page of a LogQL query for one service | 0.8 ms |
+
+What a chunk costs to read is most of every slow row. Task 6 made `logs_at` read a
+block (about 1,000 logs, 0.5 ms) and not a chunk, which is what its budget needed
+(decision 0050); the window of the Logs screen should snap to whole seconds for the
+histogram.
+
+## The disk cap
+
+The files of a store that spills take at most `disk_cap_bytes` (4 GiB by default,
+the `Settings::disk_cap_bytes` of the app, changed while loctel runs with
+`Store::set_disk_cap`). **Disk bytes** are the sizes of the segment files, so they
+include the dead records (see "Dead bytes and segments"): a record is not
+taken out of its file, the file goes whole.
+
+After every call that can write (`ingest_spans`, `ingest_logs`, `remove_trace`,
+`remove_spans`, and the spill step that runs ahead of the reads) and at once when
+`set_disk_cap` is called, the store compares the disk bytes with the cap. Over it,
+it deletes **the oldest segment file** (the lowest number: numbers count up over
+traces and logs, so the order is the order of the files' birth), then the next
+oldest, until the files take no more than the cap. Deleting a segment forgets what
+was in it, whole:
+
+- every **cold trace** whose record is in the file leaves the index, as if it had
+  been evicted (`traces` and `spans` go down by what it held, a late span for it
+  starts a new trace, `spans_received` does not change). A trace is one record in
+  one file, so a trace is there whole or not at all;
+- every **sealed chunk of logs** whose record is in the file is dropped. Each is
+  read first to forget the dedup keys of its logs, as eviction by count does, so a
+  retry of a log that went is taken as new. That costs a read and decode of every
+  chunk in the file (about 30 ms a chunk, in the development container: a 64 MiB
+  segment is tens of chunks), under the store's write lock, once per file
+  deleted: the cap only costs this when the disk is full of data, once per 64 MiB
+  written. Chunks that are in memory (a failed write) are in no file and stay;
+- the file is deleted, with its map, and its writer if it was the one being
+  written (the next write starts a file).
+
+Nothing is deleted that the cap does not require, nothing out of order (a file with
+nothing but dead records is not deleted early), and nothing is left over: the
+disk bytes, the files and `StoreStats` agree after the call (`disk_cap.rs`
+checks all three after every cap it sets). A cap too small to hold one record
+keeps nothing on disk: whatever is written goes at the end of the call. A store
+with no `spill_dir` has no files and `set_disk_cap` only remembers the number.
+
+Deleting needs no new space, so the cap works on a full volume, which is how space
+comes back.
+
+## A failing disk
+
+A write to a segment can fail: the volume is full (`ENOSPC`), the directory is gone
+(someone cleaned the temporary directory), the disk fails. Review Focus 4 of the
+plan: the store stops spilling, keeps ingesting in memory, says so, and tries
+again later; it never panics. Concretely:
+
+- The failed write leaves a trace **hot** (it is tried again, not lost) and a
+  sealed chunk of logs **in memory**.
+- The reason becomes `StoreStats::spill_error` (`"No space left on device (os error
+  28)"` for a full volume), and is printed on stderr once, not once per failed write.
+- **Writes are suspended** for `spill_retry` (60 s): every append fails at once,
+  without trying the disk, with the same reason, so a store with a full disk does not
+  spend its time on writes that fail (a seal of 65,536 logs would be encoded and
+  refused every time). The first call after the minute resumes writes: the step
+  tries the oldest hot trace that is ready, a seal tries its chunk. A write that
+  fails again suspends them for another minute.
+- What cannot be written stays in memory, **up to the limits that always applied**:
+  `max_traces` evicts the oldest trace whole, `max_log_records` the oldest logs. It
+  does not grow without bound, and ingest, search and every read go on working.
+- A write that works clears the error (a trace spilled, or a chunk written), and
+  from then on every complete trace spills again. The chunks of logs whose
+  write failed stay in memory until they are evicted: they are not written
+  later, which is a bounded cost (`max_log_records`) that keeps the store simple.
+- **The error is cleared by a write**, not by a probe: a store with nothing to write
+  keeps the error until it has. `clear` forgets it (everything is gone, and the files
+  with it).
+- Deleting still works, so the disk cap goes on, and lowering it is a way to make room
+  (but the files of the run are all the store can free: the operator frees the rest).
+
+The hidden hooks `Store::inject_write_failure(bool)` (every write fails as a full
+volume's does) and `Store::failed_write_attempts()` (how many writes tried the disk
+and failed) are how `disk_cap.rs` tests this without a full volume.
+
 ## Tests
 
 `crates/loctel-store/tests/`:
 
+- `modes.rs`: the both-modes harness. `each_mode(|store, clock| { ... })` runs a
+  body on a default store in memory and then on one that spills
+  (`StoreConfig::spilling_for_tests`), each on its own manual clock;
+  `each_mode_with(config, ...)` does it with the limits of a config. Every test
+  file of this crate that builds a store runs its bodies through one of them
+  (`fixtures::store_with_manual_clock` and `store_with_config` stay for the tests that
+  want one store of their own), so the public API is held equal in both modes.
+  The spilling store only spills what the plan says it may, a *complete* trace, so a
+  body that never moves the clock past the quiet period never leaves memory in
+  either mode: the cold paths are pinned by `spill.rs`, and by the bodies that
+  advance the clock (the completeness tests, the service-map tests). **Logs are
+  different**: `spilling_for_tests` seals a chunk of logs every 7 logs, so the log
+  tests meet sealed chunks, chunks that overlap and trimmed chunks in every run.
+  A file declares `mod fixtures; mod modes;` (`modes.rs` has its own clock start,
+  which `spill.rs` checks against `fixtures::CLOCK_START`).
+- `spill.rs`: Milestone 5, Task 2. The settings and `spilling_for_tests`; what
+  spills and when (`complete_trace_spills_and_reads_back_equal`, the hot-span
+  budget, segments rolling, `clear` and drop deleting the files, reads of a
+  segment that is still growing); `late_span_rehydrates_cold_trace` and its
+  neighbours (a retry changes nothing, a late span that starts earlier moves the
+  trace in the order); `search_order_and_cursor_identical_across_modes` over 60
+  traces, hot and cold; `traceql_search_decodes_newest_first_and_stops_at_page`
+  (the decode hook); `service_map_identical_across_modes`;
+  `remove_trace_on_cold_trace`, `remove_spans_on_cold_trace_keeps_it_complete`
+  and eviction of a cold trace; a damaged record (skipped, never a panic); a write
+  that fails (the trace stays hot, and the next step retries); and readers and a
+  writer on one spilling store. Most compare a store in memory
+  with one that spills, fed the same data on the same clock. Task 5 adds the
+  bounded-work tests, with the `summaries_built` hook:
+  `search_first_page_builds_at_most_limit_plus_one` (every kind of filter, in both
+  modes), `a_search_builds_a_summary_only_for_what_it_returns`,
+  `recent_failures_one_pass_equals_a_full_search` (the same lists as a full search
+  split by status, for many limits and `since`s, hot and cold),
+  `recent_failures_builds_nothing_for_a_list_that_is_full` and
+  `services_reads_only_the_traces_that_reach_the_window` (the decode hook). The
+  status a trace keeps in the index is held equal to `classify` by unit tests in
+  `src/trace.rs`.
+- `logs_scale.rs`: Milestone 5, Task 3. When a chunk seals (`chunk_seals_at_count_and_time`:
+  65,536 logs or ten seconds, not a nanosecond early); late logs and chunks that overlap
+  (`late_log_lands_in_time_order_across_chunks`, and 20,000 logs three seconds out of
+  order); `log_count_indexed_matches_scan` (200 random filters over 200,000 logs, against
+  a count made from the logs themselves) and how few chunks it reads;
+  `log_count_none_for_body_filter`; `logs_at_matches_paged_search` (offsets at the edges of
+  chunks, with and without a filter, against a keyed walk), at most two chunks read when
+  chunks do not overlap, and filters that are not indexed; `histogram_from_meta_equals_scan`
+  (the same bars as a scan and as an oracle, nothing decoded for whole-second buckets, odd
+  windows exact too); `chunk_cache_bounded`; eviction trimming chunks, removal rewriting
+  them, retries of sealed logs; `clear`; chunks skipped by service and trace; `scan_logs`
+  order; a damaged chunk and a failed write; readers and a writer; and
+  `random_operations_agree_with_a_plain_model`, which runs a hundred random ingests (late
+  logs, retries, trace context), removals and clock steps against a plain list and compares
+  every read of the store with it after each one, for chunk sizes from 3 to 500, with and
+  without segment files.
+  Task 6 added the tests of the blocks (the end of the file): the block size as a config
+  field, a chunk on disk being a run of blocks and one in memory not,
+  `logs_at_reads_a_few_blocks_and_no_chunk_even_when_chunks_overlap` (the counters
+  `decodes` and `block_decodes`, with and without a filter), the two ends and past the end,
+  a window that reads only the blocks its edges cut, a block read twice decoded once, a
+  chunk that was trimmed by eviction and one that was rewritten by a removal, and
+  `logs_at` against the walk for random indexed filters at three block sizes.
+  `tests/segment.rs` has the records of blocks (each block alone, damage and cut-off
+  records, none and empty blocks).
+- `disk_cap.rs`: Milestone 5, Task 4. `cap_evicts_oldest_segments_whole` (the files that
+  go are the oldest, the newest traces stay whole, it stops as soon as it is under the cap),
+  `the_cap_holds_while_data_arrives`, `log_segments_go_with_their_chunks` (and the
+  dedup keys with them), `lowering_cap_evicts_now_and_keeps_stats_consistent` (traces and
+  logs mixed, caps down to one byte, every counter and the files agree, then it works
+  again), a cap smaller than a record, a store in memory;
+  `spill_write_failure_keeps_ingesting_and_reports` (a volume that fills up: nothing
+  panics, memory is held to its limits, one attempt a minute, the error clears when a write
+  works) and the cap on a failing disk.
 - `fixtures.rs`: `span(...)`, `error(span)`, `with_kind`, `with_attr`,
   `with_exception`, `log(...)`, `with_severity`, `in_span`, `in_trace`,
   `tid(n)`, `sid(n)` and the `store_with_manual_clock()` builders every store
@@ -719,6 +1607,13 @@ counts as the map (a test holds the two equal) but skips the dependency work.
   (whole batches, late old logs, a zero cap, retries after eviction) and
   counting and clearing. `duplicate_log_is_ignored` (exporter retries) is the
   review-focus test this file owns for logs.
+- `segment.rs`: the segment files and the run directory (Milestone 5, Task 1):
+  appending and reading back, the file names, the trace and log blobs (each
+  service's resource written once, by value), a flipped bit
+  (`checksum_mismatch_is_reported`), a record that is not zstd, a file cut off
+  at every kind of place (`truncated_record_is_skipped` is the review-focus
+  test for a crash mid-write), an empty file, and the run directory deleting its
+  stale siblings (and only those) and itself.
 - `service_map.rs`: the plan's Task 5 map tests (`unknown_service_appears_in_map`
   is the review-focus test for a missing `service.name`), plus each rule's
   corners: error counting, messaging skip, consumer-only queues, external

@@ -2,14 +2,14 @@
 
 use std::sync::Arc;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-use crate::attr::{Attributes, serialize_attributes, str_attr};
+use crate::attr::{Attributes, deserialize_attributes, serialize_attributes, str_attr};
 use crate::exception::ExceptionInfo;
 use crate::ids::{SpanId, TraceId};
 use crate::resource::Resource;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SpanKind {
     Unspecified,
@@ -20,7 +20,7 @@ pub enum SpanKind {
     Consumer,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StatusCode {
     Unset,
@@ -29,16 +29,19 @@ pub enum StatusCode {
 }
 
 /// A timestamped event on a span, for example an `exception`.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SpanEvent {
     pub time_unix_nano: u64,
     pub name: String,
-    #[serde(serialize_with = "serialize_attributes")]
+    #[serde(
+        serialize_with = "serialize_attributes",
+        deserialize_with = "deserialize_attributes"
+    )]
     pub attributes: Attributes,
 }
 
 /// One unit of work in a trace.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Span {
     pub trace_id: TraceId,
     pub span_id: SpanId,
@@ -49,7 +52,10 @@ pub struct Span {
     pub end_unix_nano: u64,
     pub status: StatusCode,
     pub status_message: String,
-    #[serde(serialize_with = "serialize_attributes")]
+    #[serde(
+        serialize_with = "serialize_attributes",
+        deserialize_with = "deserialize_attributes"
+    )]
     pub attributes: Attributes,
     pub events: Vec<SpanEvent>,
     pub resource: Arc<Resource>,

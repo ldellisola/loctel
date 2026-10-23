@@ -73,6 +73,14 @@ pub const LOADING: &str = "Loading trace\u{2026}";
 pub const MISSING: &str = "This trace is not in the store";
 /// And why that can be.
 pub const MISSING_HINT: &str = "It may have been evicted or cleared.";
+/// What it says when the trace it shows was held and the store dropped it: the
+/// disk cap deleted the segment file it was in (Milestone 5), the trace limit
+/// evicted it, or the store was cleared. The header's `Back` button is still
+/// there.
+pub const NO_LONGER_HELD: &str = "This trace is no longer held";
+/// And what can have dropped it. The screen cannot tell which, so it names
+/// them all rather than blame one.
+pub const NO_LONGER_HELD_HINT: &str = "The disk cap, the trace limit or Clear all removed it.";
 
 fn rgba(color: Rgba, alpha: f32) -> Rgba {
     Rgba { a: alpha, ..color }
@@ -268,6 +276,18 @@ impl TraceView {
         self.bounds_of(part, cx).map(|bounds| bounds.center())
     }
 
+    /// What the screen says in place of the trace while it has none to show:
+    /// [`LOADING`], [`MISSING`] (never found) or [`NO_LONGER_HELD`] (it was shown
+    /// and the store dropped it); `None` while the trace is on the screen.
+    pub fn notice(&self, cx: &gpui::App) -> Option<&'static str> {
+        match self.model.read(cx).state() {
+            LoadState::Loaded => None,
+            LoadState::Loading => Some(LOADING),
+            LoadState::Missing => Some(MISSING),
+            LoadState::Evicted => Some(NO_LONGER_HELD),
+        }
+    }
+
     /// Whether the `Esc` key (with the find box in the state it is in) goes
     /// back; `false` when it first empties the find box.
     fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -320,6 +340,9 @@ impl Render for TraceView {
             LoadState::Loaded => self.body(&theme).into_any_element(),
             LoadState::Loading => centered(&theme, LOADING, None).into_any_element(),
             LoadState::Missing => centered(&theme, MISSING, Some(MISSING_HINT)).into_any_element(),
+            LoadState::Evicted => {
+                centered(&theme, NO_LONGER_HELD, Some(NO_LONGER_HELD_HINT)).into_any_element()
+            }
         };
 
         div()
@@ -378,9 +401,14 @@ impl TraceView {
             .when(!arrived, |name| name.text_color(theme.text_tertiary))
             .child(name);
 
-        let badge = header.and_then(|header| badge(theme, &header.failure));
+        // A trace that is gone is not `Receiving spans…`, and its failure is no
+        // news: the header keeps its name and numbers, and the back button.
+        let gone = state == LoadState::Evicted;
+        let badge = header
+            .filter(|_| !gone)
+            .and_then(|header| badge(theme, &header.failure));
 
-        let indicator = header.map(|header| {
+        let indicator = header.filter(|_| !gone).map(|header| {
             let (color, text) = if header.complete {
                 (theme.ok, header.completeness())
             } else {

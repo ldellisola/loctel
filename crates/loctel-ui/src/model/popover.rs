@@ -6,12 +6,17 @@
 //! The words come from [`menu_text`] where it already has them (the rates, the
 //! rules line), so the popover, the status view and the Mac menu bar never
 //! disagree about the same state.
+//!
+//! The fourth stat is the disk (Milestone 5): what the segment files take, over
+//! `on disk, cap 4 GB`, or `Disk full` while the engine cannot write to disk.
+//! That is the tile's say alone: the pill is only about the ports.
 
 use loctel_engine::EngineStatus;
 
 use crate::StatusModel;
 use crate::menu_text::{format_rate, rules_line};
 
+use super::format;
 use super::trace_table::thousands;
 
 /// How a pill is coloured: green, amber or red.
@@ -30,22 +35,34 @@ pub struct Pill {
     pub tone: Tone,
 }
 
-/// The labels of the four stats, in the order they are drawn (2 by 2).
-pub const STAT_LABELS: [&str; 4] = [
-    "spans per second",
-    "log lines per second",
-    "traces held",
-    "log lines held",
-];
+/// The labels of the first three stats, in the order they are drawn (2 by 2).
+/// The fourth, the disk, has a label of its own ([`disk_label`]) because it
+/// says the cap.
+pub const STAT_LABELS: [&str; 3] = ["spans per second", "log lines per second", "traces held"];
+
+/// What the disk tile says instead of the size while the engine cannot write to
+/// disk (`EngineStatus::spill_error` is set).
+pub const DISK_FULL: &str = "Disk full";
+
+/// The label of the disk tile: `on disk, cap 4 GB`, with the cap in force.
+pub fn disk_label(cap_bytes: u64) -> String {
+    format!("on disk, cap {}", format::bytes(cap_bytes))
+}
 
 /// Everything the popover draws.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Popover {
     pub pill: Pill,
     /// `(value, label)` for spans per second, log lines per second, traces
-    /// held and log lines held. The rates are [`format_rate`]'s (`412`, `1.2k`),
-    /// the counts have a thousands separator (`1,200,000`). Disk use is M5.
-    pub stats: [(String, &'static str); 4],
+    /// held and the disk. The rates are [`format_rate`]'s (`412`, `1.2k`), the
+    /// count has a thousands separator (`1,204`), and the disk is the size the
+    /// segment files take over `on disk, cap 4 GB` (`1.3 GB`; [`format::bytes`]
+    /// and [`disk_label`]), or [`DISK_FULL`] over the same label while
+    /// [`disk_full`](Self::disk_full).
+    pub stats: [(String, String); 4],
+    /// The engine cannot write to disk (`EngineStatus::spill_error` is set): the
+    /// view draws the disk tile's value in the error colour.
+    pub disk_full: bool,
     /// The three endpoints in the engine's order, as `(name, address, ok)`:
     /// `OTLP gRPC` and `OTLP HTTP` with their `host:port`, and `MCP` with the URL
     /// an agent connects to (`http://127.0.0.1:4319/mcp`, what its `Copy` button
@@ -65,7 +82,8 @@ pub struct Popover {
 ///
 /// The pill is the first of these that applies, as in the status line: a
 /// failed listener (`Port problem`, red: nothing is received on that port),
-/// then paused (`Paused`, amber), then `Receiving` (green).
+/// then paused (`Paused`, amber), then `Receiving` (green). A disk that cannot
+/// be written to is not a port problem: the disk tile says it.
 pub fn from_status(status: &EngineStatus, login: Option<bool>) -> Popover {
     let model = StatusModel::from_status(status);
     let pill = if model.listeners.iter().any(|listener| !listener.ok) {
@@ -98,14 +116,21 @@ pub fn from_status(status: &EngineStatus, login: Option<bool>) -> Popover {
             Some((name, address, listener.ok))
         })
         .collect();
+    let disk_full = status.spill_error.is_some();
+    let disk_value = if disk_full {
+        DISK_FULL.to_owned()
+    } else {
+        format::bytes(status.disk_bytes)
+    };
     Popover {
         pill,
         stats: [
-            (format_rate(model.spans_per_sec), STAT_LABELS[0]),
-            (format_rate(model.logs_per_sec), STAT_LABELS[1]),
-            (thousands(model.traces_held), STAT_LABELS[2]),
-            (thousands(model.logs_held), STAT_LABELS[3]),
+            (format_rate(model.spans_per_sec), STAT_LABELS[0].to_owned()),
+            (format_rate(model.logs_per_sec), STAT_LABELS[1].to_owned()),
+            (thousands(model.traces_held), STAT_LABELS[2].to_owned()),
+            (disk_value, disk_label(status.disk_cap_bytes)),
         ],
+        disk_full,
         endpoints,
         rules_line: rules_line(&model),
         paused: model.paused,

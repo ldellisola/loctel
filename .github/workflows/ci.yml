@@ -1,7 +1,8 @@
 name: ci
 
-# The Linux quality gate. Runs on every PR and on main. The macOS runner is
-# never used here (see release.yml, main only).
+# The Linux quality gate and the performance budgets, as two jobs that run side
+# by side. Runs on every PR and on main. The macOS runner is never used here
+# (see release.yml, main only).
 on:
   pull_request:
   push:
@@ -37,4 +38,26 @@ jobs:
         with:
           name: screenshot-diffs
           path: target/screenshot-diffs/**
+          if-no-files-found: ignore
+
+  # The performance budgets of design 10.3 (docs/areas/testing.md, "Performance
+  # budgets"): a release build, ten million logs and spans, 20 seconds of ingest,
+  # the startup and the first frame. A missed budget fails the job and its table
+  # is in the log; the same table as JSON is the `perf` artifact, kept even when
+  # the job fails.
+  perf:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Linux build and screenshot dependencies
+        run: bash script/setup-linux.sh
+      - uses: Swatinem/rust-cache@v2
+      - name: Measure the performance budgets
+        run: cargo xtask perf --json perf.json
+      - name: Upload the performance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf
+          path: perf.json
           if-no-files-found: ignore

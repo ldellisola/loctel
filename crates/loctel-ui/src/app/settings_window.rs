@@ -1,5 +1,5 @@
 //! The Settings window's lifecycle (M4 plan, Task 6): [`open_settings_window`]
-//! opens it, 520 by 360 and not resizable, or focuses the one that is already
+//! opens it, 520 by 480 and not resizable, or focuses the one that is already
 //! open. What it shows is [`SettingsView`](crate::views::SettingsView).
 
 use std::rc::Rc;
@@ -13,8 +13,11 @@ use gpui_kit::base::Root;
 use super::backend::UiBackend;
 use crate::views::{SETTINGS_TITLE, SettingsView};
 
-/// The window's size, in logical pixels.
-pub const SETTINGS_SIZE: (f32, f32) = (520.0, 360.0);
+/// The window's size, in logical pixels. It is as tall as the form needs with a
+/// message under every field and a login item, the worst case
+/// (`everything_fits_the_window_with_every_message_showing`); it was 360 until
+/// the `Storage` section of Milestone 5 (decision 0052).
+pub const SETTINGS_SIZE: (f32, f32) = (520.0, 480.0);
 
 /// The Settings window, from when it is opened until it is closed. It is a
 /// GPUI global so that every way into Settings (the main window's ⌘, and the
@@ -26,7 +29,7 @@ struct SettingsWindowState {
 
 impl Global for SettingsWindowState {}
 
-/// Opens the Settings window on `cx`: 520 by 360, centred, not resizable and
+/// Opens the Settings window on `cx`: 520 by 480, centred, not resizable and
 /// titled `Settings`, with the form of [`SettingsView`] over `backend` in GPUI
 /// Kit's `Root`. The view takes the theme from the window's appearance, as the
 /// main window does.
@@ -81,8 +84,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_window_is_520_by_360_titled_settings_and_cannot_be_resized() {
-        let bounds = Bounds::new(point(px(10.0), px(20.0)), size(px(520.0), px(360.0)));
+    fn the_window_is_520_by_480_titled_settings_and_cannot_be_resized() {
+        let bounds = Bounds::new(point(px(10.0), px(20.0)), size(px(520.0), px(480.0)));
         let options = options(bounds);
         assert_eq!(options.window_bounds, Some(WindowBounds::Windowed(bounds)));
         assert!(!options.is_resizable);
@@ -90,6 +93,6 @@ mod tests {
             options.titlebar.and_then(|titlebar| titlebar.title),
             Some("Settings".into())
         );
-        assert_eq!(SETTINGS_SIZE, (520.0, 360.0));
+        assert_eq!(SETTINGS_SIZE, (520.0, 480.0));
     }
 }

@@ -25,7 +25,10 @@ to `loctel-ui`, `loctel-macos` and `loctel-app` and no crate. Milestone 4
 Discard rules screens, the Settings window and the popover view to `loctel-ui`,
 the popover to `loctel-macos` (it replaces the menu), live port rebinding to
 `loctel-engine` and log IDs, level and window filters, the histogram and the
-lines around a log to `loctel-store`, and no crate. Everything
+lines around a log to `loctel-store`, and no crate. Milestone 5
+(`superpowers/plans/2026-10-22-loctel-m5-scale.md`) made the store spill to segment
+files under a disk cap (`loctel-store`, `loctel-engine`, `loctel-mcp`) and added the
+performance budgets as `loctel-perf`, run by `cargo xtask perf`. Everything
 Mac-only in it is unverified until the milestone check
 (`milestones/mac-checklist.md`). The change that adds a
 crate updates this table and the diagram below it.
@@ -33,18 +36,19 @@ crate updates this table and the diagram below it.
 | Crate | Layer | Owns | Status |
 |---|---|---|---|
 | `loctel-model` | core | Domain types (spans, logs, resources, IDs, severity), independent of OTLP | implemented (see "Domain model" below) |
-| `loctel-store` | core | In-memory store: trace assembly, completeness, dedup, eviction, failure semantics, search (with TraceQL and LogQL filters), logs, removal and scans, service map | implemented: assembly, completeness, dedup, eviction, failure semantics, trace summaries and search, logs, service map and services list, and (Milestone 2) query filters with matched spans, `remove_trace`, `remove_spans`, `with_trace_spans` and the scans, and (Milestone 4) log IDs, level and window filters on log search, the log histogram and the lines around a log (see "Store" below) |
+| `loctel-store` | core | Store, in memory and spilling to temporary segment files: trace assembly, completeness, dedup, eviction, failure semantics, search (with TraceQL and LogQL filters), logs, removal and scans, service map | implemented: assembly, completeness, dedup, eviction, failure semantics, trace summaries and search, logs, service map and services list, and (Milestone 2) query filters with matched spans, `remove_trace`, `remove_spans`, `with_trace_spans` and the scans, and (Milestone 4) log IDs, level and window filters on log search, the log histogram and the lines around a log, and (Milestone 5) segment files, a trace index with hot and cold traces, and logs in chunks with counts and positions from their metadata (see "Store" below) |
 | `loctel-query` | core | TraceQL and LogQL lexers, parsers and evaluators, with errors that carry the position in the query. Pure: depends only on `loctel-model` (and `regex`) | implemented (Milestone 2): `QueryError`, `Pattern`, duration literals, the TraceQL lexer, parser and evaluator (`TraceView`, `evaluate`, `matches_span`) and LogQL (`logql::parse`, `LogQuery::matches`, `logql::labels`); the store, the rules and MCP (the `query` arguments of `search_traces` and `search_logs`) use them (see "Query languages" below) |
 | `loctel-rules` | core | Discard rules: the rule model and `rules.toml`, `RuleSet` (the ingest filter for spans and logs, with a bounded memory of what was dropped), and the preview | implemented (Milestone 2): `RuleSpec`, `RulesFile`, `RuleSet`, `preview`; the engine runs it at ingest (see "Discard rules" and "Engine" below) |
 | `loctel-ingest` | core | OTLP gRPC and HTTP receivers, protobuf and JSON to model conversion | implemented: gRPC and HTTP receivers, gzip, conversion, `partial_success` (see "Ingest" below) |
 | `loctel-mcp` | core | MCP server (rmcp, Streamable HTTP), tools and their DTOs | implemented: nine read-only tools, the `Origin` check, both protocol generations and, from Milestone 2, the TraceQL and LogQL `query` arguments, the discard rules in `get_status` and the answer size budget (see "MCP" below) |
 | `loctel-engine` | core | Wires store, ingest, MCP and the discard rules; settings, pause, rates; owns threads and runtime | implemented: store, OTLP receivers and MCP server, `settings.toml`, pause, rates, and (Milestone 2) the discard rules at ingest with live reload of `rules.toml` and the handle API, and (Milestone 4) rebinding the three ports live (see "Engine" below) |
-| `loctel-meshgen` | test tooling | Fake microservice mesh scenarios (library and `meshgen` binary) | implemented: six scenarios and a sender over gRPC, HTTP protobuf and HTTP JSON (see "Test tooling" below) |
+| `loctel-meshgen` | test tooling | Fake microservice mesh scenarios (library and `meshgen` binary) | implemented: six scenarios and a sender over gRPC, HTTP protobuf and HTTP JSON, and (Milestone 5) the bulk generators `bulk_logs` and `bulk_traces` (see "Test tooling" below) |
+| `loctel-perf` | test tooling | The performance budgets of design §10.3: a table of limits, the scenarios that measure them over ten million logs and spans, and the report (`publish = false`, binary `loctel-perf`) | implemented (Milestone 5): `ingest`, `trace_open_hot`, `trace_open_cold`, `logs_count`, `logs_at`, `histogram`, `traceql_first_page`, `logql_first_page`, `startup_headless`, `first_frame` and `rss_10m`; `cargo xtask perf` runs it in release and `ci.yml`'s `perf` job runs that (see "Test tooling" below) |
 | `loctel-e2e` | test tooling | End-to-end tests through real OTLP and a real MCP client (`publish = false`) | implemented: a `Harness` over a real engine (with or without a rules file) and the tests of the transports, assembly, service map, agent flow, pause, release fixture, discard rules and queries (see "Test tooling" below) |
 | `loctel-ui` | UI | GPUI views, the pure view models and the headless screenshot harness | implemented: the status view (with the discard rules line, from Milestone 2), the shared menu text, the theme, the pure models of the main window (`model`: formats, service colours, trace table rows, query bar state, map layout, waterfall rows, inspector text and the trace view's text), the main window's shell (`app`: sidebar, toolbar, `UiBackend`, the GPUI Kit theme bridge, `open_main_window`, and the live data entities `HomeModel`, `TraceModel` and, from Milestone 4, `LogsModel` and `RulesModel`), the views of its four screens (`views`: the service map, the trace table, and the trace view with its waterfall, inspector and span logs from Milestone 3; and, from Milestone 4, the Logs screen with its histogram and the Discard rules screen with its editor), the Settings window's and the menu bar popover's views (Milestone 4) and `testing::{render_png, render_window_png, Driver, headless_app, assert_snapshot}` behind the `screenshot` feature (see "UI" below) |
 | `loctel-macos` | macOS | Status item, activation policy, login item (`cfg(target_os = "macos")`) | implemented, never run: the menu bar item (no menu since Milestone 4: a click opens the popover, `popover::toggle`, placed from the mouse by `popover::anchor`), the windows' lifecycle (`window::open_or_focus`, `show_screen`, `open_settings`: the Dock while the main or Settings window is open, Accessory after the last closes), Liquid Glass behind the main window's sidebar and toolbar and the popover's panel (`glass::attach`), the login item and the first-launch step; empty off macOS apart from plain-Rust parts that the Linux tests cover (see "macOS shell" below) |
 | `loctel-app` | binary | The `loctel` binary: headless mode and GUI, bundle metadata | implemented: headless mode, on Linux the main window (it also quits cleanly on SIGINT and SIGTERM) and on macOS the menu bar app that opens the main window from its popover (see "Headless mode", "UI" and "macOS shell" below); `[package.metadata.bundle]` and `bundle/` hold what goes into `loctel.app` (see "Release pipeline" below) |
-| `xtask` | tooling | Screenshots, next-version, release notes, MCP smoke test | implemented: `screenshots [--update]`, `run-shot`, `next-version`, `release-notes` and `mcp-smoke --url URL` (see "UI" and "Release pipeline" below) |
+| `xtask` | tooling | Screenshots, next-version, release notes, MCP smoke test, performance budgets | implemented: `screenshots [--update]`, `run-shot`, `next-version`, `release-notes`, `mcp-smoke --url URL` and (Milestone 5) `perf [--only ID] [--json PATH]` (see "UI", "Test tooling" and "Release pipeline" below) |
 
 Who depends on whom (an arrow reads "depends on"; edges that only tests use
 are left out):
@@ -71,6 +75,8 @@ are left out):
 
  loctel-meshgen --> loctel-model                      (test tooling)
  loctel-e2e     --> loctel-engine, loctel-meshgen     (+ rmcp's client)
+ loctel-perf    --> loctel-engine, loctel-store, loctel-ingest, loctel-query, loctel-meshgen,
+                    loctel-ui (its `screenshot` feature: the headless main window)
  xtask          --> rmcp's client                     (+ loctel-engine in its tests)
 ```
 
@@ -95,8 +101,11 @@ and type-checked but has never run:
      |    |          and its reload, status, shutdown; owns the runtime.
      |    v
      |  loctel-store -- assembles traces, marks complete, finds failed-in span,
-     |    |             keeps logs and the service map, evicts oldest whole trace
-     |    |
+     |    |    |        keeps logs and the service map, evicts oldest whole trace;
+     |    |    |        complete traces and sealed log chunks move to segment files
+     |    |    |        (see "Store") and the disk cap deletes the oldest of them
+     |    |    v
+     |    |  $TMPDIR/loctel/run-<pid>-<secs>/*.seg   (temporary: deleted on quit)
      v    v
  loctel-mcp   loctel-ui  (main window, status view, menu text)  <-- loctel-macos (menu bar item, popover, windows, glass)
      |
@@ -120,7 +129,11 @@ the query needs the whole trace. The two cannot disagree about what a query
 means.
 
 Telemetry is never persisted. Only `settings.toml` and `rules.toml` (the discard
-rules) are written to disk.
+rules) are kept on disk. Since Milestone 5 the store also writes **temporary**
+segment files, copies of the older traces and logs that keep memory bounded: they live
+in a per-run directory of the system's temporary directory, are limited by the disk cap
+(4 GiB, the user's to set), and are deleted when loctel quits (or, after a crash, when it
+next starts). Nothing reads them after the run that wrote them.
 
 ## Domain model
 
@@ -150,17 +163,68 @@ rules) are written to disk.
   within a process only; never persist it.
 - **Serialization.** Every type implements `serde::Serialize` as plain JSON:
   IDs and byte values as lowercase hex strings, attributes as JSON objects (in
-  order), enums as `snake_case` strings.
+  order), enums as `snake_case` strings. Every type also implements
+  `serde::Deserialize` and reads back what it wrote. A binary format (postcard,
+  which the store's segment files use) gets compact shapes (IDs as raw bytes,
+  attribute values as tagged variants) and round-trips exactly; JSON round-trips
+  too, except that a byte value comes back as its hex string (decision 0044).
 
 ## Store
 
-`loctel-store` depends on `loctel-model`, `loctel-query`, `parking_lot` and
-`serde`. The details (API, rules and the reasons) are in
-[`areas/store.md`](areas/store.md). What other crates rely on:
+`loctel-store` depends on `loctel-model`, `loctel-query`, `parking_lot`,
+`serde` and (Milestone 5, for the segment files) `postcard`, `zstd`, `memmap2`,
+`crc32fast` and `libc`. The details (API, rules and the reasons) are in
+[`areas/store.md`](areas/store.md) ("Storage, end to end" has the whole picture). In short,
+since Milestone 5:
+
+```
+ spans ---> TRACE INDEX (every trace, in memory) + HOT TRACES (memory)
+                         |  spill step: complete and quiet for 30 s more,
+                         |  or the oldest complete ones over 2,000,000 hot spans
+                         v
+ logs  ---> OPEN CHUNK (memory) --seal: 65,536 logs or 10 s--> sealed chunk, with its
+            CHUNK META (counts, per-second cells, blocks) kept in memory
+                         |
+                         v
+   segment files in $TMPDIR/loctel/run-<pid>-<secs>/   traces-NNNNNN.seg, logs-NNNNNN.seg
+   [u32 len][u32 crc32][zstd(postcard)] records, 64 MiB a file
+                         |
+   disk bytes over the cap (4 GiB)? delete the OLDEST file whole, with what is in it
+   a late span for a cold trace? read it back hot; its old record is dead until its file goes
+```
+
+What other crates rely on:
 
 - **One entry point.** Everything goes through `Store` (`Clone + Send +
-  Sync`, clones share data). The internals are replaced in Milestone 5, so
-  nothing else may depend on them.
+  Sync`, clones share data). Milestone 5 replaced the internals, so nothing else
+  may depend on them: the API is frozen, and every test of the crate runs against a
+  store in memory and one that spills.
+- **Hot and cold traces (Milestone 5).** With a `spill_dir`, a trace that has
+  been complete for a while moves from memory to a temporary segment file, and
+  comes back when a late span arrives. An index of every trace (start, end, count,
+  and for a cold trace its summary) stays in memory, so lists, searches, counts and
+  "oldest start" do not read the files. The spans of a cold trace are decoded on
+  demand through a small cache. `Store::spilled_traces()` counts the cold ones;
+  nothing else tells. The disk cap (`disk_cap_bytes`, 4 GiB) is enforced after every
+  write by deleting the oldest segment file whole, with the traces and log chunks in
+  it; a write that fails (a full volume) is waited out for a minute and reported in
+  `StoreStats::spill_error` while the data stays in memory. Details and the reasons:
+  [`areas/store.md`](areas/store.md), "Hot and cold traces", and
+  [`decisions/0045-trace-index-and-spill-policy.md`](decisions/0045-trace-index-and-spill-policy.md).
+- **Log chunks (Milestone 5).** Logs go to an open chunk in memory, which is
+  sealed at 65,536 logs or after 10 s into one record of a logs segment file (or
+  of memory, with no files). Chunks overlap in time when logs arrive late, so
+  every list of logs is a merge of the chunks that reads a sealed one only when it
+  has to. What is kept in memory about each sealed chunk (its range of ids, counts
+  by level and service, counts per second, its traces) answers
+  `Store::log_count` (a total) and `Store::logs_at` (rows from a position) and the
+  histogram of an *indexed* filter (a window, levels, a service) without reading
+  the logs, so the Logs screen can scroll ten million lines. A chunk on disk is a
+  record of blocks of about a thousand logs, each with its own counts in memory,
+  so a position is read from a block and not from a chunk of 65,536 logs (Task 6,
+  [`decisions/0050-log-chunks-as-blocks.md`](decisions/0050-log-chunks-as-blocks.md)). Details, the cost and
+  the reasons: [`areas/store.md`](areas/store.md), "Log chunks", and
+  [`decisions/0046-log-chunks.md`](decisions/0046-log-chunks.md).
 - **Time is injected.** `Store::new(config, Arc<dyn Clock>)`. `SystemClock`
   in the app, `ManualClock` in tests, so completeness is tested without
   sleeping.
@@ -188,14 +252,17 @@ rules) are written to disk.
   cursor (`Page`, `PageRequest`).
 - **Logs.** `Store::ingest_logs` keeps log records in time order (observed
   time when the timestamp is unset), drops exporter retries by
-  `LogRecord::dedup_key()` and evicts the oldest past `max_log_records`.
+  `LogRecord::dedup_key()` and evicts the oldest past `max_log_records` (5,000,000;
+  20,000,000 in the app, whose store has a run directory).
   `Store::search_logs` filters by time window (`since` inclusive, `until`
   exclusive), service, minimum severity, a set of levels (`LogFilter::levels`),
   body text (case-insensitive), trace and span, newest first with the same keyset
   paging; `LogFilter::query` adds a LogQL query. `Store::search_logs_keyed` also
   returns each log's stable `LogId`, which `Store::log` and `Store::logs_around`
-  read, and `Store::log_histogram` counts a search into equal buckets (the Logs
-  screen's volume bars). `Store::logs_for_span` returns
+  read, `Store::log_histogram` counts a search into equal buckets (the Logs
+  screen's volume bars), and (Milestone 5) `Store::log_count` and
+  `Store::logs_at` give the total and the rows at a position of a list that is
+  too long to page through. `Store::logs_for_span` returns
   a span's logs, oldest first, linked by ID only, so it works whether or not the
   span is held.
 - **Removal and scans.** `Store::remove_trace` and `Store::remove_spans`
@@ -437,8 +504,8 @@ and, for the rules,
   buckets, of what the rules **accepted**. Time is passed in, never read, so
   tests need no sleeping. The first 5 seconds after start understate the rate.
 - **Status.** `EngineStatus { paused, listeners, spans_per_sec, logs_per_sec,
-  stats, rules, rules_file_error, dropped_spans, dropped_logs, dropped_fraction }`
-  is a snapshot by value. Callers poll it (the UI) or print it (the
+  stats, rules, rules_file_error, dropped_spans, dropped_logs, dropped_fraction,
+  disk_bytes, disk_cap_bytes, spill_error }` is a snapshot by value. Callers poll it (the UI) or print it (the
   headless binary). `listeners` is `otlp-grpc`, `otlp-http`, `mcp`, in that
   order. The same state, behind `StatusSource`, answers the MCP `get_status`
   tool, so the two cannot disagree.
@@ -451,8 +518,23 @@ and, for the rules,
   `~/Library/Application Support/loctel/settings.toml`. `load` is strict (a
   missing file is the defaults, an unreadable or invalid one is an `Err`
   naming the file); `load_or_default` never fails and never rewrites a bad file.
-  `disk_cap_bytes` is stored but not enforced until the spill-to-disk store
-  exists (Milestone 5).
+  `disk_cap_bytes` is given to the store at start (`Engine::start` sets
+  `StoreConfig::disk_cap_bytes` from it, whatever the store config said), and
+  `EngineHandle::set_disk_cap(bytes)` applies a new one at once (the app's
+  `AppBackend::apply_settings` calls it after saving the file).
+- **The run directory.** `EngineConfig::spill_base` is where the store's temporary
+  segment files go: `Some(base)` makes `base/run-<pid>-<start>/` at start (deleting
+  the directories of runs whose process is gone first), has the store spill into it
+  and deletes it at `shutdown` (and when the last handle is dropped). The app passes
+  `default_spill_base()`, `$TMPDIR/loctel`, unless it was started with `--no-spill`;
+  the default (`None`) keeps everything in memory, which is what the tests want. With
+  the directory made, the engine also raises the store's log limit from the 5,000,000 of
+  a store in memory to 20,000,000 (`StoreConfig::with_spill_limits`, decision
+  [0053](decisions/0053-the-app-keeps-twenty-million-logs.md)), which is what lets the
+  app hold the ten million lines of the Logs screen; the trace limit stays 200,000. A
+  directory that cannot be made does not stop the engine: it runs in memory, with the
+  limits it was given, and says why in `EngineStatus::spill_error`. After `shutdown` the store still answers for
+  what it holds in memory, and what was spilled is gone with the directory.
 
 ## Headless mode
 
@@ -461,14 +543,18 @@ what the end-to-end tests, the release smoke test and agents on Linux use.
 
 ```
 loctel [--headless] [--grpc-port N] [--http-port N] [--mcp-port N]
-       [--settings PATH] [--rules PATH] [--completeness-ms N]
+       [--settings PATH] [--rules PATH] [--completeness-ms N] [--no-spill]
 ```
 
 - **Configuration.** Settings come from `--settings PATH`, else the per-user
   file; a missing file is fine, and a broken one is reported on stderr and
   replaced by the defaults for this run. The port flags win over the file.
   `--completeness-ms` sets how long a trace must be quiet to count as complete
-  (tests use small values). Port 0 picks a free port. The file is only read:
+  (tests use small values). `--no-spill` keeps everything in memory: without it
+  the engine moves what it no longer needs in memory to temporary files in a run
+  directory under the system's temporary directory, up to the disk cap of the
+  settings, and deletes it on shutdown (see "The run directory" above). Port 0
+  picks a free port. The file is only read:
   headless mode never writes it. The discard rules are in `--rules PATH`, else
   `rules.toml` in the directory of the settings file (so beside a scratch
   `--settings` file, and in the per-user folder otherwise). Unlike the settings,
@@ -497,7 +583,11 @@ loctel [--headless] [--grpc-port N] [--http-port N] [--mcp-port N]
   headless.
 - **Tests.** `crates/loctel-app/tests/headless.rs` runs the built binary:
   the lines (the rules line included), SIGTERM and SIGINT, a taken port,
-  settings file and flags. `crates/loctel-app/tests/window.rs` runs it without
+  settings file and flags, and (Milestone 5) the run directory: it is made in
+  `$TMPDIR/loctel/` (the test points `TMPDIR` beside its settings file, so the
+  developer's own is never touched), a dead run's directory is deleted at start, and
+  this run's is deleted at exit; `--no-spill` makes none.
+  `crates/loctel-app/tests/window.rs` runs it without
   `--headless` under `xvfb-run` (Linux; skips with a printed notice without
   xvfb): the window stays open for 3 s, the startup lines are printed and
   SIGTERM ends it with status 0.
@@ -540,7 +630,7 @@ details, the theme tokens and the workflow are in
   bar), `histogram` (`bars`: the log volume bars and their labels), `rules`
   (`RuleRow`, `rows`, `dropped_line`, `Draft`, `suggest_from_log`: the Discard
   rules cards, the editor's draft and the rule a log suggests), `settings`
-  (`Form`: the Settings window's port validation) and `popover` (`from_status`:
+  (`Form`: the Settings window's port and disk cap validation) and `popover` (`from_status`:
   the menu bar popover's pill, stats and endpoints). It has no GPUI types, so
   `tests/model_format.rs`, `tests/model_table.rs`, `tests/model_map.rs`,
   `tests/model_waterfall.rs`, `tests/model_trace_view.rs`, `tests/model_logs.rs`,
@@ -571,7 +661,12 @@ details, the theme tokens and the workflow are in
   the list in pages of 500 (at most 20,000 rows), the live tail that joins the
   newest page every 500 ms without ever repeating a line (and stands still while
   the list is scrolled away from the top), the histogram every 2 s and the lines
-  around a log, reading only while the Logs screen shows; and `RulesModel`
+  around a log, reading only while the Logs screen shows, and, from Milestone 5,
+  for a search the store counts that matches more than 20,000 lines, a
+  `model::window::RowWindow` over all of them read by position (`Store::log_count`
+  and `logs_at`), so the list scrolls through ten million lines with a few hundred
+  rows in memory ([decision 0051](decisions/0051-logs-list-at-ten-million-lines.md));
+  and `RulesModel`
   (`app::rules_data`, Milestone 4) for the Discard rules screen, which reads the
   engine's rules and the share dropped once a second (in memory, not the store)
   while its screen shows and the store only for the editor's five-minute preview,
@@ -688,8 +783,10 @@ and, for the popover, [`decisions/0042-popover.md`](decisions/0042-popover.md).
   source of truth. The first launch turns it on once (`first_launch_done`).
 - **Checked from Linux.** `script/check-macos.sh` type-checks and lints the
   macOS code for `aarch64-apple-darwin`, with a rustc wrapper that stands in for
-  the one build step that only runs on a Mac; `ci.yml` runs it in the Linux
-  job. Nothing runs it: the macOS runner is only for releases.
+  the one build step that only runs on a Mac and a stand-in C compiler
+  (`script/stub-cc.sh`) for the build scripts that compile C (`zstd-sys`);
+  `ci.yml` runs it in the Linux job. Nothing runs it: the macOS runner is only
+  for releases.
 
 ## Test tooling
 
@@ -726,6 +823,21 @@ queries, LogQL queries and the errors for queries that do not parse. See
 "End-to-end tests" in [`areas/testing.md`](areas/testing.md) and
 [`decisions/0007-e2e-harness-choices.md`](decisions/0007-e2e-harness-choices.md)
 and [`decisions/0020-e2e-rules-and-query-tests.md`](decisions/0020-e2e-rules-and-query-tests.md).
+
+`loctel-perf` is the performance check. A table in code (`budget.rs`) holds each budget
+(an id, what is measured, the limit) and judges measurements against it; the scenarios
+build their data in the process through the store, with meshgen's bulk generators (a
+store on a manual clock that follows the data, so that traces complete and spill and
+logs seal as in a long run) and measure: the log budgets over ten million logs, the span
+search over ten million spans, the 100,000-span trace hot and cold, `ingest` through a
+real engine over OTLP HTTP, the start of the release `loctel --headless` and the first
+frame of the main window in a process each. `cargo xtask perf` builds it and `loctel` in
+release and runs it (exit 1 on a breach); the `perf` job of `ci.yml` runs that beside
+`gate`. The scenarios, the table, the limits that are raised for the harness and the
+numbers are in [`areas/testing.md`](areas/testing.md) ("Performance budgets") and
+[`decisions/0049-performance-harness-choices.md`](decisions/0049-performance-harness-choices.md);
+the first run's one miss, and the blocks that fixed it, in
+[`decisions/0050-log-chunks-as-blocks.md`](decisions/0050-log-chunks-as-blocks.md).
 
 ## Release pipeline
 

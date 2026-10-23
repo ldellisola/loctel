@@ -8,7 +8,8 @@
 //! 1. the title `loctel` and the status pill (`Receiving`, `Paused` or `Port
 //!    problem`, a dot of its colour and its words)
 //! 2. a grid of four stats, two by two: spans and log lines per second, traces
-//!    and log lines held
+//!    held and the disk (`1.3 GB` over `on disk, cap 4 GB`; `Disk full` in the
+//!    error colour while loctel cannot write to disk, Milestone 5)
 //! 3. the endpoints, `OTLP gRPC`, `OTLP HTTP` and `MCP` with their addresses (a
 //!    red dot, red text and the word `failed` for one that could not be bound),
 //!    and a `Copy` button on the MCP row while it is listening
@@ -128,6 +129,8 @@ const RULES_GAP: f32 = 6.0;
 /// A divider: the line and the space above and below it.
 const DIVIDER_LINE: f32 = 1.0;
 const DIVIDER_SPACE: f32 = 6.0;
+/// The index of the disk tile among the four.
+const DISK_TILE: usize = 3;
 /// How many rows the panel has: three endpoints, the rules line and the
 /// actions (open, pause, clear, settings, quit; the login row is one more).
 const ENDPOINT_ROWS: usize = 3;
@@ -658,6 +661,12 @@ impl Render for PopoverView {
         // --- the stats ---------------------------------------------------------------
         let tile = |index: usize| {
             let (value, label) = &self.popover.stats[index];
+            // The disk tile (the fourth) is red while the disk cannot be written.
+            let value_ink = if index == DISK_TILE && self.popover.disk_full {
+                theme.error_text
+            } else {
+                theme.text
+            };
             div()
                 .relative()
                 .flex_1()
@@ -676,7 +685,7 @@ impl Render for PopoverView {
                         .truncate()
                         .text_size(px(20.0))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme.text)
+                        .text_color(value_ink)
                         .child(value.clone()),
                 )
                 .child(
@@ -684,7 +693,7 @@ impl Render for PopoverView {
                         .truncate()
                         .text_size(px(11.5))
                         .text_color(theme.text_tertiary)
-                        .child(*label),
+                        .child(label.clone()),
                 )
                 .child(measure(&frame, PopoverPart::Stat(index)))
         };

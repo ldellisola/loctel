@@ -9,6 +9,7 @@
 //! | [`clock`] | `HH:MM:SS.mmm` in the given zone | `14:32:07.412` |
 //! | [`rate`] | 10 or more: whole; else one decimal | `84 req/s`, `0.3 req/s` |
 //! | [`error_pct`] | one decimal; none at all is `0%` | `2.1% err`, `0% err` |
+//! | [`bytes`] | binary units; one decimal under 10, none when it would be `.0` | `0 B`, `512 KB`, `1.3 GB`, `4 GB`, `12 GB` |
 //!
 //! All the arithmetic is on integers, so a value on a rounding boundary rounds
 //! the same way on every machine (`1.845 s` is `1.85 s`; a binary float would
@@ -112,6 +113,46 @@ pub fn error_pct(errors: u64, total: u64) -> String {
     let total = u128::from(total);
     let tenths = (errors * 1_000 + total / 2) / total;
     format!("{}.{}% err", tenths / 10, tenths % 10)
+}
+
+/// The units of [`bytes`], from 1 byte up, each 1024 of the one before.
+const BYTE_UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+
+/// A size on disk in the fewest digits that still say something: the popover's
+/// disk tile and the Settings window's `Using 1.3 GB of 4 GB`.
+///
+/// - The units are binary, 1 KB being 1024 bytes and 1 GB 2^30, the unit of the
+///   disk cap (the default 4 GiB reads `4 GB`). They are `B`, `KB`, `MB`, `GB`
+///   and `TB`, which is the largest: past it the number just has more digits.
+/// - Under 1024 bytes it is whole bytes, `512 B` and `0 B`.
+/// - The unit comes from the exact value, then the number is rounded to the
+///   nearest (half up) in that unit: one decimal under 10, whole from 10. A
+///   decimal that would be `.0` is left out, so `4 GB` and not `4.0 GB`, and a
+///   value that rounds up to 10 reads `10 GB`, not `10.0 GB` (9.96 GB).
+///   So the unit never rolls over after rounding: a hair under 1 MB is
+///   `1024 KB`, as a hair under 1 ms is `1000 µs` in [`duration`].
+///
+/// All the arithmetic is on integers, so a value on a rounding boundary rounds
+/// the same way on every machine.
+pub fn bytes(value: u64) -> String {
+    let value = u128::from(value);
+    let mut unit = 0;
+    while unit + 1 < BYTE_UNITS.len() && value >= 1u128 << (10 * (unit + 1)) {
+        unit += 1;
+    }
+    let name = BYTE_UNITS[unit];
+    if unit == 0 {
+        return format!("{value} {name}");
+    }
+    let size = 1u128 << (10 * unit);
+    let tenths = (value * 10 + size / 2) / size;
+    if tenths >= 100 {
+        return format!("{} {name}", (value + size / 2) / size);
+    }
+    match tenths % 10 {
+        0 => format!("{} {name}", tenths / 10),
+        tenth => format!("{}.{tenth} {name}", tenths / 10),
+    }
 }
 
 /// `s` cut to at most `max_chars` characters, the last of them `…` when

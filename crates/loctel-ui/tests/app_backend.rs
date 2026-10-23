@@ -192,6 +192,42 @@ fn app_backend_saves_settings_and_rebinds() {
 }
 
 #[test]
+fn apply_settings_moves_the_disk_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    let settings_path = dir.path().join("settings.toml");
+    let backend = AppBackend::new(engine(dir.path()), settings_path.clone(), None);
+    assert_eq!(backend.status().disk_cap_bytes, 4 * GIB, "the default cap");
+
+    // Apply saves the new cap and the store keeps to it from then on.
+    let wanted = Settings {
+        disk_cap_bytes: 2 * GIB,
+        ..backend.settings()
+    };
+    backend.apply_settings(wanted.clone()).unwrap();
+
+    assert_eq!(
+        Settings::load(&settings_path).unwrap().disk_cap_bytes,
+        2 * GIB
+    );
+    assert_eq!(backend.status().disk_cap_bytes, 2 * GIB);
+    assert_eq!(backend.store().disk_cap_bytes(), 2 * GIB);
+
+    // A cap that cannot be saved is not applied.
+    let blocker = dir.path().join("blocker");
+    fs::write(&blocker, "not a directory").unwrap();
+    let stuck = AppBackend::new(engine(dir.path()), blocker.join("settings.toml"), None);
+    assert!(
+        stuck
+            .apply_settings(Settings {
+                disk_cap_bytes: GIB,
+                ..Settings::default()
+            })
+            .is_err()
+    );
+    assert_eq!(stuck.status().disk_cap_bytes, 4 * GIB);
+}
+
+#[test]
 fn settings_show_the_ports_in_use_and_apply_moves_only_the_changed_one() {
     let dir = tempfile::tempdir().unwrap();
     let settings_path = dir.path().join("settings.toml");

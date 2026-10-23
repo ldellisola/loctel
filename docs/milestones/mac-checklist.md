@@ -1,16 +1,18 @@
 Each section below is one milestone whose Mac side nobody has confirmed yet;
 a section leaves this list once you have. Do Milestone 1 first: Milestones 2
-to 4 build on a loctel that is installed (Milestone 1, item 1), and Milestone 2
+to 5 build on a loctel that is installed (Milestone 1, item 1), and Milestone 2
 on one that Claude Code is connected to (Milestone 1, items 1 and 5). This
-release is Milestone 4's, so **the menu of Milestones 1 to 3 is gone**: a click
-on the menu bar icon opens the popover (Milestone 4, items 1 and 2), and the
-items of the earlier sections that say "the menu" mean its rows (the note at the
-start of Milestone 1 maps them). There is no `Edit discard rules…` any more
-(Milestone 2's text that mentions it: open `rules.toml` in an editor yourself, or
-use the Discard rules screen, Milestone 4, item 4). Loctel shows in the Dock and
-in ⌘-Tab for as long as its main window or its Settings window is open (with
-neither open it still has no Dock icon, as Milestone 1, item 1 says). Those are
-not differences to report.
+release is Milestone 5's, which is the last of the plan, so **the menu of
+Milestones 1 to 3 is gone** (it went in Milestone 4): a click on the menu bar icon
+opens the popover (Milestone 4, items 1 and 2), and the items of the earlier
+sections that say "the menu" mean its rows (the note at the start of Milestone 1
+maps them). There is no `Edit discard rules…` any more (Milestone 2's text that
+mentions it: open `rules.toml` in an editor yourself, or use the Discard rules
+screen, Milestone 4, item 4). Loctel shows in the Dock and in ⌘-Tab for as long
+as its main window or its Settings window is open (with neither open it still has
+no Dock icon, as Milestone 1, item 1 says). Milestone 5 added the disk cap to
+Settings and made the popover's fourth tile the disk, and the Milestone 4 text
+below already says what is there now. Those are not differences to report.
 
 ### Milestone 1
 
@@ -288,7 +290,9 @@ a menu bar app that has no menu, and the Settings window and the login switch.
 The text is the bundled Inter font, not San Francisco, as in Milestone 3. There
 is no `Edit discard rules…` row any more: the rules are edited in the Discard rules
 screen (item 4), or by hand in `~/Library/Application Support/loctel/rules.toml`.
-The disk cap is not in Settings yet (Milestone 5). Items 3 to 5 need data: from a
+The disk cap went into Settings, and the popover's fourth tile became the disk, in
+Milestone 5 (the text below says what is there now; Milestone 5's own list checks
+them). Items 3 to 5 need data: from a
 checkout of this repository, the commands in Milestone 1, item 3 send it, and each
 item says which scenario to use. Report what you see, and say which item it is.
 
@@ -297,7 +301,8 @@ item says which scenario to use. Report what you see, and say which item it is.
    the icon (a few points below the menu bar), centred on where you clicked, and
    kept inside the screen if the icon is near its edge. Top to bottom it has: the
    title `loctel` with a pill (`Receiving`, green); four tiles (`spans per second`,
-   `log lines per second`, `traces held`, `log lines held`); the three endpoints
+   `log lines per second`, `traces held`, and the disk: `0 B` over `on disk, cap
+   4 GB`); the three endpoints
    (OTLP gRPC `127.0.0.1:4317`, OTLP HTTP `127.0.0.1:4318`, MCP `127.0.0.1:4319/mcp`
    with a `Copy` button) with green dots; the rules line (`No discard rules on`);
    a line; `Open loctel` ⌘O, `Pause receiving`, `Clear all data…`, `Start at login`
@@ -315,7 +320,7 @@ item says which scenario to use. Report what you see, and say which item it is.
    arrives, then `Resume receiving`. `Copy` beside MCP puts
    `http://127.0.0.1:4319/mcp` on the clipboard (paste it). `Clear all data…` asks
    `Clear all traces and logs?` first: `Cancel` puts the row back, and `Clear` empties
-   the data (the `traces held` and `log lines held` tiles go to 0). The rules line
+   the data (the `traces held` tile goes to 0). The rules line
    opens the main window on Discard rules. `Open loctel` opens the window on
    Map & traces, and the popover closes. `Settings…` opens the Settings window.
    *Right* for the last three: the panel closes, and loctel is in the Dock and ⌘-Tab
@@ -365,9 +370,10 @@ item says which scenario to use. Report what you see, and say which item it is.
    "<the message>"`, and the preview shows how many of the last five minutes' lines
    it would have dropped. `Cancel` leaves nothing behind (check `rules.toml`).
 6. **Settings.** Choose `Settings…` in the popover (or ⌘, in the main window). *Right:*
-   a window 520 by 360 points that cannot be resized, with the three ports (4317,
-   4318, 4319) each with a green dot and `listening`, a `Start loctel at login`
-   switch and `Apply` and `Close`; choosing `Settings…` again brings the same window
+   a window 520 by 480 points (360 before Milestone 5 added `Storage`) that cannot be
+   resized, with the three ports (4317, 4318, 4319) each with a green dot and
+   `listening`, `Storage` with the `Disk cap` field (`4` GB, and `Using ... of 4 GB`
+   under it), a `Start loctel at login` switch and `Apply` and `Close`; choosing `Settings…` again brings the same window
    forward. Change the OTLP HTTP port to a free one (such as 4400) and `Apply`: the
    row stays `listening` and a service pointed at the new port arrives (send meshgen
    to `http://127.0.0.1:4400`; the old port 4318 is free again). Change it to a port
@@ -384,3 +390,99 @@ item says which scenario to use. Report what you see, and say which item it is.
    in Settings: the popover shows it on. Switch it off in System Settings: the next
    time the popover or Settings opens it shows off. (Milestone 1, item 7 has the
    rest: that it is on after the first launch, and that a login starts loctel.)
+
+### Milestone 5
+
+This is Milestone 5: scale. Loctel moves the traces and the log lines it no longer
+needs in memory into temporary files (in a folder of its own under `$TMPDIR`, deleted
+when loctel quits), keeps those files under a disk cap (4 GB unless you change it in
+Settings), scrolls the Logs list through millions of lines, and holds itself to
+performance budgets that CI checks on Linux. All of it is tested on Linux, and the
+budgets are measured there (a position in ten million log lines in under 20 ms, a
+100,000-span trace opening in under 250 ms, the headless start in under 300 ms), and
+both themes pass a contrast check by arithmetic. What nobody has seen is any of it on a
+Mac: the start, a big trace and a big Logs list on Apple Silicon and Metal, the files and
+the memory on APFS, and the light theme next to Apple's glass. Items 2 to 5 need data:
+from a checkout of this repository, the commands in Milestone 1, item 3 send it, and each
+item gives its command (the Linux numbers say a flood of two million lines goes in about
+twenty seconds). Report what you see, and say which item it is, the items that pass too.
+
+1. **Startup.** Choose `Quit loctel` in the popover (or ⌘Q with it open), wait a second
+   and open loctel again from Applications. *Right:* the icon is in the menu bar at once,
+   with no pause before it. Click it and choose `Open loctel` (⌘O): the window is on
+   screen in under half a second. This one is by feel; if you can, say how long it was
+   (a stopwatch on a screen recording will do), and whether the window drew its first
+   frame at once or showed a blank one first.
+2. **A big trace.** Send the 100,000-span trace: `cargo run -p loctel-meshgen --
+   --scenario huge-trace --transport http-json --endpoint http://127.0.0.1:4318`. Find the
+   row `POST /api/bulk` in the table (it has 100,000 spans) and open it, then scroll the
+   waterfall from top to bottom as fast as you can (a flick with the trackpad, the
+   scroll bar dragged, and the same back up). *Right:* it stays smooth, with no blank
+   rows while you scroll and no beachball. Press Esc, then **wait a minute** with loctel
+   running: the trace has been complete for ten seconds, and half a minute later it
+   moves to a file (item 4 says where to look). Open it again from the table. *Right:*
+   it opens just as fast as the first time, and looks the same. Report how long the
+   open took each time.
+3. **Many logs.** Quit loctel and open it again (or `Clear all data…` in the popover), so
+   that nothing else is held. Send two million log lines: `cargo run -p loctel-meshgen --
+   --scenario log-flood --size 2000000 --transport http-protobuf --endpoint
+   http://127.0.0.1:4318` (about twenty seconds). Open Logs (⌘2). *Right:* the footer
+   reads `2,000,000 lines · newest first`. Drag the scroll bar at the right edge of the
+   list (a thin track with a thumb) from the top to the bottom and back, and flick the
+   list with the trackpad. *Right:* rows appear as you go, with no stall longer than a
+   blink and no empty stretch left on the screen when you stop; the thumb follows the
+   list; at the bottom are the oldest lines of the flood. Click in the search
+   bar and type `{service_name="payments-api"} |= "flushed"` and press Return. *Right:*
+   the list shows only `payments-api` lines saying `flushed N records`, and the first rows
+   and the count appear within a second. Clear the query (the list is the full one
+   again) and click `ERR`, `WRN` and `DBG` off and on: each change shows its rows and a new
+   count within a second.
+4. **The disk.** With the lines of item 3 in:
+   - Click the menu bar icon. *Right:* the fourth tile is the disk: a size such as
+     `37 MB` over `on disk, cap 4 GB` (two million of these lines compress to about
+     forty MB). Send the flood again and watch the popover (it refreshes every second
+     while open): the tile grows, in steps, as the lines are written to the files in chunks.
+   - In Terminal, `open "$TMPDIR/loctel"` shows the folder in Finder. *Right:* one
+     folder named `run-<number>-<number>` with `logs-000001.seg`-style files (and
+     `traces-…seg` ones after item 2) of up to 64 MB each. The same files are in `ls -la
+     "$TMPDIR"/loctel/run-*`.
+   - Open Settings (⌘,). *Right:* under `Storage`, the `Disk cap` field reads `4` GB and
+     the line under it `Using … of 4 GB`, with the size from the tile. Type `0`, then
+     `101`: the message `Enter a size from 1 to 100 GB` appears under the field and `Apply`
+     refuses. Type `1` and press `Apply`: the line under the field says `of 1 GB` and the
+     popover's tile `on disk, cap 1 GB`. Put it back to `4` and `Apply`.
+   - To see the cap delete data (the files here are small, so 1 GB is far away), quit
+     loctel, open `~/Library/Application Support/loctel/settings.toml` in a text editor,
+     set `disk_cap_bytes = 50000000` (add the line if it is not there), save and open
+     loctel. Send the flood twice more. *Right:* the tile never stays above about 50 MB
+     (it can go over for a moment, and the oldest file goes whole, so it drops in steps),
+     the Logs footer says fewer lines than you sent, and loctel stays responsive. Quit
+     loctel, delete the `disk_cap_bytes` line (or set it back to `4294967296`) and open
+     it again.
+   - Quit loctel (`Quit loctel`). *Right:* the `run-…` folder is gone from `$TMPDIR/loctel`
+     (the `loctel` folder itself stays). Open loctel, and in Terminal force quit it with
+     `pkill -9 -x loctel`: the `run-…` folder stays. Open loctel again: the old folder is
+     deleted at once and a new one is there.
+5. **Memory.** Open Activity Monitor (Memory tab) and find `loctel`. Send a steady stream
+   for ten minutes, in two Terminal windows: `cargo run -p loctel-meshgen -- --scenario
+   log-flood --size 10000 --transport http-protobuf --endpoint http://127.0.0.1:4318
+   --repeat 600 --interval-ms 1000` and `cargo run -p loctel-meshgen -- --scenario
+   checkout-failure --transport http-json --endpoint http://127.0.0.1:4318 --repeat 600
+   --interval-ms 1000`. Write down loctel's `Memory` at the start and after 2, 5 and 10
+   minutes. *Right:* it rises at first and then levels off, apart from a slow climb of
+   about 10 MB a minute (the index of the Logs list takes about 15 bytes for every line
+   kept, and this stream is ten thousand a second; loctel keeps up to 20 million lines, so
+   the climb only stops far past these ten minutes). The Linux budget for ten million
+   lines and a million spans is 1.5 GB, so a few hundred MB here is expected; it does not
+   jump or keep accelerating. Say what the numbers were, and whether
+   the window stayed responsive and the popover's tile kept growing.
+6. **The light theme.** In System Settings, Appearance, choose Light (loctel follows).
+   Look over every screen: Map & traces, a trace (open one from the table), Logs (with a
+   line expanded), Discard rules (with its editor open), the Settings window and the
+   popover. *Right:* all text is readable, including the grey secondary text (the
+   second line of a table row, the labels under the popover's tiles and the hints under
+   Settings' fields), the hairlines between rows are visible, and
+   the red, amber and blue words (a failed trace, `Paused`, a link) read clearly on the
+   panels. Report anything faint, with the screen it is on. Then choose Dark again and
+   look at the same screens once: the lines between rows are a little lighter than in
+   Milestone 4, and that is meant.

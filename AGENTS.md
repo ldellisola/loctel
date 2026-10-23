@@ -36,6 +36,7 @@ All from the repository root. The sections below say what each one is for.
 |---|---|
 | set up a Linux machine (once; idempotent) | `bash script/setup-linux.sh` |
 | run the quality gate | `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` |
+| check the performance budgets (a release build and about two minutes; CI's `perf` job) | `cargo xtask perf`, or `cargo xtask perf --only logs_at` for one |
 | run loctel with no window | `cargo run -p loctel-app -- --headless --grpc-port 0 --http-port 0 --mcp-port 0 --settings /tmp/loctel-settings.toml --rules /tmp/loctel-rules.toml` |
 | send it fake traffic (meshgen) | `cargo run -p loctel-meshgen -- --scenario checkout-failure --transport http-json --endpoint http://127.0.0.1:4318` |
 | see the main window, with a failing checkout in it | `cargo xtask run-shot`, then open `target/run-shot.png` |
@@ -79,6 +80,12 @@ a rule, see [`docs/areas/rules.md`](docs/areas/rules.md)):
 cargo run -p loctel-app -- --headless --grpc-port 0 --http-port 0 --mcp-port 0 \
   --settings /tmp/loctel-settings.toml --rules /tmp/loctel-rules.toml
 ```
+
+The run keeps older traces and logs in temporary segment files, in a directory of its
+own under `$TMPDIR/loctel/` that it deletes on exit (at most the disk cap, 4 GB, of
+them; `--no-spill` keeps everything in memory instead, and
+[`docs/areas/store.md`](docs/areas/store.md), "Storage, end to end", is the picture).
+Point `TMPDIR` at a scratch directory if you want to look at the files.
 
 The run also serves MCP (the `mcp` line it prints has the address; the default
 is `http://127.0.0.1:4319/mcp`). To point Claude Code at it, and for the tools
@@ -149,6 +156,22 @@ fake mesh) run with the rest of `cargo test --workspace`, and alone with
 `cargo test -p loctel-e2e` (a few seconds). Read the "End-to-end tests" section
 of [`docs/areas/testing.md`](docs/areas/testing.md) before adding one.
 
+The performance budgets (design §10.3: ingest at 50,000 items a second, opening a
+100,000-span trace, a position in ten million logs, first pages of queries, startup,
+the first frame, memory) are a second check beside the gate, `cargo xtask perf`. It builds
+`loctel-perf` and `loctel` in release, measures every budget on data it builds itself
+(ten million logs and spans) and prints a table of measured against budget; it exits
+non-zero when one is missed, and CI's `perf` job runs it on every pull request. The table,
+the scenarios and the rule that a budget is never raised to get green are in
+[`docs/areas/testing.md`](docs/areas/testing.md) ("Performance budgets") and the
+`perf-budgets` skill. `cargo test -p loctel-perf` runs the scenarios at a tiny scale in
+the gate.
+
+```bash
+cargo xtask perf                       # every budget; exit 1 on a breach
+cargo xtask perf --only logs_at --json perf.json
+```
+
 The release pipeline (what the three `xtask` release commands are for, and the
 bundle script that only runs on a Mac) is in
 [`docs/areas/release.md`](docs/areas/release.md). Run `cargo test -p xtask` after
@@ -170,6 +193,7 @@ that matches before you start:
 | `add-screen` | the main window gains a screen: the `Screen` variant, sidebar item and shortcut, model, data entity, view, screenshots and docs |
 | `add-mcp-tool` | an agent-facing capability changes: a new tool, argument or result field |
 | `add-query-feature` | TraceQL or LogQL gains syntax or semantics, a feature leaves the "not supported yet" list, or a query pasted from Grafana behaves differently from Grafana |
+| `perf-budgets` | the `perf` job is red, or a change touches the store, the ingest path, the segment format, the log and trace data paths or the startup: run one budget, read the table, profile a breach (budgets are never raised to get green) |
 | `upgrade-gpui` | the pinned GPUI snapshot (`gpui-pre`) or GPUI Kit has to move: one upgrade per pull request, with the screenshots as the guide |
 | `investigate-ci` | CI is red (the gate on a PR, a screenshot diff, or the release job after a merge): find the failing step, reproduce it, fix the cause |
 
@@ -183,7 +207,8 @@ needed.
 2. **Change it** test first, with the docs and the decision log in the same
    change (house rules below). Run the quality gate locally, and
    `bash script/check-macos.sh --all-targets` if you touched macOS code.
-3. **Open a pull request.** Wait for `ci.yml` (the Linux gate) to go green. If
+3. **Open a pull request.** Wait for `ci.yml` (the Linux gate and the performance
+   budgets, its jobs `gate` and `perf`) to go green. If
    it is red, use the `investigate-ci` skill, fix the cause and push again.
    Never merge on red, and never loosen a test to get there.
 4. **Squash-merge** it. The squash commit's subject is the pull request title
@@ -202,7 +227,9 @@ new chat; until then everything Mac-only counts as unverified.
 ## House rules
 
 - Never merge on red.
-- Never skip, disable or loosen a test to get green.
+- Never skip, disable or loosen a test to get green, and never raise a performance
+  budget: a missed budget is fixed in the code (a budget changes only with a decision
+  file that carries the measurements).
 - Update docs and the decision log in the same PR as the change.
 - The merging agent watches the release job. If it fails, fix it before
   finishing, because nobody else is watching.

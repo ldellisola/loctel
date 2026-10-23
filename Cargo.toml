@@ -41,6 +41,19 @@ clap = { version = "4.6.7", features = ["derive"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "env-filter", "ansi"] }
 tempfile = "3.27.0"
 
+# Segment files (loctel-store, Milestone 5): `postcard` is the compact serde
+# binary the blobs are written in (std only: no heapless buffers), `zstd` at
+# level 1 compresses each record (defaults off: no legacy formats, no
+# dictionary builder), `memmap2` reads sealed segments and `crc32fast` checks
+# every record (decision 0044).
+postcard = { version = "1.1.3", default-features = false, features = ["use-std"] }
+zstd = { version = "0.14.3", default-features = false }
+memmap2 = "0.9.12"
+crc32fast = "1.5.3"
+# `kill(pid, 0)`: is the process of a leftover run directory still alive
+# (loctel-store `run_dir`). Already in the lockfile through tokio and others.
+libc = "0.2.191"
+
 # Fake mesh and its sender (loctel-meshgen). reqwest is built without default
 # features on purpose: the default `system-proxy` would send requests for
 # 127.0.0.1 through HTTP(S)_PROXY, and loctel's own endpoints are local.
@@ -104,6 +117,17 @@ dispatch2 = "0.3"
 # Backtraces still show file and line.
 [profile.dev]
 debug = "line-tables-only"
+
+# The store and the C library it compresses with are built with optimisations in
+# the dev profile too: a test that fills a store with ten million logs (the Logs
+# list's, `crates/loctel-ui/tests/logs_scale.rs`) ingested them at 4.7 us each
+# unoptimised, 47 s of a 60 s budget, and at 1.1 us this way (decision 0051).
+# Everything else, and debug assertions and overflow checks, stay as they were.
+[profile.dev.package.loctel-store]
+opt-level = 3
+
+[profile.dev.package.zstd-sys]
+opt-level = 3
 
 [workspace.lints.clippy]
 all = "warn"

@@ -1,6 +1,6 @@
 ---
 name: investigate-ci
-description: "Find out why a loctel CI run failed and fix it. Use whenever the Linux gate (ci.yml) is red on a pull request, a screenshot test fails in CI but not locally, or the release job (release.yml, macos-26) fails after a merge to main. Covers finding the failing job and step, reproducing it locally with the same command, reading the screenshot-diffs artifact, and what can and cannot be reproduced for the macOS release job."
+description: "Find out why a loctel CI run failed and fix it. Use whenever the Linux gate (ci.yml, job gate) or its performance budgets (job perf) are red on a pull request, a screenshot test fails in CI but not locally, or the release job (release.yml, macos-26) fails after a merge to main. Covers finding the failing job and step, reproducing it locally with the same command, reading the screenshot-diffs artifact and the perf table, and what can and cannot be reproduced for the macOS release job."
 ---
 
 # Investigate a CI failure
@@ -9,7 +9,8 @@ Never merge on red and never loosen, skip or `#[ignore]` a test to get green.
 Find the cause, fix the cause. There are two workflows:
 
 - `.github/workflows/ci.yml`, job `gate` on `ubuntu-24.04`, for every pull
-  request and for main. It is the quality gate.
+  request and for main. It is the quality gate. Its job `perf`, beside it, is the
+  performance budgets (`cargo xtask perf`): see section 4.
 - `.github/workflows/release.yml`, job `release` on `macos-26`, only on pushes
   to main. After you merge, **you** watch it: nobody else does.
 
@@ -37,6 +38,7 @@ that failed, from the repository root:
 | Clippy | `cargo clippy --workspace --all-targets -- -D warnings` |
 | Type-check and lint the macOS code | `bash script/check-macos.sh --all-targets` |
 | Test | `cargo test --workspace`, or `cargo test -p <crate> <test name>` for one |
+| (the `perf` job) Measure the performance budgets | `cargo xtask perf` (see section 4) |
 | Set up Linux build and screenshot dependencies | `bash script/setup-linux.sh` |
 
 If it passes locally and fails in CI, look for what differs: a test that
@@ -63,7 +65,22 @@ follow the `update-screenshots` skill: it says when a reference may change,
 what to do when only anti-aliasing differs between your machine and CI, and
 what a font or missing-GPU failure looks like.
 
-## 4. The release job fails (after a merge to main)
+## 4. The `perf` job fails
+
+The `perf` job is `script/setup-linux.sh`, then `cargo xtask perf --json perf.json`: a
+release build, and the table of measured against budget, which is in the log of the step
+(the **perf** artifact has the same as `perf.json`, kept when the step fails). A row
+marked `BREACH` is a budget that was missed (exit 1); an `xtask:` or `loctel-perf:` error
+is a scenario that could not run (exit 2: read it, it says what it did not find).
+
+Reproduce it with the same command, from the repository root, and follow the `perf-budgets`
+skill: it says how to run the one budget, how to profile it and why the answer is never to
+move the limit. A budget that passes on your machine and fails in CI by a hair: run it five
+times and look at the spread before deciding anything (the CI runner has the 4 CPUs the
+container has, and no GPU either). A failed build step (`cargo build --release`) is the
+same build the release job does, on Linux.
+
+## 5. The release job fails (after a merge to main)
 
 Most of it cannot run on Linux, so read the log carefully; start from the
 failing step of `release.yml` (the steps are listed in
@@ -84,7 +101,7 @@ release exists. The tag is created by the last step, so a failure before it
 leaves nothing to clean up. Record anything that was surprising in
 `docs/decisions/` and update `docs/areas/release.md`.
 
-## 5. Before you push the fix
+## 6. Before you push the fix
 
 Run the whole gate locally (`cargo fmt --check`, `cargo clippy --workspace
 --all-targets -- -D warnings`, `cargo test --workspace`, and

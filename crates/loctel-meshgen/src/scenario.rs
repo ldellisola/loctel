@@ -110,9 +110,12 @@ pub(crate) mod stream {
     pub(crate) const HEALTH_CHECKS: u64 = 4;
     pub(crate) const HUGE_TRACE: u64 = 5;
     pub(crate) const LOG_FLOOD: u64 = 6;
+    pub(crate) const BULK_LOGS: u64 = 7;
+    pub(crate) const BULK_TRACES: u64 = 8;
 }
 
 /// The seeded source of every ID and of the small random choices.
+#[derive(Clone, Debug)]
 pub(crate) struct Rand(ChaCha8Rng);
 
 impl Rand {

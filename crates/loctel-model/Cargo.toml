@@ -10,5 +10,10 @@ publish = false
 serde.workspace = true
 serde_json.workspace = true
 
+[dev-dependencies]
+# The segment files of loctel-store are written in postcard; the round-trip
+# tests run the model types through it.
+postcard.workspace = true
+
 [lints]
 workspace = true

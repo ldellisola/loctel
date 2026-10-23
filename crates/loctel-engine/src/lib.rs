@@ -9,7 +9,10 @@
 //! ([`EngineHandle::rebind`]), read and change the discard rules and shut
 //! everything down. [`Settings`] is the `settings.toml` the ports and the disk
 //! cap come from; `rules.toml` holds the discard rules, which every batch the
-//! receivers accept goes through on its way to the store (design §7).
+//! receivers accept goes through on its way to the store (design §7). The
+//! store spills what it holds to segment files in a run directory the engine
+//! makes at start and deletes at shutdown ([`EngineConfig::spill_base`]), and
+//! keeps them under the disk cap ([`EngineHandle::set_disk_cap`]).
 //!
 //! The engine has no UI or graphics dependency, and its `start` needs no async
 //! `main`: it owns its threads. See `docs/architecture.md` ("Engine" and
@@ -32,6 +35,7 @@ use loctel_ingest::{DEFAULT_MAX_MESSAGE_BYTES, ReceiverShutdown, Sink};
 use loctel_mcp::{
     ListenerDto, McpShutdown, RuleDto, RuleLanguageDto, RuleScopeDto, StatusDto, StatusSource,
 };
+use loctel_store::run_dir::RunDir;
 use loctel_store::{Clock, SystemClock};
 use tokio::runtime::{Builder, Handle, Runtime};
 
@@ -89,6 +93,27 @@ pub struct EngineConfig {
     /// Ports (and the rest of `settings.toml`).
     pub settings: Settings,
     pub store: StoreConfig,
+    /// Where the store's temporary segment files go: `Some(base)` makes this run's
+    /// directory in `base` (`base/run-<pid>-<start>/`, after deleting the
+    /// directories of runs that are gone) and has the store spill into it, and
+    /// the engine deletes it when it shuts down. It replaces
+    /// `store.spill_dir`. The app passes [`default_spill_base`] unless started
+    /// with `--no-spill`. `None` (what [`Default`] gives, and what tests want)
+    /// leaves `store.spill_dir` as it is, which is `None` unless a test sets it:
+    /// everything in memory. A directory that cannot be made does not stop the
+    /// engine: it runs in memory and says why in
+    /// [`EngineStatus::spill_error`].
+    ///
+    /// With the directory made, `store.max_log_records` is also raised from its
+    /// default (5,000,000, a store in memory) to
+    /// [`StoreConfig::SPILLING_MAX_LOG_RECORDS`] (20,000,000), so that the app
+    /// holds the ten million lines the Logs screen is for, and a limit set to
+    /// anything else stays (see [`StoreConfig::with_spill_limits`]). Without it
+    /// the limits are the ones given.
+    ///
+    /// Either way `store.disk_cap_bytes` is replaced by
+    /// `settings.disk_cap_bytes` at start.
+    pub spill_base: Option<PathBuf>,
     /// Where `rules.toml` is. `Some(path)`: the engine writes a file with no
     /// rules there if there is none, loads it, saves it when the rules change
     /// through the handle and reloads it when it is edited (every
@@ -104,9 +129,16 @@ impl Default for EngineConfig {
             bind_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
             settings: Settings::default(),
             store: StoreConfig::default(),
+            spill_base: None,
             rules_path: None,
         }
     }
+}
+
+/// Where the app keeps the run directories of its segment files:
+/// `<system temp dir>/loctel` (`$TMPDIR/loctel` on a Mac).
+pub fn default_spill_base() -> PathBuf {
+    std::env::temp_dir().join("loctel")
 }
 
 /// A snapshot of how the engine is doing, for the status box and the menu.
@@ -139,6 +171,17 @@ pub struct EngineStatus {
     /// launch: 0 when nothing has arrived. Items dropped while paused are in
     /// neither.
     pub dropped_fraction: f64,
+    /// What the store's segment files take on disk, dead records included
+    /// (`stats.disk_bytes`): 0 when everything is kept in memory.
+    pub disk_bytes: u64,
+    /// The most they may take: the settings' disk cap, or what
+    /// [`EngineHandle::set_disk_cap`] last said.
+    pub disk_cap_bytes: u64,
+    /// Why loctel cannot write to disk, or `None`: the run directory could not be
+    /// made, or the last write to a segment failed (the volume is full) and none
+    /// has worked since. While it is set the data that did not fit stays in
+    /// memory, up to the store's limits.
+    pub spill_error: Option<String>,
 }
 
 /// Namespace for [`Engine::start`].
@@ -164,7 +207,8 @@ impl Engine {
         let EngineConfig {
             bind_ip,
             settings,
-            store,
+            mut store,
+            spill_base,
             rules_path,
         } = config;
 
@@ -173,6 +217,33 @@ impl Engine {
             .thread_name("loctel-engine")
             .build()
             .context("cannot start the engine's runtime")?;
+
+        // The run directory comes first: it deletes what a killed run left, and the
+        // store spills into it. One that cannot be made (a read-only temp
+        // directory) is no reason not to start: loctel runs in memory.
+        let mut run_dir = None;
+        let mut spill_error = None;
+        if let Some(base) = &spill_base {
+            match RunDir::create(base) {
+                Ok(dir) => {
+                    store.spill_dir = Some(dir.path().to_path_buf());
+                    // A store with a place for its logs is not held to the count
+                    // of one in memory: the Logs screen scrolls through ten
+                    // million lines (decision 0053).
+                    store = store.with_spill_limits();
+                    run_dir = Some(dir);
+                }
+                Err(error) => {
+                    let reason = format!(
+                        "cannot make the run directory in {}: {error}; keeping everything in memory",
+                        base.display()
+                    );
+                    eprintln!("loctel: {reason}");
+                    spill_error = Some(reason);
+                }
+            }
+        }
+        store.disk_cap_bytes = settings.disk_cap_bytes;
 
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
         let store = Store::new(store, Arc::clone(&clock));
@@ -214,6 +285,7 @@ impl Engine {
             log_rate,
             rules: Arc::clone(&rules),
             accepted,
+            spill_error,
             listeners: parking_lot::Mutex::new(Listeners {
                 grpc,
                 http,
@@ -241,6 +313,7 @@ impl Engine {
                     grpc: Some(grpc_stop),
                     http: Some(http_stop),
                     mcp: Some(mcp_stop),
+                    run_dir,
                 })),
             }),
         })
@@ -272,6 +345,9 @@ struct Running {
     grpc: Option<ReceiverShutdown>,
     http: Option<ReceiverShutdown>,
     mcp: Option<McpShutdown>,
+    /// This run's directory of segment files, deleted when it is dropped: after
+    /// the receivers have stopped.
+    run_dir: Option<RunDir>,
 }
 
 /// What it takes to start a listener, at launch and again when its port moves.
@@ -338,6 +414,9 @@ struct State {
     rules: Arc<Rules>,
     /// Spans and logs the sink accepted (after the rules) since launch.
     accepted: Arc<AtomicU64>,
+    /// Why there is no run directory, when one was asked for and could not be
+    /// made.
+    spill_error: Option<String>,
     /// The listeners, which [`EngineHandle::rebind`] moves.
     listeners: parking_lot::Mutex<Listeners>,
 }
@@ -346,12 +425,19 @@ impl State {
     fn snapshot(&self) -> EngineStatus {
         let now = self.clock.now_unix_nano();
         let dropped = self.rules.set().totals();
+        let stats = self.store.stats();
         EngineStatus {
             paused: self.paused.load(Ordering::Acquire),
             listeners: self.listeners.lock().all(),
             spans_per_sec: self.span_rate.per_sec(now),
             logs_per_sec: self.log_rate.per_sec(now),
-            stats: self.store.stats(),
+            disk_bytes: stats.disk_bytes,
+            disk_cap_bytes: self.store.disk_cap_bytes(),
+            spill_error: stats
+                .spill_error
+                .clone()
+                .or_else(|| self.spill_error.clone()),
+            stats,
             rules: self.rules.set().statuses(),
             rules_file_error: self.rules.error(),
             dropped_spans: dropped.spans,
@@ -386,6 +472,9 @@ impl StatusSource for State {
             rules: status.rules.iter().map(rule_dto).collect(),
             rules_file_error: status.rules_file_error,
             dropped_fraction: status.dropped_fraction,
+            disk_bytes: status.disk_bytes,
+            disk_cap_bytes: status.disk_cap_bytes,
+            spill_error: status.spill_error,
         }
     }
 }
@@ -454,6 +543,15 @@ impl EngineHandle {
     /// A snapshot: pause, endpoints, rates and what the store holds.
     pub fn status(&self) -> EngineStatus {
         self.shared.state.snapshot()
+    }
+
+    /// Changes the most the store's segment files may take, and applies it at
+    /// once: if they take more, the oldest segments are deleted, whole, with the
+    /// traces and logs in them, until they are under it (`Store::set_disk_cap`).
+    /// What the Settings window calls when the cap changes. It is not saved
+    /// here: `settings.toml` is the caller's.
+    pub fn set_disk_cap(&self, bytes: u64) {
+        self.shared.state.store.set_disk_cap(bytes);
     }
 
     /// While paused, the receivers keep answering success and everything
@@ -661,6 +759,7 @@ impl Shared {
             grpc,
             http,
             mcp,
+            run_dir,
         }) = running
         else {
             return;
@@ -679,6 +778,10 @@ impl Shared {
         } else {
             runtime.shutdown_background();
         }
+        // The segment files are of this run only. Whatever still holds the store
+        // (the window, on its way out) keeps what is in memory, and reads of what
+        // was spilled find nothing.
+        drop(run_dir);
     }
 }
 

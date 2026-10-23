@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::Parser;
-use loctel_engine::{EngineConfig, RulesFile, Settings};
+use loctel_engine::{EngineConfig, RulesFile, Settings, default_spill_base};
 
 /// loctel: receive OpenTelemetry traces and logs from services on this
 /// machine, show which service failed, and answer AI agents over MCP.
@@ -46,6 +46,13 @@ pub struct Cli {
     /// milliseconds (default 10000). For tests.
     #[arg(long, value_name = "N")]
     pub completeness_ms: Option<u64>,
+
+    /// Keep everything in memory: do not move traces and logs to temporary
+    /// segment files. By default loctel spills to a `run-<pid>-<time>` directory
+    /// in `loctel/` of the system's temporary directory, up to the disk cap of
+    /// the settings, and deletes it when it quits.
+    #[arg(long)]
+    pub no_spill: bool,
 }
 
 impl Cli {
@@ -68,7 +75,9 @@ impl Cli {
     }
 
     /// The engine's configuration: `settings` with the port flags applied on
-    /// top, the rules file, and the completeness flag on the store.
+    /// top, the rules file, the completeness flag on the store, and where the
+    /// store spills (the run directory under the system's temporary directory,
+    /// unless `--no-spill`).
     pub fn engine_config(&self, mut settings: Settings) -> EngineConfig {
         if let Some(port) = self.grpc_port {
             settings.otlp_grpc_port = port;
@@ -82,6 +91,7 @@ impl Cli {
         let mut config = EngineConfig {
             settings,
             rules_path: Some(self.rules_path()),
+            spill_base: (!self.no_spill).then(default_spill_base),
             ..EngineConfig::default()
         };
         if let Some(millis) = self.completeness_ms {
@@ -109,6 +119,35 @@ mod tests {
         assert_eq!(config.settings, Settings::default());
         assert_eq!(config.store, EngineConfig::default().store);
         assert!(config.bind_ip.is_loopback());
+    }
+
+    #[test]
+    fn spilling_is_the_default_and_no_spill_keeps_everything_in_memory() {
+        // The app spills into a run directory under the system's temporary
+        // directory (Milestone 5) ...
+        let cli = parse(&[]);
+        assert!(!cli.no_spill);
+        assert_eq!(
+            cli.engine_config(Settings::default()).spill_base,
+            Some(std::env::temp_dir().join("loctel"))
+        );
+
+        // ... unless told not to, and neither changes the store's own limits.
+        let cli = parse(&["--no-spill"]);
+        assert!(cli.no_spill);
+        let config = cli.engine_config(Settings::default());
+        assert_eq!(config.spill_base, None);
+        assert_eq!(config.store, EngineConfig::default().store);
+    }
+
+    #[test]
+    fn the_disk_cap_comes_from_the_settings() {
+        let settings = Settings {
+            disk_cap_bytes: 7 * 1024 * 1024 * 1024,
+            ..Settings::default()
+        };
+        let config = parse(&[]).engine_config(settings);
+        assert_eq!(config.settings.disk_cap_bytes, 7 * 1024 * 1024 * 1024);
     }
 
     #[test]

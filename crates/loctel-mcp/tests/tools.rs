@@ -18,7 +18,7 @@ use common::*;
 use loctel_mcp::{LoctelTools, RuleDto, RuleLanguageDto, RuleScopeDto, StatusDto, StatusSource};
 use loctel_meshgen::Scenario;
 use loctel_meshgen::checkout::{EXCEPTION_MESSAGE, EXCEPTION_STACKTRACE, EXCEPTION_TYPE};
-use loctel_model::{Severity, SpanKind};
+use loctel_model::{Severity, Span, SpanKind, TraceId};
 use loctel_store::{ManualClock, Store};
 use rmcp::model::CallToolResult;
 use serde_json::{Value, json};
@@ -765,6 +765,69 @@ async fn get_status_reports_what_the_source_says() {
         r["listeners"][1]["error"],
         "Address already in use (os error 98)"
     );
+}
+
+#[tokio::test]
+async fn mcp_status_has_disk_fields() {
+    // What loctel keeps on disk, what it may keep, and why it cannot write.
+    let status = StatusDto {
+        disk_bytes: 1_300_000_000,
+        disk_cap_bytes: 4 * 1024 * 1024 * 1024,
+        spill_error: Some("No space left on device (os error 28)".to_owned()),
+        ..sample_status()
+    };
+    let fixture = Fixture::with_status(Arc::new(FakeStatus(status)));
+
+    let r = fixture.call("get_status", json!({})).await;
+
+    assert_eq!(r["disk_bytes"], 1_300_000_000u64);
+    assert_eq!(r["disk_cap_bytes"], 4_294_967_296u64);
+    assert_eq!(r["spill_error"], "No space left on device (os error 28)");
+    // The rest of the status is as before.
+    assert_eq!(r["traces_held"], 4);
+
+    // A healthy disk: the numbers, and `spill_error` there as `null` (a key
+    // without a `?` is always present).
+    let fixture = Fixture::new();
+    let r = fixture.call("get_status", json!({})).await;
+    assert_eq!(r["disk_bytes"], 0);
+    assert_eq!(r["disk_cap_bytes"], 4_294_967_296u64);
+    assert_eq!(r.get("spill_error"), Some(&Value::Null), "{r}");
+}
+
+#[tokio::test]
+async fn status_cuts_a_long_spill_error_at_2000_characters() {
+    let long = "x".repeat(2_500);
+    let cut = format!("{}…(truncated)", "x".repeat(2_000));
+    let status = StatusDto {
+        spill_error: Some(long),
+        ..sample_status()
+    };
+    let fixture = Fixture::with_status(Arc::new(FakeStatus(status)));
+
+    let r = fixture.call("get_status", json!({})).await;
+
+    assert_eq!(r["spill_error"], cut.as_str());
+}
+
+#[test]
+fn the_status_schema_requires_the_disk_fields() {
+    let tool = LoctelTools::definitions()
+        .into_iter()
+        .find(|tool| tool.name == "get_status")
+        .expect("get_status");
+    let schema = Value::Object((**tool.output_schema.as_ref().unwrap()).clone());
+    let required: Vec<&str> = schema["required"]
+        .as_array()
+        .expect("required keys")
+        .iter()
+        .map(|key| key.as_str().unwrap())
+        .collect();
+    for key in ["disk_bytes", "disk_cap_bytes", "spill_error"] {
+        assert!(required.contains(&key), "{key} is required: {required:?}");
+    }
+    let description = tool.description.as_deref().unwrap_or_default();
+    assert!(description.contains("disk"), "{description}");
 }
 
 #[tokio::test]
@@ -1780,4 +1843,161 @@ async fn status_cuts_long_rule_text_at_2000_characters() {
     assert_eq!(r["rules"][0]["name"], cut.as_str());
     assert_eq!(r["rules"][0]["error"], cut.as_str());
     assert_eq!(r["rules_file_error"], cut.as_str());
+}
+
+// --- bounded work (Milestone 5, plan Task 5) ------------------------------------------
+
+/// A trace ID with `n` in its low bytes, for tests that need more than 255.
+fn big_trace_id(n: u32) -> TraceId {
+    let mut bytes = [0u8; 16];
+    bytes[12..].copy_from_slice(&n.to_be_bytes());
+    TraceId(bytes)
+}
+
+/// How a trace of [`load_many`] ends.
+#[derive(Clone, Copy)]
+enum Outcome {
+    Ok,
+    /// The root span errors.
+    Failed,
+    /// A span inside errors, the root does not.
+    ErrorInside,
+}
+
+/// Trace `n`: a root and a child, starting `n` ms after [`BASE`], so a higher
+/// `n` is newer.
+fn many_trace(n: u32, outcome: Outcome) -> Vec<Span> {
+    let at = u64::from(n);
+    let mut root = span(1, 1, None, "web-bff", "GET /", SpanKind::Server, (at, 5));
+    let mut child = span(1, 2, Some(1), "orders", "load", SpanKind::Internal, (at, 2));
+    match outcome {
+        Outcome::Ok => {}
+        Outcome::Failed => root = erroring(root, "boom"),
+        Outcome::ErrorInside => child = erroring(child, "retried"),
+    }
+    for span in [&mut root, &mut child] {
+        span.trace_id = big_trace_id(n);
+    }
+    vec![root, child]
+}
+
+/// Puts traces `1..=count` in the fixture's store, trace `n` ending as
+/// `outcome(n)` says, and lets them all go quiet.
+fn load_many(fixture: &Fixture, count: u32, outcome: impl Fn(u32) -> Outcome) {
+    for from in (1..=count).step_by(5_000) {
+        let to = (from + 4_999).min(count);
+        let spans = (from..=to)
+            .flat_map(|n| many_trace(n, outcome(n)))
+            .collect();
+        fixture.store.ingest_spans(spans);
+    }
+    settle(&fixture.clock);
+    assert_eq!(fixture.store.stats().traces, count as usize);
+}
+
+#[tokio::test]
+async fn recent_failures_builds_bounded_summaries() {
+    // 50,000 traces and 3 failed ones among the newest 100: the answer is those
+    // 3, and the work is theirs. No summary is built for the other 49,997.
+    let fixture = Fixture::new();
+    let failed_at = [49_990, 49_950, 49_910];
+    load_many(&fixture, 50_000, |n| {
+        if failed_at.contains(&n) {
+            Outcome::Failed
+        } else {
+            Outcome::Ok
+        }
+    });
+
+    let before = fixture.store.summaries_built();
+    let r = fixture.call("recent_failures", json!({ "limit": 5 })).await;
+    let built = fixture.store.summaries_built() - before;
+
+    let failed = r["failed"].as_array().unwrap();
+    let got: Vec<&str> = failed
+        .iter()
+        .map(|f| f["trace"]["trace_id"].as_str().unwrap())
+        .collect();
+    let want: Vec<String> = failed_at
+        .iter()
+        .map(|&n| big_trace_id(n).to_string())
+        .collect();
+    assert_eq!(got, want, "newest first");
+    assert_eq!(r["errors_inside"], json!([]));
+    assert!(
+        built <= 300,
+        "recent_failures built {built} summaries of 50,000 traces"
+    );
+}
+
+#[tokio::test]
+async fn recent_failures_does_not_build_summaries_for_a_full_list() {
+    // Every trace failed except the two oldest, which have an error inside. The
+    // list of those can never fill, so the pass reaches the end of the index; it
+    // must still build only the 5 + 2 summaries it returns.
+    let fixture = Fixture::new();
+    load_many(&fixture, 50_000, |n| {
+        if n <= 2 {
+            Outcome::ErrorInside
+        } else {
+            Outcome::Failed
+        }
+    });
+
+    let before = fixture.store.summaries_built();
+    let r = fixture.call("recent_failures", json!({ "limit": 5 })).await;
+    let built = fixture.store.summaries_built() - before;
+
+    assert_eq!(r["failed"].as_array().unwrap().len(), 5);
+    assert_eq!(
+        r["failed"][0]["trace"]["trace_id"],
+        big_trace_id(50_000).to_string(),
+        "the newest failure first"
+    );
+    let inside: Vec<&str> = r["errors_inside"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["trace_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        inside,
+        [big_trace_id(2).to_string(), big_trace_id(1).to_string()],
+        "newest first"
+    );
+    assert!(
+        built <= 300,
+        "recent_failures built {built} summaries of 50,000 traces"
+    );
+}
+
+#[tokio::test]
+async fn search_traces_builds_one_page_of_summaries() {
+    // The tool over a big store: a page of 20 costs about 20 summaries, with
+    // and without a filter that rejects most traces.
+    let fixture = Fixture::new();
+    load_many(&fixture, 20_000, |n| {
+        if n % 1_000 == 0 {
+            Outcome::Failed
+        } else {
+            Outcome::Ok
+        }
+    });
+
+    for args in [
+        json!({}),
+        json!({ "errors_only": true }),
+        json!({ "service": "orders", "limit": 7 }),
+    ] {
+        let limit = args["limit"].as_u64().unwrap_or(20);
+        let before = fixture.store.summaries_built();
+        let r = fixture.call("search_traces", args.clone()).await;
+        let built = fixture.store.summaries_built() - before;
+        let returned = r["traces"].as_array().unwrap().len() as u64;
+        assert!(returned >= 1, "{args}");
+        assert!(
+            built <= limit + 1,
+            "{args}: a page of {returned} built {built} summaries"
+        );
+    }
 }

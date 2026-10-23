@@ -1,6 +1,6 @@
 [package]
 name = "xtask"
-description = "Repo automation: screenshots, version, release notes, MCP smoke test"
+description = "Repo automation: screenshots, version, release notes, MCP smoke test, performance budgets"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

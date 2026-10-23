@@ -1,10 +1,10 @@
 //! Log severity.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// OTLP severity, collapsed to the six levels loctel shows. Ordered from
 /// `Unspecified` (lowest) to `Fatal`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
     Unspecified,

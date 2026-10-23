@@ -2,7 +2,8 @@
 
 use std::fmt;
 
-use serde::{Serialize, Serializer};
+use serde::de::{Deserializer, Visitor};
+use serde::{Deserialize, Serialize, Serializer};
 
 /// Why an identifier could not be built.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,6 +79,21 @@ fn copy_bytes<const N: usize>(bytes: &[u8]) -> Result<[u8; N], IdError> {
     })
 }
 
+/// Reads the hex form of an `N`-byte id (see [`parse_hex`]).
+struct HexVisitor<const N: usize>;
+
+impl<const N: usize> Visitor<'_> for HexVisitor<N> {
+    type Value = [u8; N];
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} hexadecimal characters", N * 2)
+    }
+
+    fn visit_str<E: serde::de::Error>(self, text: &str) -> Result<[u8; N], E> {
+        parse_hex::<N>(text).map_err(E::custom)
+    }
+}
+
 macro_rules! define_id {
     ($(#[$meta:meta])* $name:ident, $len:literal) => {
         $(#[$meta])*
@@ -110,9 +126,26 @@ macro_rules! define_id {
             }
         }
 
+        /// Hex text in a human-readable format (JSON), and the raw bytes in
+        /// a binary one (postcard), which is half the size.
         impl Serialize for $name {
             fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-                serializer.collect_str(self)
+                if serializer.is_human_readable() {
+                    serializer.collect_str(self)
+                } else {
+                    self.0.serialize(serializer)
+                }
+            }
+        }
+
+        /// Reads either form back. The hex text may be in either case.
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                if deserializer.is_human_readable() {
+                    deserializer.deserialize_str(HexVisitor::<$len>).map(Self)
+                } else {
+                    <[u8; $len]>::deserialize(deserializer).map(Self)
+                }
             }
         }
     };

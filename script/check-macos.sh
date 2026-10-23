@@ -13,6 +13,12 @@
 # machine. So when rustc compiles that one crate, this script first drops empty
 # placeholder files where it will look. Nothing is linked or run, so empty
 # files are enough. See docs/decisions/0009-macos-check-from-linux.md.
+#
+# Build scripts that compile C for the Mac (zstd-sys, under the store's segment
+# files) cannot: a Linux machine has no Apple SDK headers, and its `cc` does not
+# know `-arch`. So the C compiler for this one target is `script/stub-cc.sh`,
+# which writes empty objects. Same reasoning: nothing is linked or run. See
+# docs/decisions/0044-segment-file-format.md.
 set -euo pipefail
 
 if [ "${LOCTEL_RUSTC_WRAPPER:-}" = "1" ]; then
@@ -29,4 +35,5 @@ rustup target add aarch64-apple-darwin >/dev/null
 
 export LOCTEL_RUSTC_WRAPPER=1
 export RUSTC_WRAPPER="$PWD/script/check-macos.sh"
+export CC_aarch64_apple_darwin="$PWD/script/stub-cc.sh"
 exec cargo clippy --target aarch64-apple-darwin -p loctel-macos -p loctel-app "$@" -- -D warnings

@@ -161,6 +161,10 @@ run. Nothing below has run on a Mac or on `macos-26`:
 - `PlistBuddy`, `plutil`, `codesign`, `ditto` and `hdiutil` behave as the
   script assumes, and the ad-hoc signature survives the copy into the `.dmg`;
 - the bundled loctel starts headless from the bundle and exits 0 on SIGTERM;
+- (since Milestone 5) `zstd-sys` compiles its C sources with the runner's own clang
+  (`script/check-macos.sh` only hands it a stand-in, so the C has never been built for
+  the Mac before this job), and the smoke test's loctel makes and deletes its run
+  directory under the runner's `$TMPDIR/loctel`;
 - `GITHUB_TOKEN` is allowed to create releases and tags in this repository
   (the repository setting "Workflow permissions" must not force read-only: the
   workflow asks for `contents: write` itself, which an organisation policy can

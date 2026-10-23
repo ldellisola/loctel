@@ -62,6 +62,12 @@ pub enum LoadState {
     /// The first read found no such trace (it was never received, or has been
     /// evicted or cleared).
     Missing,
+    /// The trace was held and is not any more: the store dropped it (the disk cap
+    /// deleted the segment it was in, the trace limit evicted it, or the store was
+    /// cleared). The screen says so ([`NO_LONGER_HELD`](crate::views::NO_LONGER_HELD)) and
+    /// has the `Back` button; the snapshot it had is still the model's, and the
+    /// trace shows again if it comes back (a late span for it).
+    Evicted,
 }
 
 /// What the model tells the views besides "something changed".
@@ -488,12 +494,22 @@ impl TraceModel {
             return;
         }
         match read.trace {
-            TraceRead::Unchanged => {}
+            TraceRead::Unchanged => {
+                if self.state == LoadState::Evicted {
+                    self.state = LoadState::Loaded;
+                    cx.notify();
+                }
+            }
             TraceRead::Gone => {
-                // A trace that was there and is gone (evicted, cleared) keeps
-                // what the screen shows; one never found is missing.
-                if self.snapshot.is_none() {
-                    self.state = LoadState::Missing;
+                // A trace that was there and is gone (evicted by the disk cap,
+                // cleared) is said to be gone; one never found is missing.
+                let state = if self.snapshot.is_none() {
+                    LoadState::Missing
+                } else {
+                    LoadState::Evicted
+                };
+                if self.state != state {
+                    self.state = state;
                     cx.notify();
                 }
             }
@@ -513,6 +529,11 @@ impl TraceModel {
             old.spans.len() == snapshot.spans.len() && old.complete == snapshot.complete
         });
         if unchanged {
+            // The same trace, back after it was gone.
+            if self.state == LoadState::Evicted {
+                self.state = LoadState::Loaded;
+                cx.notify();
+            }
             return;
         }
         let selection_before = self.selected();

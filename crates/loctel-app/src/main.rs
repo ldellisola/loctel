@@ -4,6 +4,13 @@
 //! line per listener and one for the discard rules, and runs until SIGINT or
 //! SIGTERM.
 //!
+//! In every mode the engine moves traces and logs it no longer needs in memory to
+//! temporary files in a directory of its own under the system's temporary
+//! directory (`$TMPDIR/loctel/run-<pid>-<time>/`), keeps them under the disk cap
+//! of the settings and deletes the directory when it shuts down, which every way
+//! of quitting does (a run that was killed leaves its directory, and the next one
+//! deletes it). `--no-spill` keeps everything in memory instead.
+//!
 //! Without `--headless` on macOS it is the product: a menu bar item and no
 //! window at launch, no Dock icon (`loctel_macos::install`), running until the
 //! popover's `Quit loctel`. A click on the icon opens the popover (status, rates,

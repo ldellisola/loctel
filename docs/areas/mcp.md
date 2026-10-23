@@ -41,7 +41,7 @@ the tool's output schema, plus the same JSON as text.
 
 | tool | arguments | returns |
 |---|---|---|
-| `get_status` | none | `{paused, listeners:[{name,address,state,error?}], spans_per_sec, logs_per_sec, traces_held, spans_held, logs_held, rules:[RuleDto], rules_file_error, dropped_fraction}` |
+| `get_status` | none | `{paused, listeners:[{name,address,state,error?}], spans_per_sec, logs_per_sec, traces_held, spans_held, logs_held, rules:[RuleDto], rules_file_error, dropped_fraction, disk_bytes, disk_cap_bytes, spill_error}` |
 | `get_marker` | none | `{marker:"<unix nanos>", time:"<RFC 3339>"}` |
 | `list_services` | `since?` | `{services:[{name, requests, errors, error_rate, last_seen}]}` |
 | `get_service_map` | `since?` | `{nodes:[{id,kind,requests,errors}], edges:[{from,to,calls,errors}]}` |
@@ -68,7 +68,16 @@ The DTOs (`src/dto.rs`):
   `unknown`, `trace`, `debug`, `info`, `warn`, `error` or `fatal`.
 - **`StatusDto`** (`get_status`) has, besides the listeners, rates and counts of
   M1, the discard rules (see "Rules in `get_status`" below): `rules`,
-  `rules_file_error` and `dropped_fraction`.
+  `rules_file_error` and `dropped_fraction`; and, since Milestone 5, the disk:
+  `disk_bytes` (what loctel keeps in its temporary segment files, 0 when it runs
+  with `--no-spill`), `disk_cap_bytes` (the most it may keep; the oldest data
+  is deleted whole past it) and `spill_error` (`null`, or why loctel could not write
+  to disk the last time it tried, such as `No space left on device (os error 28)`,
+  cut at 2,000 characters like the rule texts). While `spill_error` is set,
+  what does not fit on disk stays in memory up to loctel's limits, and loctel tries
+  again every minute. The three keys are always there (`spill_error` as `null`
+  when all is well). They come from the same engine state as the window's status
+  box and the popover's disk tile, so the three cannot disagree.
 - **`RuleDto`:** `name, language ("traceql"|"logql"), scope? ("trace"|"span"),
   enabled, error?, dropped_spans, dropped_logs, dropped_traces`.
 
@@ -216,7 +225,10 @@ Answers stay small by default (design §8: well under about 8k tokens).
   from `search_traces` and `search_logs`, which ends a reader's loop instead of
   restarting it, and an error from `get_trace`.
 - **`recent_failures`** reads newest first until it has `limit` failed traces
-  and `limit` traces with errors inside. `error_logs` are the trace's logs of
+  and `limit` traces with errors inside: one pass over the store's index
+  (`Store::recent_failures`) that makes a summary for the traces it returns and
+  for no other, however many traces are held (50,000 traces with 3 failures is
+  3 summaries; see "Bounded work" in `store.md`). `error_logs` are the trace's logs of
   level error or worse, linked by trace ID, **oldest first, the first 10**.
   `exception` is `trace_exception` (the failed-in span's, else the nearest
   ancestor's, else the first). A failed trace and a trace with errors inside are
@@ -290,7 +302,13 @@ To add a tool, follow `.claude/skills/add-mcp-tool/SKILL.md`.
 - `crates/loctel-mcp/tests/tools.rs`: the tools through `call`, on a store fed
   from `loctel-meshgen` through the real converter, with a manual clock moved
   past the quiet period. Every successful result is validated against its
-  tool's output schema.
+  tool's output schema. Milestone 5, Task 5 adds the bounded-work tests, which
+  put 50,000 traces in the store and count the summaries a call makes with the
+  store's `summaries_built` hook: `recent_failures_builds_bounded_summaries` (3
+  failures among the newest 100, `limit` 5: at most a few hundred summaries, in
+  fact 3), `recent_failures_does_not_build_summaries_for_a_full_list` (every trace
+  failed, and the list of traces with errors inside cannot fill) and
+  `search_traces_builds_one_page_of_summaries`.
 - `crates/loctel-mcp/tests/budget.rs`: every tool's default answer fits
   `ANSWER_TEXT_BUDGET` on the checkout, the health checks and a huge trace.
 - `crates/loctel-mcp/tests/http.rs`: a real rmcp client over HTTP, both

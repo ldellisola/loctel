@@ -3,23 +3,26 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-use crate::attr::{Attributes, serialize_attributes};
+use crate::attr::{Attributes, deserialize_attributes, serialize_attributes};
 use crate::exception::ExceptionInfo;
 use crate::ids::{SpanId, TraceId};
 use crate::resource::Resource;
 use crate::severity::Severity;
 
 /// One log line with its context.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LogRecord {
     pub time_unix_nano: u64,
     pub observed_unix_nano: u64,
     pub severity: Severity,
     pub severity_text: String,
     pub body: String,
-    #[serde(serialize_with = "serialize_attributes")]
+    #[serde(
+        serialize_with = "serialize_attributes",
+        deserialize_with = "deserialize_attributes"
+    )]
     pub attributes: Attributes,
     pub trace_id: Option<TraceId>,
     pub span_id: Option<SpanId>,

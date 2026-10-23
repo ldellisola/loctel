@@ -9,8 +9,8 @@ Design references: §9.1 (app lifecycle), §9.2 (menu bar popover and Settings),
 
 Status: written and type-checked, **never run**. Everything in "Unverified
 until the M1 Mac check", "Unverified until the M2 Mac check", "Unverified until
-the M3 Mac check" and "Unverified until the M4 Mac check" below is a claim from
-reading the crates, not something anyone has seen work.
+the M3 Mac check", "Unverified until the M4 Mac check" and "Unverified until the M5 Mac
+check" below is a claim from reading the crates, not something anyone has seen work.
 
 ## What is in the crate
 
@@ -112,7 +112,7 @@ and what its actions do.
   the display of the screen unknown, GPUI refusing the window) the main window opens
   instead (`open_or_focus`) and the reason is printed once. loctel never becomes
   unreachable.
-- **Settings** opens in a window of its own (520 by 360, one at a time) with the
+- **Settings** opens in a window of its own (520 by 480, one at a time) with the
   activation policy `Regular` while it is open, so that it gets the keyboard and a
   Dock icon; see the next section for when the icon goes.
 
@@ -273,6 +273,13 @@ this whenever you touch `crates/loctel-macos/` or the macOS parts of
 `objc2`, `gpui-pre` and `gpui-tray` APIs and lints the result; it does not link
 or run anything. A cold run takes about 50 s. Why it needs a wrapper script:
 [`decisions/0009-macos-check-from-linux.md`](../decisions/0009-macos-check-from-linux.md).
+Since Milestone 5 it also hands cc-rs a stand-in C compiler for the Mac target
+(`script/stub-cc.sh`, which writes empty object files): `zstd-sys`, under the
+store's segment files, compiles C, and a Linux machine has no Apple SDK for it
+([`decisions/0044-segment-file-format.md`](../decisions/0044-segment-file-format.md)).
+A new dependency whose build script compiles C is covered the same way; one that
+needs more than a C compiler from the SDK (a header search, a linker probe) is
+not, and the check will say so.
 
 The Linux gate does run the tests of the plain-Rust modules (`cargo test -p
 loctel-macos`): the popover's anchoring, the first-launch rules and the icon files.
@@ -456,7 +463,7 @@ and report in words what it sees:
   likewise.
 - **The fallback.** Only if you can force it (for instance by denying the window): the
   main window opens instead, with one line on stderr, and loctel stays reachable.
-- **Settings window activation.** `Settings…` opens the window 520 by 360 at the
+- **Settings window activation.** `Settings…` opens the window 520 by 480 at the
   front and focused, with the Dock icon on, even when no other window was open (the
   policy goes `Regular` before the window opens and back to `Accessory` when the last
   loctel window closes; the popover's own window never counts). Asking again brings
@@ -471,6 +478,41 @@ and report in words what it sees:
   Discard rules, and bring an open window forward on that screen.
 - **`Edit discard rules…` is gone** from the macOS shell with the menu; the rules
   are edited in the Discard rules screen, or in `rules.toml` by hand.
+
+## Unverified until the M5 Mac check
+
+Milestone 5 changed no AppKit code. What it changed for the Mac is what runs under
+the same binary, and nobody has run any of it on a Mac: the Linux gate and the
+`perf` job exercise the same Rust code on Linux, and `script/check-macos.sh` only
+type-checks it for `aarch64-apple-darwin` (the C of `zstd-sys` is not even compiled
+there, it gets a stand-in; the release job on `macos-26` is the first real build).
+The Milestone 5 section of the Mac checklist (`docs/milestones/mac-checklist.md`) asks
+the tester to confirm, and to report in words what they see:
+
+- **The run directory.** `$TMPDIR/loctel/run-<pid>-<secs>/` is made at start under
+  macOS's per-user temporary directory (`std::env::temp_dir()`, which is `$TMPDIR`:
+  `/var/folders/.../T/`, and `open "$TMPDIR/loctel"` in Terminal shows it in Finder). It holds
+  `traces-NNNNNN.seg` and `logs-NNNNNN.seg` while data arrives, and is deleted when loctel
+  quits. Quit by `Quit loctel` or ⌘Q, which shuts the engine down: a force quit or a crash
+  leaves it, and the next start deletes it (the check is `kill(pid, 0)`, which is the same
+  call on macOS; the known gap, a pid that another process has reused, is described under
+  "The run directory" in `store.md`).
+- **Segment files on APFS.** Records are written with `pwrite` and read through `mmap`
+  (`memmap2`); both behave as on Linux by the book, and nothing is synced. What a Mac
+  must say is whether a long run (the checklist's ten minutes of steady traffic) levels
+  off in memory in Activity Monitor, since the mapped pages count differently there than
+  `VmRSS` does on Linux, and whether the disk cap of 1 GB keeps the folder under 1 GB.
+- **The speed the budgets promise.** The budgets are measured on Linux, 4 vCPUs. The
+  Mac's own targets are by hand: the window in under half a second, the 100,000-span trace
+  scrolling smoothly and opening as fast cold as hot, and the Logs scrollbar through two
+  million lines without stalls.
+- **The Settings window at 520 by 480** (it was 360 high) with the `Storage` section, and
+  the popover's disk tile, drawn by the same GPUI on Metal. The `Apply` of a lower cap
+  deletes data at once; the tile follows within a few seconds.
+- **The light theme.** Both themes pass a contrast check by arithmetic, which says
+  nothing about how Apple's glass behind the sidebar and the toolbar changes what the
+  eye sees. The checklist asks the tester to look at every screen in Light and to report
+  anything faint.
 
 ## Tests
 

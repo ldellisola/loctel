@@ -91,6 +91,9 @@ pub fn sample_status() -> StatusDto {
         rules: Vec::new(),
         rules_file_error: None,
         dropped_fraction: 0.0,
+        disk_bytes: 0,
+        disk_cap_bytes: 4 * 1024 * 1024 * 1024,
+        spill_error: None,
     }
 }
 

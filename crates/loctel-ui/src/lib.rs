@@ -30,7 +30,8 @@
 //!   [`RulesModel`](app::RulesModel), the Discard rules screen's (the rules read
 //!   every second, and the editor session with its preview), and
 //!   [`open_settings_window`](app::open_settings_window), the Settings window
-//!   (Milestone 4): 520 by 360, not resizable, one at a time.
+//!   (Milestone 4): 520 by 480 (360 before Milestone 5 added `Storage`), not
+//!   resizable, one at a time.
 //! - [`views`] holds the views of the main window's screens: the live
 //!   [`MapView`](views::MapView) and the [`TraceTableView`](views::TraceTableView)
 //!   (the TraceQL bar, the two toggles and the table) of the home screen, and
@@ -41,14 +42,17 @@
 //!   [`RulesView`](views::RulesView) (the cards of the rules, and beside them the
 //!   [`RuleEditorView`](views::RuleEditorView) with its preview), and the
 //!   Settings window's [`SettingsView`](views::SettingsView) (the three ports
-//!   with the state of their endpoints, the login switch, `Apply` and `Close`)
+//!   with the state of their endpoints, the disk cap with what is in use, the
+//!   login switch, `Apply` and `Close`)
 //!   and the menu bar popover's [`PopoverView`](views::PopoverView) (the status
-//!   pill, four stats, the endpoints, the rules line and the actions, all of which
+//!   pill, four stats (the fourth is the disk), the endpoints, the rules line and
+//!   the actions, all of which
 //!   it asks of a [`PopoverActions`](views::PopoverActions); glass through an
 //!   optional [`Backdrop`](app::Backdrop)).
 //! - [`menu_text`] holds the exact strings for the status line, the discard
 //!   rules line and the rates, so the macOS menu and the view cannot drift apart.
-//! - [`Theme`] holds the colours; [`register_fonts`] the bundled typeface.
+//! - [`Theme`] holds the colours; [`register_fonts`] the bundled typeface;
+//!   [`contrast`] the WCAG ratio the theme is tested with (Milestone 5).
 //! - `testing` (behind the `screenshot` feature) renders any view headlessly
 //!   to a PNG and compares it pixel for pixel with a reference.
 //!
@@ -56,6 +60,7 @@
 
 pub mod app;
 mod assets;
+pub mod contrast;
 pub mod menu_text;
 pub mod model;
 mod status_view;

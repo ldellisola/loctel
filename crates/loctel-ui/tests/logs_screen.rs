@@ -667,7 +667,12 @@ fn the_list_stops_at_20000_rows_with_a_footer() {
     );
     clock.advance(Duration::from_secs(30));
     let (mut driver, _) = window_on(store, &Theme::dark());
-    open_logs(&mut driver, None);
+    // Milestone 5: a list of more than 20,000 lines that the store can count (no
+    // query, or a selector of a service and levels) is not paged but windowed
+    // (`tests/logs_scale.rs`). The paged list, and its cap, are what any other
+    // search gets: this regex on the service matches every line and cannot be
+    // counted, so the list is the paged one over the same 21,000 lines.
+    open_logs(&mut driver, Some(r#"{service_name=~".+"}"#));
 
     // 40 pages of 500 make 20,000; the loop asks for more than that.
     for _ in 0..45 {

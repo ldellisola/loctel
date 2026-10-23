@@ -1,16 +1,19 @@
 //! The resource (the emitting service) of a span or log record.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-use crate::attr::{Attributes, serialize_attributes, str_attr};
+use crate::attr::{Attributes, deserialize_attributes, serialize_attributes, str_attr};
 
 /// What a service calls itself when it does not say.
 pub const UNKNOWN_SERVICE: &str = "unknown_service";
 
 /// Attributes describing the emitting entity, shared by all its telemetry.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Resource {
-    #[serde(serialize_with = "serialize_attributes")]
+    #[serde(
+        serialize_with = "serialize_attributes",
+        deserialize_with = "deserialize_attributes"
+    )]
     pub attributes: Attributes,
 }
 

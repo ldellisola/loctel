@@ -21,7 +21,11 @@ pub struct Settings {
     /// MCP port. MCP always listens on loopback.
     pub mcp_port: u16,
     /// How much telemetry may be spilled to disk before the oldest goes
-    /// (design §5). Not enforced until the spill-to-disk store exists.
+    /// (design §5): the engine gives it to the store at start
+    /// ([`Engine::start`](crate::Engine::start)), and
+    /// [`EngineHandle::set_disk_cap`](crate::EngineHandle::set_disk_cap) applies a
+    /// new one while loctel runs. 4 GiB by default; the Settings window takes 1 to
+    /// 100 GB.
     pub disk_cap_bytes: u64,
     /// Start loctel when the user logs in (design §9.1).
     pub start_at_login: bool,

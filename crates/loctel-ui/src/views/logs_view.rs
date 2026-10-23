@@ -39,16 +39,28 @@
 //!
 //! Rows within [`PREFETCH_ROWS`] of the end of the loaded rows ask the model for
 //! the next page as they are drawn.
+//!
+//! **A list of more than 20,000 lines** (Milestone 5, Task 7) is not a GPUI
+//! `list`: its pixels are `f32`, which cannot say which row of ten million is on
+//! top. The model then holds a [`RowWindow`](crate::model::window::RowWindow) and
+//! the view draws the rows in it, whole rows from the top down, at a fixed 30 px,
+//! with a scrollbar of its own on the right (an 8 px track and a thumb at least
+//! 24 px tall, from [`RowWindow::thumb`](crate::model::window::RowWindow::thumb)):
+//! a turn of the wheel scrolls rows, a press or a drag on the track moves the
+//! thumb's middle to the pointer. The footer says `10,000,000 lines · newest
+//! first`. An expanded line is taller by its details and pushes the rows under it
+//! down, out of the viewport. The view tells the model how tall the list is.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, AppContext as _, Bounds, Context, Div, Entity, EventEmitter, FontWeight,
-    InteractiveElement as _, IntoElement, ListAlignment, ListOffset, ListState, ParentElement as _,
-    Pixels, Point, Render, Rgba, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Window, canvas, div, list, point, prelude::FluentBuilder as _, px,
+    InteractiveElement as _, IntoElement, ListAlignment, ListOffset, ListState, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point, Render, Rgba,
+    ScrollWheelEvent, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
+    Window, canvas, div, list, point, prelude::FluentBuilder as _, px, relative,
 };
 use gpui_kit::base::{Scrollbar, ScrollbarAxis};
 use gpui_kit::component::ActiveTheme as _;
@@ -61,8 +73,8 @@ use super::histogram_view::HistogramView;
 use crate::Theme;
 use crate::app::{LogsControls, LogsModel, LogsModelEvent, PANEL_RADIUS};
 use crate::model::logs::{
-    BACK_TO_SEARCH, EXAMPLE_QUERY, LevelBadge, LogRow, NEW_LINES_PILL, PREFETCH_ROWS, error_line,
-    level_is_on, levels_with,
+    BACK_TO_SEARCH, EXAMPLE_QUERY, LevelBadge, LogRow, NEW_LINES_PILL, PREFETCH_ROWS, ROW_PX,
+    error_line, level_is_on, levels_with,
 };
 use crate::model::rules::{Draft, suggest_from_log};
 
@@ -77,7 +89,11 @@ pub const SHOW_AROUND: &str = "Show lines around this one";
 pub const DISCARD_LIKE_THIS: &str = "Discard lines like this\u{2026}";
 
 /// The height of a row, in pixels.
-pub const ROW_HEIGHT: f32 = 30.0;
+pub const ROW_HEIGHT: f32 = ROW_PX;
+/// The width of the track of a windowed list's scrollbar, in pixels, and how far
+/// it is from the right edge.
+pub const SCROLLBAR_WIDTH: f32 = 8.0;
+const SCROLLBAR_INSET: f32 = 2.0;
 /// The widths of the columns that do not share what is left, in pixels: the
 /// message has the rest.
 pub const TIME_WIDTH: f32 = 96.0;
@@ -128,6 +144,11 @@ pub enum LogsPart {
     ShowAround,
     /// The `Discard lines like this…` button of the expanded line.
     Discard,
+    /// The track of the scrollbar of a windowed list (more than 20,000 lines);
+    /// present only then.
+    Scrollbar,
+    /// The thumb of that scrollbar.
+    Thumb,
 }
 
 /// Where the parts of the latest frame are, in window coordinates.
@@ -172,6 +193,14 @@ pub struct LogsView {
     controls: Entity<LogsControls>,
     list: ListState,
     frame: Rc<Frame>,
+    /// How tall the list area was in the latest frame, in pixels (0 before the
+    /// first): what the model is told, for a windowed list.
+    list_height: Rc<Cell<f32>>,
+    /// Where a windowed list was drawn from in the latest frame: the position of
+    /// its top row and of the first row the model holds. `None` for a paged list.
+    place: Cell<Option<(u64, u64)>>,
+    /// The scrollbar's thumb is being dragged.
+    dragging: bool,
     /// Keeps the observation of the model, its events and the input alive.
     _subscriptions: [Subscription; 3],
 }
@@ -218,6 +247,9 @@ impl LogsView {
             controls,
             list,
             frame: Rc::new(Frame::default()),
+            list_height: Rc::new(Cell::new(0.0)),
+            place: Cell::new(None),
+            dragging: false,
             _subscriptions: subscriptions,
         }
     }
@@ -245,9 +277,51 @@ impl LogsView {
         self.bounds_of(part).map(|bounds| bounds.center())
     }
 
+    /// Where the row at `index` among the model's rows is drawn in a windowed
+    /// list, as of the latest frame: its 30 px slot. `None` when it is not in
+    /// view. (Rows under an expanded line are lower than this says.)
+    fn windowed_row_bounds(&self, index: usize) -> Option<Bounds<Pixels>> {
+        let (top, base) = self.place.get()?;
+        let list = self.bounds_of(LogsPart::List)?;
+        let position = base.checked_add(index as u64)?;
+        let from_top = position.checked_sub(top)?;
+        let y = list.top() + px(from_top as f32 * ROW_HEIGHT);
+        (y < list.bottom()).then(|| Bounds {
+            origin: point(list.left(), y),
+            size: gpui::size(list.size.width, px(ROW_HEIGHT)),
+        })
+    }
+
+    /// A press or a drag of the scrollbar at `at`: the middle of the thumb goes
+    /// to the pointer.
+    fn scroll_to_pointer(&mut self, at: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(track) = self.bounds_of(LogsPart::Scrollbar) else {
+            return;
+        };
+        let height = f32::from(track.size.height);
+        if height <= 0.0 {
+            return;
+        }
+        let along = (f32::from(at.y - track.top()) / height).clamp(0.0, 1.0);
+        let fraction = self
+            .model
+            .read(cx)
+            .row_window()
+            .map(|window| window.fraction_for_thumb_centre(f64::from(along)));
+        if let Some(fraction) = fraction {
+            self.model
+                .update(cx, |model, cx| model.jump_fraction(fraction, cx));
+        }
+    }
+
     /// The middle of the row at `index`, as of the latest frame; `None` when the
     /// row has not been drawn (it is above the viewport, or not laid out yet).
     pub fn row_center(&self, index: usize) -> Option<Point<Pixels>> {
+        if self.place.get().is_some() {
+            return self
+                .windowed_row_bounds(index)
+                .map(|bounds| bounds.center());
+        }
         self.list.bounds_for_item(index).map(|bounds| {
             // The row proper, not the details of an expanded one.
             point(bounds.center().x, bounds.top() + px(ROW_HEIGHT / 2.0))
@@ -257,7 +331,11 @@ impl LogsView {
     /// The middle of the trace link of the row at `index`, as of the latest
     /// frame. `None` when the row has not been drawn or is in no trace.
     pub fn trace_link_center(&self, index: usize) -> Option<Point<Pixels>> {
-        let bounds = self.list.bounds_for_item(index)?;
+        let bounds = if self.place.get().is_some() {
+            self.windowed_row_bounds(index)?
+        } else {
+            self.list.bounds_for_item(index)?
+        };
         Some(point(
             bounds.right() - px(PAD_X + TRACE_WIDTH / 2.0),
             bounds.top() + px(ROW_HEIGHT / 2.0),
@@ -267,6 +345,11 @@ impl LogsView {
     /// Where the list is scrolled to: the index of the first row in view and how
     /// many pixels of it are above the viewport. `(0, 0.0)` is the top.
     pub fn scroll_offset(&self) -> (usize, f32) {
+        // A windowed list is scrolled by whole rows: its top row, and no part of
+        // it above the viewport.
+        if let Some((top, _)) = self.place.get() {
+            return (usize::try_from(top).unwrap_or(usize::MAX), 0.0);
+        }
         let top = self.list.logical_scroll_top();
         (top.item_ix, f32::from(top.offset_in_item))
     }
@@ -325,6 +408,12 @@ impl LogsView {
 
     /// The rows changed: the list's count, and what it measured, follow.
     fn rows_changed(&mut self, event: &LogsModelEvent, cx: &mut Context<Self>) {
+        // A windowed list draws the rows the model holds, from its window: there
+        // is no list to keep in step.
+        if self.model.read(cx).windowed() {
+            cx.notify();
+            return;
+        }
         match *event {
             LogsModelEvent::Reset => {
                 let rows = self.model.read(cx).rows().len();
@@ -399,22 +488,40 @@ impl Render for LogsView {
         self.frame.borrow_mut().clear();
         let theme = *cx.global::<Theme>();
 
-        // The list's count is the model's: a safety net for any event this view
-        // has not mirrored, so the list can never ask for a row that is not
-        // there.
-        let rows = self.model.read(cx).rows().len();
-        if self.list.item_count() != rows {
-            self.list.reset_with_uniform_height(rows, px(ROW_HEIGHT));
-        }
+        let windowed = self.model.read(cx).windowed();
+        self.place.set(
+            self.model
+                .read(cx)
+                .row_window()
+                .map(|window| (window.top(), self.model.read(cx).window_base())),
+        );
+        if !windowed {
+            // The list's count is the model's: a safety net for any event this
+            // view has not mirrored, so the list can never ask for a row that is
+            // not there.
+            let rows = self.model.read(cx).rows().len();
+            if self.list.item_count() != rows {
+                self.list.reset_with_uniform_height(rows, px(ROW_HEIGHT));
+            }
 
-        // Tell the model where the list is. Scrolling away from the top pauses
-        // the tail and scrolling back resumes it. The model is updated after
-        // this frame, not during it.
-        let at_top = self.at_top();
-        if self.model.read(cx).scrolled_away() == at_top {
+            // Tell the model where the list is. Scrolling away from the top
+            // pauses the tail and scrolling back resumes it. The model is updated
+            // after this frame, not during it.
+            let at_top = self.at_top();
+            if self.model.read(cx).scrolled_away() == at_top {
+                cx.defer_in(window, move |view, _window, cx| {
+                    view.model
+                        .update(cx, |model, cx| model.set_at_top(at_top, cx));
+                });
+            }
+        }
+        // Tell the model how tall the list was last frame: a windowed list shows
+        // as many rows as fit.
+        let measured = self.list_height.get();
+        if measured > 0.0 && (self.model.read(cx).viewport_px() - measured).abs() >= 0.5 {
             cx.defer_in(window, move |view, _window, cx| {
                 view.model
-                    .update(cx, |model, cx| model.set_at_top(at_top, cx));
+                    .update(cx, |model, cx| model.set_viewport_px(measured, cx));
             });
         }
 
@@ -427,7 +534,7 @@ impl Render for LogsView {
                 model.tail_paused(),
                 model.banner(),
                 self.empty_state(cx),
-                model.footer(),
+                model.footer_text(),
             )
         };
         let frame = &self.frame;
@@ -566,7 +673,9 @@ impl Render for LogsView {
                 .child(measure(frame, LogsPart::Banner))
         });
 
-        let rows_list = {
+        let rows_list = if windowed {
+            self.windowed_rows(cx).into_any_element()
+        } else {
             let model = self.model.clone();
             let view = cx.entity();
             let frame = Rc::clone(frame);
@@ -575,6 +684,21 @@ impl Render for LogsView {
                 render_row(index, &model, &view, &frame, &mono, cx)
             })
             .size_full()
+            .into_any_element()
+        };
+        let scrollbar = if windowed {
+            self.windowed_scrollbar(&theme, cx).into_any_element()
+        } else {
+            div()
+                .absolute()
+                .inset_0()
+                .child(
+                    Scrollbar::new(&self.list)
+                        .id("logs-scrollbar")
+                        .axis(ScrollbarAxis::Vertical)
+                        .viewport_from_layout(),
+                )
+                .into_any_element()
         };
 
         let list_area = div()
@@ -582,14 +706,24 @@ impl Render for LogsView {
             .flex_1()
             .min_h_0()
             .child(rows_list)
-            .child(
-                div().absolute().inset_0().child(
-                    Scrollbar::new(&self.list)
-                        .id("logs-scrollbar")
-                        .axis(ScrollbarAxis::Vertical)
-                        .viewport_from_layout(),
-                ),
-            )
+            .child(scrollbar)
+            .child(measure_height(&self.list_height))
+            .when(windowed, |area| {
+                // The thumb follows a drag that leaves the track, within the list.
+                area.on_mouse_move(cx.listener(|view, event: &MouseMoveEvent, _, cx| {
+                    if view.dragging && event.pressed_button == Some(MouseButton::Left) {
+                        view.scroll_to_pointer(event.position, cx);
+                    }
+                }))
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(|view, _: &MouseUpEvent, _, _| view.dragging = false),
+                )
+                .on_mouse_up_out(
+                    MouseButton::Left,
+                    cx.listener(|view, _: &MouseUpEvent, _, _| view.dragging = false),
+                )
+            })
             .when_some(empty, |area, text| {
                 area.child(
                     div()
@@ -652,6 +786,100 @@ impl Render for LogsView {
             .child(search)
             .child(list_panel)
     }
+}
+
+impl LogsView {
+    /// The rows of a windowed list: those of the model's window, whole rows from
+    /// the top down at 30 px, clipped by the list area. A row the model has not
+    /// read yet is an empty slot. A turn of the wheel scrolls rows.
+    fn windowed_rows(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let model = self.model.clone();
+        let view = cx.entity();
+        let frame = Rc::clone(&self.frame);
+        let mono = cx.theme().mono_font_family.clone();
+        let held: Vec<Option<usize>> = {
+            let logs = model.read(cx);
+            logs.row_window()
+                .map(|window| window.visible().map(|at| logs.row_at(at)).collect())
+                .unwrap_or_default()
+        };
+        let rows: Vec<AnyElement> = held
+            .into_iter()
+            .map(|index| match index {
+                Some(index) => render_row(index, &model, &view, &frame, &mono, cx),
+                None => div().w_full().h(px(ROW_HEIGHT)).into_any_element(),
+            })
+            .collect();
+        div()
+            .id("logs-window")
+            .absolute()
+            .inset_0()
+            .overflow_hidden()
+            .flex()
+            .flex_col()
+            .on_scroll_wheel(cx.listener(|view, event: &ScrollWheelEvent, _, cx| {
+                // GPUI's delta is the offset change: negative shows what is below.
+                let dy = -f32::from(event.delta.pixel_delta(px(ROW_HEIGHT)).y);
+                view.model.update(cx, |model, cx| model.scroll_px(dy, cx));
+                cx.stop_propagation();
+            }))
+            .children(rows)
+    }
+
+    /// The scrollbar of a windowed list: an 8 px track down the right edge and a
+    /// thumb (at least 24 px) at the place of the window among the lines. A press
+    /// on it puts the middle of the thumb under the pointer, and a drag carries it.
+    fn windowed_scrollbar(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let (start, length) = self
+            .model
+            .read(cx)
+            .row_window()
+            .map_or((0.0, 1.0), |window| window.thumb());
+        let frame = &self.frame;
+        div()
+            .id("logs-window-scrollbar")
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .right(px(SCROLLBAR_INSET))
+            .w(px(SCROLLBAR_WIDTH))
+            .rounded_full()
+            .bg(rgba(theme.text, 0.05))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|view, event: &MouseDownEvent, _, cx| {
+                    view.dragging = true;
+                    view.scroll_to_pointer(event.position, cx);
+                    cx.stop_propagation();
+                }),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .top(relative(start))
+                    .h(relative(length))
+                    .rounded_full()
+                    .bg(rgba(theme.text, 0.30))
+                    .child(measure(frame, LogsPart::Thumb)),
+            )
+            .child(measure(frame, LogsPart::Scrollbar))
+    }
+}
+
+/// An invisible canvas over its parent that writes the parent's height into
+/// `height` while the frame is prepainted.
+fn measure_height(height: &Rc<Cell<f32>>) -> impl IntoElement {
+    let height = Rc::clone(height);
+    canvas(
+        move |bounds, _window, _cx| height.set(f32::from(bounds.size.height)),
+        |_, (), _, _| {},
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
 }
 
 /// A floating content panel: rounded, with the panel fill and a hairline.
@@ -764,7 +992,7 @@ fn render_row(
     cx: &mut App,
 ) -> AnyElement {
     let theme = *cx.global::<Theme>();
-    let (row, details, record, target, total) = {
+    let (row, details, record, target, total, windowed) = {
         let logs = model.read(cx);
         let Some(row) = logs.rows().get(index).cloned() else {
             return div().into_any_element();
@@ -776,9 +1004,11 @@ fn render_row(
             expanded.then(|| logs.record(index).cloned()).flatten(),
             logs.context_target() == Some(index),
             logs.rows().len(),
+            logs.windowed(),
         )
     };
-    if index + PREFETCH_ROWS >= total {
+    // A windowed list reads by position, not by page.
+    if !windowed && index + PREFETCH_ROWS >= total {
         model.update(cx, |model, cx| model.load_more(cx));
     }
 
