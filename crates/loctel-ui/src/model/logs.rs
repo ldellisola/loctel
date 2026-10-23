@@ -11,8 +11,8 @@
 use std::sync::Arc;
 
 use loctel_model::{LogRecord, Severity, SpanId, TraceId};
-use loctel_query::logql::{self, LogQuery};
-use loctel_store::{LevelSet, LogId};
+use loctel_query::logql::{self, LogQuery, StringMatcher};
+use loctel_store::{LevelSet, LogFilter, LogId};
 
 use super::colors::ServiceColors;
 use super::format;
@@ -35,6 +35,17 @@ pub const MAX_ROWS: usize = 20_000;
 /// How close to the end of the loaded rows a row must be drawn for the next
 /// page to be read: within this many rows.
 pub const PREFETCH_ROWS: usize = 50;
+
+/// The height of a row of the list, in pixels (design 9.2).
+pub const ROW_PX: f32 = 30.0;
+
+/// A list that matches more lines than this, with a search the store keeps counts
+/// for ([`indexed_filter`]), is not loaded in pages (which stop at [`MAX_ROWS`])
+/// but read by position through a [`RowWindow`](super::window::RowWindow): every
+/// line can be reached, 10,000,000 of them if the store holds that many. A list
+/// of this many lines or fewer, and any list of a search the store cannot count,
+/// is the paged list of Milestone 4.
+pub const WINDOWED_ABOVE: u64 = MAX_ROWS as u64;
 
 /// The footer of a list that stopped at [`MAX_ROWS`].
 pub const CAPPED_FOOTER: &str = "Showing the newest 20,000 matching lines";
@@ -377,4 +388,93 @@ pub fn merge_head<T>(held: &[T], id: impl Fn(&T) -> LogId, fresh: &[LogId]) -> O
         return None;
     }
     Some(held.partition_point(|row| id(row) >= oldest))
+}
+
+// --- the part of a search the store keeps counts for -----------------------------------------------
+
+/// The seven severities, lowest first.
+const SEVERITIES: [Severity; 7] = [
+    Severity::Unspecified,
+    Severity::Trace,
+    Severity::Debug,
+    Severity::Info,
+    Severity::Warn,
+    Severity::Error,
+    Severity::Fatal,
+];
+
+/// What the store can count and find by position without reading the lines
+/// (`LogFilter::is_indexed`): one service and a set of levels. A search is
+/// *indexed* when it comes to no more than that.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexedFilter {
+    /// Only this service (exact name), or every service.
+    pub service: Option<String>,
+    /// The levels kept: the toggles, narrowed by the selector's `level`
+    /// matchers. The empty set keeps nothing.
+    pub levels: LevelSet,
+}
+
+impl IndexedFilter {
+    /// The store's filter for lines in `[since, until)`: only the window, the
+    /// service and the levels, so that `Store::log_count`, `Store::logs_at` and
+    /// `Store::log_histogram` answer from what the store keeps about its chunks.
+    pub fn filter(&self, since_unix_nano: Option<u64>, until_unix_nano: Option<u64>) -> LogFilter {
+        LogFilter {
+            since_unix_nano,
+            until_unix_nano,
+            service: self.service.clone(),
+            levels: (self.levels != LevelSet::ALL).then_some(self.levels),
+            ..LogFilter::default()
+        }
+    }
+}
+
+/// Whether a search is indexed ([`IndexedFilter`]), and as what: `query` is the
+/// LogQL bar's query (`None` for an empty bar) and `toggles` the level toggles.
+///
+/// A search is indexed when it has no query, or only a stream selector whose
+/// matchers are `service_name="..."` (one service) and `level` matchers of any
+/// kind (`=`, `!=`, `=~`, `!~`, each judged against the seven level names, so
+/// `level=~"warn|error"` is the set of warn and error). Any other label, a
+/// regex or a negation on the service, a second service, or any stage after the
+/// selector (a line filter, `| json`, a label filter) is not: `None`, and the
+/// list is the paged one, which asks the query of every line.
+pub fn indexed_filter(query: Option<&LogQuery>, toggles: LevelSet) -> Option<IndexedFilter> {
+    let mut service: Option<String> = None;
+    let mut levels = toggles;
+    if let Some(query) = query {
+        if !query.stages.is_empty() {
+            return None;
+        }
+        for matcher in &query.matchers {
+            match (matcher.label.as_str(), &matcher.matcher) {
+                ("service_name", StringMatcher::Equal(name)) => {
+                    if service.as_ref().is_some_and(|held| held != name) {
+                        // Two services at once match nothing; the query path says so.
+                        return None;
+                    }
+                    service = Some(name.clone());
+                }
+                ("level", level) => {
+                    levels = SEVERITIES
+                        .into_iter()
+                        .filter(|severity| {
+                            levels.contains(*severity) && level.matches(severity.level_label())
+                        })
+                        .fold(LevelSet::default(), LevelSet::with);
+                }
+                _ => return None,
+            }
+        }
+    }
+    Some(IndexedFilter { service, levels })
+}
+
+/// The count over a windowed list, which knows how many lines match:
+/// `10,000,000 lines · newest first`. It is the right of the level toggles and
+/// the footer of the list.
+pub fn total_line(total: u64) -> String {
+    let shown = usize::try_from(total).unwrap_or(usize::MAX);
+    count_line(shown, false, false)
 }

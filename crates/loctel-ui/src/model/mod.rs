@@ -20,6 +20,8 @@
 //! - [`logs`]: the Logs screen's rows, the expanded line's details, the LogQL
 //!   bar's state and the query `Open in Logs` writes.
 //! - [`histogram`]: the Logs screen's volume bars and their four time labels.
+//! - [`window`]: [`RowWindow`](window::RowWindow), where the Logs list is
+//!   scrolled to when it has too many lines to hold (ten million), in rows.
 //! - [`rules`]: the Discard rules screen's cards and count texts, the total
 //!   dropped, the editor's draft and its validation, and the rule
 //!   `Discard lines like this…` suggests.
@@ -41,3 +43,4 @@ pub mod settings;
 pub mod trace_table;
 pub mod trace_view;
 pub mod waterfall;
+pub mod window;

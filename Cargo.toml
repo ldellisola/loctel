@@ -118,5 +118,16 @@ dispatch2 = "0.3"
 [profile.dev]
 debug = "line-tables-only"
 
+# The store and the C library it compresses with are built with optimisations in
+# the dev profile too: a test that fills a store with ten million logs (the Logs
+# list's, `crates/loctel-ui/tests/logs_scale.rs`) ingested them at 4.7 us each
+# unoptimised, 47 s of a 60 s budget, and at 1.1 us this way (decision 0051).
+# Everything else, and debug assertions and overflow checks, stay as they were.
+[profile.dev.package.loctel-store]
+opt-level = 3
+
+[profile.dev.package.zstd-sys]
+opt-level = 3
+
 [workspace.lints.clippy]
 all = "warn"

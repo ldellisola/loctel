@@ -630,7 +630,12 @@ details, the theme tokens and the workflow are in
   the list in pages of 500 (at most 20,000 rows), the live tail that joins the
   newest page every 500 ms without ever repeating a line (and stands still while
   the list is scrolled away from the top), the histogram every 2 s and the lines
-  around a log, reading only while the Logs screen shows; and `RulesModel`
+  around a log, reading only while the Logs screen shows, and, from Milestone 5,
+  for a search the store counts that matches more than 20,000 lines, a
+  `model::window::RowWindow` over all of them read by position (`Store::log_count`
+  and `logs_at`), so the list scrolls through ten million lines with a few hundred
+  rows in memory ([decision 0051](decisions/0051-logs-list-at-ten-million-lines.md));
+  and `RulesModel`
   (`app::rules_data`, Milestone 4) for the Discard rules screen, which reads the
   engine's rules and the share dropped once a second (in memory, not the store)
   while its screen shows and the store only for the editor's five-minute preview,

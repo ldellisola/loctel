@@ -563,6 +563,39 @@ Pinned in `tests/model_logs.rs`, over the fixed fake mesh's seven checkout logs.
   when no bucket has a log), and `labels` are the clock times at the start, a
   third, two thirds and the end of the range (cut to a millisecond, not rounded).
 
+- Milestone 5 Task 7 added what a list of ten million lines needs, pinned in
+  `tests/logs_scale.rs`:
+  - `model::window::RowWindow` is where such a list is scrolled to, in rows.
+    A 10,000,000-row list of 30 px rows is 300 million pixels, and GPUI's `f32`
+    pixels cannot tell which row is on top past about 16 million, so the window
+    counts in `u64` rows and `f64` fractions and a pixel is only ever a part of
+    one row. `RowWindow::new(total, row_px, viewport_px)`, `top()`,
+    `scroll_px(dy)` (positive shows older lines; a part of a row is kept for the
+    next turn, so three turns of 10 px are one row of 30, and the remainder is
+    dropped at either end), `scroll_rows`, `jump_fraction(f)` (the scrollbar:
+    clamped to 0 to 1, a NaN is the top), `set_top`, `visible()` (the positions
+    in view), `thumb()` (`(start, length)` as fractions of the track, never under
+    24 px, `MIN_THUMB_PX`), `fraction_for_thumb_centre(at)` (what a press at
+    `at` of the way down the track means), `set_viewport_px` and
+    `set_total(total, Anchor)`. `Anchor::Top` stays at the newest, `Row(LogId)`
+    keeps that row under the top line (the list is newest first, so a total that
+    grew grew at the top and the window moves down by as many; one that shrank
+    lost its oldest lines, which are below, so it does not move) and `Fraction`
+    keeps the same share of the way down. Tests: `row_window_math`,
+    `row_window_totals_that_grow_keep_what_the_anchor_says`,
+    `row_window_has_no_f32_limits_at_ten_billion_rows`.
+  - `indexed_filter(query, toggles)` says whether a search is one the store
+    counts, and as what (`IndexedFilter { service, levels }`): no query, or a
+    stream selector of `service_name="..."` (one name) and `level` matchers of
+    any of the four kinds (each judged against the seven level labels, so
+    `level=~"warn|error"` is warn and error, and `error` is not `fatal`), the
+    toggles narrowing them. Any other label, a regex or a negation on the
+    service, two services or any stage after the selector is `None`.
+    `IndexedFilter::filter(since, until)` is the `LogFilter` the store answers
+    `log_count`, `logs_at` and `log_histogram` for from what it keeps about its
+    chunks. `total_line(n)` is `10,000,000 lines · newest first`;
+    `WINDOWED_ABOVE` is 20,000 and `ROW_PX` 30.
+
 ### Rules models (`model::rules`)
 
 Pinned in `tests/model_rules.rs`.
@@ -1211,6 +1244,16 @@ view and a store whose clock the test moves.
   (`logs_for_span`) when the selection moves and with every refresh.
 - A trace the store does not have says `This trace is not in the store`
   (`LoadState::Missing`) and keeps polling, so one that arrives shows up.
+- A trace that was on the screen and is gone from the store (the disk cap deleted
+  the segment it was in, the trace limit evicted it, the store was cleared) says
+  `This trace is no longer held (the disk cap removed it)` (`NO_LONGER_HELD`,
+  `LoadState::Evicted`; Milestone 5 Task 7), in the middle of the body. The header
+  stays, with the root's name, the numbers, `Copy ID` and the `Back` button (Esc
+  too), but not the failure badge or `Complete`. The next read (every 2 s) is what
+  finds out; a trace that comes back (a late span, an exporter that retries) shows
+  again. `TraceView::notice(cx)` is what the body says in place of the trace
+  (`None` while it shows). Tests: `evicted_open_trace_shows_gone`,
+  `a_trace_that_comes_back_shows_again`.
 
 **The screen**, top to bottom (the panel is the content width, 1188 px at the
 default window):
@@ -1299,7 +1342,10 @@ selected and in the inspector), `trace_charges_selected_dark.png` (a click on
 600-character token, a long exception) and `long_values_shown_whole_dark.png`
 (the same with the long value shown whole). All seven were regenerated in
 Milestone 4 Task 4 for one visible change, the `Open in Logs` button at the right
-of the span-logs header. The colours of the services are the
+of the span-logs header. Milestone 5 Task 7 adds `trace_evicted_dark.png` (the
+failing checkout opened in a spilling store, then the disk cap lowered below what the
+segments take: the header without its badge, and `This trace is no longer held (the
+disk cap removed it)` in the middle). The colours of the services are the
 session's, in the order the home screen first met them (the health checks of
 `home_store` come first, so `web-bff` is not blue). The monospace face is Inter
 on Linux, as in the table. How the screen looks and scrolls on a Mac is
@@ -1405,12 +1451,65 @@ its inputs, and a result that a newer read replaced is dropped when it arrives.
 - **The range is the Logs screen's own**: the home screen's range and this one are
   separate settings, both `Last 15 minutes` at first, with the same menu.
 
+**A list of more lines than the paged list holds** (Milestone 5 Task 7, decision
+0051). The paged list above stops at 20,000 rows. When the search is *indexed*
+(`model::logs::indexed_filter`: no query, or a selector of `service_name` and
+`level` only, with the toggles) and **more than 20,000 lines match**
+(`WINDOWED_ABOVE`), the list is *windowed* instead, which is `LogsModel::windowed()`:
+
+- The model holds a `RowWindow` over the matching lines. It asks the store how
+  many there are (`Store::log_count`, from the counts of its chunks) and reads
+  the rows in view, and one viewport on each side, with `Store::logs_at`, on the
+  background executor. `rows()` are those rows only, starting at
+  `window_base()`; `row_at(position)` finds one; `total()`, `row_window()` and
+  `footer_text()` say the rest. Every line can be reached, 10,000,000 of them
+  with a few hundred rows in memory. A scroll of less than half a viewport reads
+  nothing.
+- **The view** draws the window's rows whole, from the top down at 30 px (a row
+  not read yet is an empty slot), clipped by the list area, not a GPUI `list`.
+  The scrollbar is the view's own: an 8 px track at the right edge (`LogsPart::Scrollbar`)
+  and a thumb at least 24 px tall (`LogsPart::Thumb`) from `RowWindow::thumb`; a
+  press on the track puts the middle of the thumb under the pointer, and a drag
+  carries it (`jump_fraction`); a turn of the wheel is `scroll_px`. The footer
+  (`LogsPart::Footer`) says `10,000,000 lines · newest first`, which is also the
+  count at the right of the toggles. The view tells the model how tall the list
+  is (`set_viewport_px`), so a window shows as many rows as fit.
+- **The tail does not pause** in a windowed list, because nothing is put above
+  rows the user looks at: every 500 ms it counts again and, at the top, keeps the
+  list at the top (the newest lines come in); anywhere else it reads *by the row
+  under the top line*: how many matching lines are newer than that row (a second
+  `log_count`), then the rows there, so the row stays where it was on the screen
+  whatever arrived, and a line that arrives late above it, or lines the window
+  lost at its old end, change nothing. The pill still shows away from the top
+  (`New lines · Jump to newest`; a click puts the window at the top). With the tail
+  off the list is frozen at the newest line it had (the reads leave out what
+  arrived), scrolling still works, and turning it on again catches up with the same
+  row on top. A scroll that happens while a read is out is the user's: the read
+  does not move the list back. Test: `tail_keeps_anchor_when_scrolled`.
+- **The histogram and the first read use the store's counts** whenever the search
+  is indexed, paged or windowed (the same lines match with and without the
+  query), so a store of ten million lines is not read in full every two seconds.
+- **The paged list is kept** for any search the store cannot count (a line filter,
+  `| json`, a regex on the service, any other label) and for an indexed search with
+  20,000 lines or fewer, with its footer at the cap
+  (`Showing the newest 20,000 matching lines`); and the lines-around list is a short
+  list of 51 rows. The mode is decided each time the search is read from the first
+  page (a change of the query, the toggles or the range, `Run`, `Clear all`), and a
+  paged list whose tail reaches the cap reads again, which makes it windowed.
+  Typing back and forth switches between them
+  (`indexed_and_query_paths_switch`, `the_paged_list_stays_paged_up_to_the_cap`).
+  A line expanded in a windowed list is taller by its details and pushes the rows
+  under it out of view; the list scrolls by whole rows.
+  `wheel_scrollbar_and_drag_scroll_a_windowed_list` pins the wheel, the track, the
+  thumb, the pill, an expanded row and context mode.
+
 **For tests.** `main.logs()` and `main.logs_view()` reach the model and the view;
 `LogsView::bounds_of(LogsPart)` and `center_of` give where a part (`QueryInput`,
 `Run`, `Level(badge)`, `Histogram`, `List`, `Pill`, `Banner`, `BackToSearch`,
-`Footer`, and for an expanded row `OpenTrace`, `ShowAround`, `Discard`) is in the
-latest frame, `row_center(index)` and `trace_link_center(index)` find a row,
-`scroll_offset()` says where the list is scrolled, and `input_text`, `error_line`,
+`Footer`, `Scrollbar` and `Thumb` of a windowed list, and for an expanded row
+`OpenTrace`, `ShowAround`, `Discard`) is in the latest frame, `row_center(index)` and `trace_link_center(index)` find a row,
+`scroll_offset()` says where the list is scrolled (for a windowed list the position of
+its top row, and 0), and `input_text`, `error_line`,
 `banner` and `empty_state` read what it says; `LogsView::controls()` reaches the
 toolbar's `LogsControls` (`bounds_of(ToolbarPart::LiveTail | Range | ClearAll)`).
 `tests/logs_screen.rs` has the data (`logs_store`: the failing checkout's seven
@@ -1427,8 +1526,12 @@ labels with the stack trace on three lines, and the three buttons),
 `logs_query_error_dark.png` (an unclosed selector typed: `at column 29: expected
 `,` or `}`` in red under the focused input, the rows the last good query's) and
 `logs_context_dark.png` (the lines around the `card-gateway did not answer` error:
-the banner, the target highlighted, `28 lines · oldest first`). The monospace face
-is Inter on Linux, as in the table. How the screen looks and scrolls on a Mac is
+the banner, the target highlighted, `28 lines · oldest first`) and, from Milestone 5,
+`logs_10m_middle_dark.png` (the list at the middle of ten million bulk logs, built in a
+spilling store by `logs_scale.rs`: rows from `08:01:40.000` down, each 20 us older than
+the one above it, the thumb in the middle of its 8 px track, the `New lines · Jump to
+newest` pill, and `10,000,000 lines · newest first` in the footer and at the right of the
+toggles). The monospace face is Inter on Linux, as in the table. How the screen looks and scrolls on a Mac is
 unverified.
 
 ## The Discard rules screen
@@ -1940,6 +2043,8 @@ complete; "empty store" has nothing in it.
 | `logs_expanded_dark` | `logs_screen.rs` | the same, a click on the `Charge failed…` row | that row expanded: the whole body, the labels (the stack trace on three lines), `Open trace`, `Show lines around this one`, `Discard lines like this…` |
 | `logs_query_error_dark` | `logs_screen.rs` | the same, `{service_name="payments-api"` typed | the focused input, `at column 29: expected `,` or `}`` in red under it, the rows kept |
 | `logs_context_dark` | `logs_screen.rs` | the same, the lines around the 600 ms error | the banner `Lines around 08:00:01.440 · Back to search`, `28 lines · oldest first`, the target highlighted, a scrollbar |
+| `logs_10m_middle_dark` | `logs_scale.rs` | 10,000,000 bulk logs (20 us apart, five services) in a spilling store, the list jumped to the middle | a windowed list: the rows at position 5,000,000 from `08:01:40.000`, continuous, the 8 px scrollbar with its thumb in the middle of the track, the `New lines · Jump to newest` pill, `10,000,000 lines · newest first` in the footer and at the right of the toggles |
+| `trace_evicted_dark` | `logs_scale.rs` | the failing checkout in a spilling store, opened, then the disk cap set to 1 byte | the trace view of a trace the store dropped: the header (name, numbers, `Copy ID`, `Back`) and `This trace is no longer held (the disk cap removed it)` in the middle of the body |
 | `rules_dark`, `rules_light` | `rules_screen.rs` | the rules store (failing and successful checkout, 600 health checks), three rules, 1,500 health checks and 40,000 log lines sent through them, 31% dropped | the Discard rules screen: header, subtitle and `New rule`, three cards (`1,500 spans dropped in 1,500 traces`, `1,217 lines dropped`, `Off` with its switch off) |
 | `rules_editor_dark` | `rules_screen.rs` | the same rules (only the health checks counted), a click on the first card | that card with its accent ring and the editor beside it: name, `Traces (TraceQL)` chosen, the query, the whole-trace radio, the preview with 600 spans in 600 traces, `Save`, `Cancel`, `Delete` |
 | `rules_empty_dark` | `rules_screen.rs` | no rules | `No discard rules. Nothing is dropped unless you add one.` and `Nothing dropped yet` |

@@ -309,6 +309,16 @@ let spans = bulk_traces(10_000_000, seed).starting_at(now).in_batches_of(5_000);
   converter and the store take them.
 - **The performance budgets** (Milestone 5) use `HugeTrace` for the trace they open and
   the bulk generators for everything else: see "Performance budgets" below.
+- **`crates/loctel-ui/tests/logs_scale.rs`** (Milestone 5 Task 7) puts the bulk logs in a
+  store that spills and drives the Logs screen over it: 25,000 lines in chunks of 4,096
+  for the tests of the windowed list (more than the 20,000 a paged list holds), and
+  **ten million** for `ten_million_scroll_to_middle_dark`, which builds them with a
+  thread that makes and converts the batches while the store takes the last one. The
+  big one takes about 30 s in a debug build (about 22 s of it making the data); it fits
+  because the dev profile builds `loctel-store` and `zstd-sys` with `opt-level = 3`
+  (workspace `Cargo.toml`, decision 0051): without it the store alone needs 47 s. The
+  plan allows 60 s; if the test gets near that, fix the build of the data, not the
+  size of the test.
 
 Add a scenario by adding a variant to `Scenario`, a module for it, a stream
 constant in `scenario.rs` (so it never shares IDs), a CLI value in `main.rs`,

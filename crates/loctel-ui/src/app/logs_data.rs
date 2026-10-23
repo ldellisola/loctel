@@ -25,6 +25,20 @@
 //!   is ever put above rows the user is looking at. Scrolling back, or
 //!   [`jump_to_newest`](LogsModel::jump_to_newest), resumes it. The histogram is
 //!   read every [`HISTOGRAM_REFRESH`] (2 s) while the tail is on.
+//! - **A list of more lines than that** (Milestone 5). When the search is
+//!   *indexed* ([`indexed_filter`]: no query, or a stream selector of
+//!   `service_name` and `level` only) and more than [`WINDOWED_ABOVE`] (20,000)
+//!   lines match, the list is not paged: the model holds a
+//!   [`RowWindow`] over the matching lines, counts them with `Store::log_count`
+//!   and reads the rows in view, and one viewport on each side, with
+//!   `Store::logs_at` ([`windowed`](LogsModel::windowed)). Every line can be
+//!   scrolled to, 10,000,000 of them if the store holds that many, and
+//!   [`rows`](LogsModel::rows) are only the rows read, at
+//!   [`window_base`](LogsModel::window_base) and after. The tail does not pause
+//!   there: it counts again every [`TAIL_REFRESH`] and keeps the list at the top
+//!   while it is at the top, and the row under the top line where it is
+//!   (`tail_keeps_anchor_when_scrolled`); with the tail off the list is frozen at
+//!   the newest line it had. Any other search keeps the paging above.
 //! - **Lines around** ([`show_around`](LogsModel::show_around)): the list shows
 //!   what the store holds around one line, unfiltered and oldest first, with the
 //!   line marked. The tail and the paging stand still until
@@ -61,9 +75,11 @@ use super::data::TimeRange;
 use crate::model::colors::ServiceColors;
 use crate::model::histogram::{self, Bars};
 use crate::model::logs::{
-    self, LogQueryState, LogRow, MAX_ROWS, PAGE_SIZE, context_banner, context_count_line,
-    count_line, details, footer, merge_head,
+    self, IndexedFilter, LogQueryState, LogRow, MAX_ROWS, PAGE_SIZE, ROW_PX, WINDOWED_ABOVE,
+    context_banner, context_count_line, count_line, details, footer, indexed_filter, merge_head,
+    total_line,
 };
+use crate::model::window::{Anchor, RowWindow};
 
 /// How often the newest page is read again while the tail runs.
 pub const TAIL_REFRESH: Duration = Duration::from_millis(500);
@@ -77,6 +93,10 @@ pub const HISTOGRAM_BUCKETS: usize = 48;
 /// How many lines before and after a log "Show lines around this one" reads.
 pub const CONTEXT_BEFORE: usize = 25;
 pub const CONTEXT_AFTER: usize = 25;
+
+/// How tall the list is taken to be until the view has measured it, in pixels:
+/// what a first read of a windowed list reads rows for.
+pub const DEFAULT_VIEWPORT_PX: f32 = 20.0 * ROW_PX;
 
 /// What the model tells the list view besides "something changed": what
 /// happened to the rows, in the order it happened.
@@ -156,6 +176,12 @@ pub struct LogsModel {
     expanded: Option<LogId>,
     context: Option<ContextInfo>,
     histogram: Bars,
+    /// The list's position over the matching lines, when there are more of them
+    /// than the paged list holds (see the module docs). Then `rows` and
+    /// `records` are the rows read around it, not the list.
+    windowed: Option<Windowed>,
+    /// How tall the list is, as the view last said.
+    viewport_px: f32,
 
     // Bookkeeping.
     /// Counts the reads that replace the rows. Only results of the latest
@@ -204,6 +230,8 @@ impl LogsModel {
             expanded: None,
             context: None,
             histogram: empty_bars(),
+            windowed: None,
+            viewport_px: DEFAULT_VIEWPORT_PX,
             generation: 0,
             reloading: false,
             head_reading: false,
@@ -316,14 +344,70 @@ impl LogsModel {
         footer(self.capped)
     }
 
+    /// What the footer under the list says: `10,000,000 lines · newest first`
+    /// for a windowed list ([`total_line`]), the cap's words for a paged list
+    /// that stopped at [`MAX_ROWS`], and nothing otherwise.
+    pub fn footer_text(&self) -> Option<String> {
+        match &self.windowed {
+            Some(windowed) => Some(total_line(windowed.window.total())),
+            None => self.footer().map(str::to_owned),
+        }
+    }
+
     /// The count on the right of the level toggles. See
     /// [`count_line`](crate::model::logs::count_line); in context mode it is the
-    /// lines shown, `oldest first`.
+    /// lines shown, `oldest first`, and for a windowed list the total
+    /// ([`total_line`]).
     pub fn count_line(&self) -> String {
         if self.context.is_some() {
             return context_count_line(self.rows.len());
         }
+        if let Some(windowed) = &self.windowed {
+            return total_line(windowed.window.total());
+        }
         count_line(self.rows.len(), self.more(), self.capped)
+    }
+
+    /// How tall the list was last told to be, in pixels.
+    pub fn viewport_px(&self) -> f32 {
+        self.viewport_px
+    }
+
+    /// Whether the list is windowed: it has more matching lines than the paged
+    /// list holds, and the store counts them ([`indexed_filter`]), so the list
+    /// is a [`RowWindow`] over all of them. [`rows`](Self::rows) are then the
+    /// rows read around the window, from [`window_base`](Self::window_base).
+    pub fn windowed(&self) -> bool {
+        self.windowed.is_some()
+    }
+
+    /// How many lines match, for a windowed list.
+    pub fn total(&self) -> Option<u64> {
+        self.windowed
+            .as_ref()
+            .map(|windowed| windowed.window.total())
+    }
+
+    /// Where a windowed list is scrolled to: the position of the top row and the
+    /// rows it shows ([`RowWindow::visible`]).
+    pub fn row_window(&self) -> Option<&RowWindow> {
+        self.windowed.as_ref().map(|windowed| &windowed.window)
+    }
+
+    /// The position (from the newest line, which is 0) of the first of
+    /// [`rows`](Self::rows) in a windowed list; 0 for any other.
+    pub fn window_base(&self) -> u64 {
+        self.windowed.as_ref().map_or(0, |windowed| windowed.base)
+    }
+
+    /// The index among [`rows`](Self::rows) of the row at `position` of a
+    /// windowed list, `None` when it has not been read (the view draws an empty
+    /// row there until it is) and for any other list.
+    pub fn row_at(&self, position: u64) -> Option<usize> {
+        let windowed = self.windowed.as_ref()?;
+        let index = position.checked_sub(windowed.base)?;
+        let index = usize::try_from(index).ok()?;
+        (index < self.rows.len()).then_some(index)
     }
 
     /// Whether the list is narrowed by anything the user set: a query that
@@ -432,6 +516,17 @@ impl LogsModel {
             return;
         }
         self.tail = on;
+        if let Some(windowed) = &mut self.windowed {
+            // A windowed list that stands still shows nothing newer than what it
+            // had: the reads leave out the lines that arrive.
+            windowed.until = if on {
+                None
+            } else {
+                windowed
+                    .newest
+                    .map(|newest| newest.time_unix_nano.saturating_add(1))
+            };
+        }
         cx.notify();
         if on {
             self.tick(cx);
@@ -439,11 +534,59 @@ impl LogsModel {
         }
     }
 
+    /// Scrolls a windowed list by `dy` pixels (positive shows older lines), in
+    /// rows: see [`RowWindow::scroll_px`]. The rows around the new position are
+    /// read when the ones held no longer cover it. Nothing happens to any other
+    /// list (the view scrolls it).
+    pub fn scroll_px(&mut self, dy: f32, cx: &mut Context<Self>) {
+        let Some(windowed) = &mut self.windowed else {
+            return;
+        };
+        let before = windowed.window.top();
+        windowed.window.scroll_px(dy);
+        if windowed.window.top() != before {
+            windowed.epoch += 1;
+            self.window_moved(cx);
+        }
+    }
+
+    /// Puts a windowed list `f` of the way down, 0 the newest line and 1 the
+    /// oldest: the scrollbar's jump ([`RowWindow::jump_fraction`]).
+    pub fn jump_fraction(&mut self, f: f64, cx: &mut Context<Self>) {
+        let Some(windowed) = &mut self.windowed else {
+            return;
+        };
+        let before = windowed.window.top();
+        windowed.window.jump_fraction(f);
+        if windowed.window.top() != before {
+            windowed.epoch += 1;
+            self.window_moved(cx);
+        }
+    }
+
+    /// The view says how tall the list is, in pixels. A windowed list shows as
+    /// many rows as fit, and reads the ones it lacks.
+    pub fn set_viewport_px(&mut self, viewport_px: f32, cx: &mut Context<Self>) {
+        if (self.viewport_px - viewport_px).abs() < 0.5 {
+            return;
+        }
+        self.viewport_px = viewport_px;
+        if let Some(windowed) = &mut self.windowed {
+            windowed.window.set_viewport_px(viewport_px);
+            self.window_moved(cx);
+        }
+    }
+
     /// Reads the next page and appends it. Nothing happens in context mode,
     /// while a read of the list is out, when there is no next page and at the
     /// cap.
     pub fn load_more(&mut self, cx: &mut Context<Self>) {
-        if self.context.is_some() || self.more_reading || self.reloading || self.capped {
+        if self.context.is_some()
+            || self.more_reading
+            || self.reloading
+            || self.capped
+            || self.windowed.is_some()
+        {
             return;
         }
         let Some(cursor) = self.next_cursor.clone() else {
@@ -521,6 +664,10 @@ impl LogsModel {
     /// tail; coming back to the top resumes it, and the lines that arrived
     /// meanwhile join the list at once.
     pub fn set_at_top(&mut self, at_top: bool, cx: &mut Context<Self>) {
+        // A windowed list knows where it is: it is the model's, not the view's.
+        if self.windowed.is_some() {
+            return;
+        }
         let away = !at_top;
         if self.scrolled_away == away {
             return;
@@ -535,6 +682,14 @@ impl LogsModel {
     /// The pill's click: the tail resumes from the newest lines (the list is
     /// read again from the first page, and the view puts it at the top).
     pub fn jump_to_newest(&mut self, cx: &mut Context<Self>) {
+        if let Some(windowed) = &mut self.windowed {
+            windowed.window.set_top(0);
+            windowed.epoch += 1;
+            self.scrolled_away = false;
+            cx.notify();
+            self.read_window(true, cx);
+            return;
+        }
         self.scroll_to_top(cx);
         cx.notify();
         self.reload(cx);
@@ -603,12 +758,15 @@ impl LogsModel {
             range: self.range,
             levels: (self.levels != LevelSet::ALL).then_some(self.levels),
             query: self.applied.clone(),
+            indexed: indexed_filter(self.applied.as_deref(), self.levels),
             cursor,
             limit,
         }
     }
 
-    /// Reads the first page and, when it is back, replaces the list with it.
+    /// Reads the first page, or, when the search is indexed and more lines match
+    /// than a paged list holds, the rows at the top of a windowed list; and
+    /// when that is back, replaces the list with it.
     fn reload(&mut self, cx: &mut Context<Self>) {
         self.generation += 1;
         let generation = self.generation;
@@ -616,20 +774,34 @@ impl LogsModel {
         self.head_reading = false;
         self.more_reading = false;
         let plan = self.plan(None, PAGE_SIZE);
+        let window = RowWindow::new(0, ROW_PX, self.viewport_px);
+        let (page, drawn) = (window.page_rows(), window.drawn_rows());
         cx.spawn(async move |logs, cx| {
-            let page = cx
+            let first = cx
                 .background_executor()
-                .spawn(async move { plan.read() })
+                .spawn(async move { plan.read_first(page, drawn) })
                 .await;
-            logs.update(cx, |logs, cx| logs.apply_reload(generation, page, cx))
+            logs.update(cx, |logs, cx| logs.apply_reload(generation, first, cx))
                 .ok();
         })
         .detach();
     }
 
     /// The tail's timer: the newest page, unless the tail has a reason to stand
-    /// still.
+    /// still. A windowed list counts its lines again instead and keeps its place
+    /// ([`read_window`](Self::read_window)).
     fn tick(&mut self, cx: &mut Context<Self>) {
+        if self.windowed.is_some() {
+            let running = self.active
+                && self.tail
+                && self.context.is_none()
+                && self.loaded
+                && !self.reloading;
+            if running {
+                self.read_window(true, cx);
+            }
+            return;
+        }
         let running = self.active
             && self.tail
             && !self.scrolled_away
@@ -724,22 +896,45 @@ impl LogsModel {
         }
     }
 
-    /// The first page of a search is back: it is the list now.
-    fn apply_reload(
-        &mut self,
-        generation: u64,
-        page: Page<(LogId, LogRecord)>,
-        cx: &mut Context<Self>,
-    ) {
+    /// The first read of a search is back: it is the list now.
+    fn apply_reload(&mut self, generation: u64, first: FirstRead, cx: &mut Context<Self>) {
         if generation != self.generation {
             return;
         }
         self.reloading = false;
         self.loaded = true;
         self.context = None;
-        self.next_cursor = page.next_cursor;
         self.capped = false;
-        self.replace_rows(page.items);
+        match first {
+            FirstRead::Page(page) => {
+                self.windowed = None;
+                self.next_cursor = page.next_cursor;
+                self.replace_rows(page.items);
+            }
+            FirstRead::Window { spec, read } => {
+                self.next_cursor = None;
+                self.scrolled_away = false;
+                let mut window = RowWindow::new(read.total, ROW_PX, self.viewport_px);
+                window.set_top(0);
+                // The tail is off: the list is frozen at the newest line it has.
+                let until = (!self.tail)
+                    .then(|| {
+                        read.newest
+                            .map(|newest| newest.time_unix_nano.saturating_add(1))
+                    })
+                    .flatten();
+                self.windowed = Some(Windowed {
+                    window,
+                    spec,
+                    base: read.start,
+                    until,
+                    newest: read.newest,
+                    reading: false,
+                    epoch: 0,
+                });
+                self.replace_rows(read.items);
+            }
+        }
         self.forget_gone_expansion();
         cx.emit(LogsModelEvent::Reset);
         cx.notify();
@@ -824,6 +1019,12 @@ impl LogsModel {
                 cx.emit(LogsModelEvent::Truncated(MAX_ROWS));
             }
             changed = true;
+            if indexed_filter(self.applied.as_deref(), self.levels).is_some() {
+                // More lines match than a page-loaded list holds, and the store
+                // counts them: the list becomes a windowed one, at its top,
+                // where the tail was (the first read decides).
+                self.reload(cx);
+            }
         }
         self.forget_gone_expansion();
         if changed {
@@ -882,6 +1083,7 @@ impl LogsModel {
         self.next_cursor = None;
         self.capped = false;
         self.scrolled_away = false;
+        self.windowed = None;
         self.replace_rows(around.lines);
         self.expanded = None;
         self.context = Some(ContextInfo {
@@ -895,6 +1097,124 @@ impl LogsModel {
         }
         cx.notify();
     }
+
+    // --- the windowed list ----------------------------------------------------------------------
+
+    /// The window moved (a scroll, a jump, a taller list): the pill and the
+    /// toolbar know whether the list is at its top, and the rows around the new
+    /// place are read unless the ones held cover it.
+    fn window_moved(&mut self, cx: &mut Context<Self>) {
+        if let Some(windowed) = &self.windowed {
+            self.scrolled_away = windowed.window.top() > 0;
+        }
+        cx.notify();
+        self.read_window(false, cx);
+    }
+
+    /// Whether the rows held reach half a page beyond the rows in view on each
+    /// side (or the end of the list), so that a scroll of a few rows reads
+    /// nothing.
+    fn window_covers(&self) -> bool {
+        let Some(windowed) = &self.windowed else {
+            return true;
+        };
+        let window = &windowed.window;
+        let visible = window.visible();
+        let margin = window.page_rows() / 2;
+        let want_start = visible.start.saturating_sub(margin);
+        let want_end = visible.end.saturating_add(margin).min(window.total());
+        let held_end = windowed.base.saturating_add(self.rows.len() as u64);
+        windowed.base <= want_start && held_end >= want_end
+    }
+
+    /// Reads the rows of the windowed list around its top, and how many lines
+    /// match now, on the background executor. `force` reads even when the rows
+    /// held cover the view: the tail's count. One read is out at a time; when it
+    /// is back, [`apply_window`](Self::apply_window) reads again if the window
+    /// moved meanwhile.
+    ///
+    /// A window that is not at the top, with the tail running, is read *by the
+    /// row under its top line*: the read finds where that line is now (lines
+    /// that arrived are above it), and the list keeps showing it.
+    fn read_window(&mut self, force: bool, cx: &mut Context<Self>) {
+        if self.windowed.is_none() || (!force && self.window_covers()) {
+            return;
+        }
+        let Some(windowed) = self.windowed.as_ref() else {
+            return;
+        };
+        if windowed.reading {
+            return;
+        }
+        let top = windowed.window.top();
+        let (page, drawn) = (windowed.window.page_rows(), windowed.window.drawn_rows());
+        let (spec, until, epoch) = (windowed.spec.clone(), windowed.until, windowed.epoch);
+        let anchor = (top > 0 && until.is_none())
+            .then(|| self.row_at(top))
+            .flatten()
+            .map(|index| self.rows[index].id);
+        if let Some(windowed) = self.windowed.as_mut() {
+            windowed.reading = true;
+        }
+        let generation = self.generation;
+        let store = self.backend.store();
+        let range = self.range;
+        cx.spawn(async move |logs, cx| {
+            let read = cx
+                .background_executor()
+                .spawn(async move {
+                    let filter = spec.filter(range.since(store.now_unix_nano()), until);
+                    let total = store.log_count(&filter).unwrap_or(0);
+                    read_rows(&store, &filter, total, anchor, top, page, drawn)
+                })
+                .await;
+            logs.update(cx, |logs, cx| {
+                logs.apply_window(generation, epoch, anchor, read, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The rows around the top of the windowed list, and the number of lines
+    /// that match, are back. A window the user has not moved since the read began
+    /// takes the position the read found (where the row under its top line is
+    /// now); one that moved keeps the user's place, shifted by what arrived above
+    /// it, and is read again.
+    fn apply_window(
+        &mut self,
+        generation: u64,
+        epoch: u64,
+        anchor: Option<LogId>,
+        read: WindowRead,
+        cx: &mut Context<Self>,
+    ) {
+        if generation != self.generation {
+            return;
+        }
+        let Some(windowed) = self.windowed.as_mut() else {
+            return;
+        };
+        windowed.reading = false;
+        let moved = windowed.epoch != epoch;
+        let keep = match anchor {
+            Some(id) => Anchor::Row(id),
+            None if read.top == 0 && windowed.window.top() == 0 => Anchor::Top,
+            None => Anchor::Fraction,
+        };
+        windowed.window.set_total(read.total, keep);
+        if !moved {
+            windowed.window.set_top(read.top);
+        }
+        windowed.base = read.start;
+        windowed.newest = read.newest;
+        self.scrolled_away = windowed.window.top() > 0;
+        self.replace_rows(read.items);
+        cx.notify();
+        // The user moved while the read was out: the rows are for where the list
+        // was.
+        self.read_window(false, cx);
+    }
 }
 
 /// The histogram before its first read: no bars and no labels.
@@ -905,6 +1225,101 @@ fn empty_bars() -> Bars {
     }
 }
 
+/// Where a windowed list is, and what it needs to keep its place.
+struct Windowed {
+    window: RowWindow,
+    /// The search, as the store counts it.
+    spec: IndexedFilter,
+    /// The position of `rows[0]` of the model.
+    base: u64,
+    /// The list is frozen (the tail is off): nothing at this time or later is
+    /// counted or shown.
+    until: Option<u64>,
+    /// The newest line as of the last read: where a frozen list stops.
+    newest: Option<LogId>,
+    /// A read of the rows is out.
+    reading: bool,
+    /// Counts what the user did to the position, so that a read that was out
+    /// meanwhile does not move the list back.
+    epoch: u64,
+}
+
+/// What the first read of a search found.
+enum FirstRead {
+    /// The first page of a paged list.
+    Page(Page<(LogId, LogRecord)>),
+    /// More lines match than a page-loaded list holds, and the store counts them:
+    /// the rows at the top of a windowed list.
+    Window {
+        spec: IndexedFilter,
+        read: WindowRead,
+    },
+}
+
+/// The rows of a windowed list around one position, and the lines that match.
+struct WindowRead {
+    /// How many lines match.
+    total: u64,
+    /// Where the top row is: the position asked for, or where the line it was
+    /// asked to keep is now.
+    top: u64,
+    /// The position of the first of `items`.
+    start: u64,
+    items: Vec<(LogId, LogRecord)>,
+    /// The newest line that matches.
+    newest: Option<LogId>,
+}
+
+/// Reads the rows of the list of `filter` (indexed, `total` lines) in view from
+/// `top` (`page` rows fit whole and `drawn` are drawn) and a page on each side.
+/// With `anchor` it first finds where that line is now: how many lines that
+/// match are newer than it, which the counts of the chunks answer, and then
+/// reads (so that ties and a line that moved a few rows are found exactly).
+fn read_rows(
+    store: &Store,
+    filter: &LogFilter,
+    total: u64,
+    anchor: Option<LogId>,
+    top: u64,
+    page: u64,
+    drawn: u64,
+) -> WindowRead {
+    let max_top = total.saturating_sub(page);
+    let mut top = top.min(max_top);
+    if let Some(id) = anchor {
+        let newer = LogFilter {
+            since_unix_nano: Some(
+                filter
+                    .since_unix_nano
+                    .unwrap_or(0)
+                    .max(id.time_unix_nano.saturating_add(1)),
+            ),
+            ..filter.clone()
+        };
+        top = store.log_count(&newer).unwrap_or(0).min(max_top);
+    }
+    let start = top.saturating_sub(page);
+    let count = usize::try_from((top - start) + drawn + page).unwrap_or(usize::MAX);
+    let items = store.logs_at(filter, start, count);
+    if let Some(id) = anchor
+        && let Some(at) = items.iter().position(|(held, _)| *held == id)
+    {
+        top = (start + at as u64).min(max_top);
+    }
+    let newest = if start == 0 {
+        items.first().map(|(id, _)| *id)
+    } else {
+        store.logs_at(filter, 0, 1).first().map(|(id, _)| *id)
+    };
+    WindowRead {
+        total,
+        top,
+        start,
+        items,
+        newest,
+    }
+}
+
 /// Everything a read needs, copied out of the model so it can run on another
 /// thread.
 struct ReadPlan {
@@ -912,6 +1327,8 @@ struct ReadPlan {
     range: TimeRange,
     levels: Option<LevelSet>,
     query: Option<Arc<LogQuery>>,
+    /// The search as the store counts it, when it can ([`indexed_filter`]).
+    indexed: Option<IndexedFilter>,
     cursor: Option<String>,
     limit: usize,
 }
@@ -924,7 +1341,7 @@ struct HistogramRead {
 }
 
 impl ReadPlan {
-    /// The filter of the search, for the window that ends now.
+    /// The filter of the search, query and all, for the window that ends now.
     fn filter(&self, now: u64) -> LogFilter {
         LogFilter {
             since_unix_nano: self.range.since(now),
@@ -932,6 +1349,35 @@ impl ReadPlan {
             query: self.query.clone(),
             ..LogFilter::default()
         }
+    }
+
+    /// The filter the store can count: the search without its query, when it
+    /// comes to a service and levels alone. The histogram of a search that has
+    /// one is made from it, so a list of ten million lines does not read them
+    /// all every two seconds; the same lines match.
+    fn counted_filter(&self, now: u64) -> Option<LogFilter> {
+        self.indexed
+            .as_ref()
+            .map(|indexed| indexed.filter(self.range.since(now), None))
+    }
+
+    /// The first read of a search: the rows at the top of a windowed list when
+    /// the search is indexed and more lines match than a paged list holds, the
+    /// first page otherwise.
+    fn read_first(&self, page: u64, drawn: u64) -> FirstRead {
+        if let Some(indexed) = &self.indexed {
+            let filter = indexed.filter(self.range.since(self.store.now_unix_nano()), None);
+            if let Some(total) = self.store.log_count(&filter)
+                && total > WINDOWED_ABOVE
+            {
+                let read = read_rows(&self.store, &filter, total, None, 0, page, drawn);
+                return FirstRead::Window {
+                    spec: indexed.clone(),
+                    read,
+                };
+            }
+        }
+        FirstRead::Page(self.read())
     }
 
     /// One page of the search, newest first.
@@ -956,7 +1402,9 @@ impl ReadPlan {
             .or_else(|| self.store.oldest_log_unix_nano())
             .unwrap_or(until)
             .min(until);
-        let filter = self.filter(until);
+        let filter = self
+            .counted_filter(until)
+            .unwrap_or_else(|| self.filter(until));
         HistogramRead {
             buckets: self
                 .store
