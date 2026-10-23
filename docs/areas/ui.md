@@ -104,11 +104,12 @@ status box) and the toolbar are on every screen.
               |    `Save` / `Cancel` / `Delete` (asks first); a file edited meanwhile -> the banner
               |    arriving with a draft (`Discard lines like this…`) -> the editor opens on it, unsaved
 
- The Settings window  (Milestone 4 Task 6: not a screen but a window of its own, 520 by 360;
+ The Settings window  (Milestone 4 Task 6: not a screen but a window of its own, 520 by 480
+                       since Milestone 5 added `Storage` (360 before);
                        ⌘, in the main window opens it (Task 7), and so does the popover's
                        `Settings…` (Task 9: `loctel_macos::window::open_settings`))
-   SettingsView   three port inputs with the state of their endpoints, the login switch (macOS),
-                  `Apply` and `Close`;  app::open_settings_window opens it or focuses the open one
+   SettingsView   three port inputs with the state of their endpoints, the disk cap with what is
+                  in use (M5), the login switch (macOS), `Apply` and `Close`;  app::open_settings_window opens it or focuses the open one
 
  The menu bar popover  (Milestone 4 Task 8: a panel of its own, 336 wide, that `loctel-macos`
                         opens under the menu bar icon (Task 9, `popover::toggle`); it replaces the
@@ -163,7 +164,7 @@ the choices; decision 0031 has the two gaps of Milestone 3 that remain.
 | `LogsControls` | `app/toolbar.rs` | `LogsModel`: tail, range | | "The Logs screen" |
 | `RulesView` | `views/rules_view.rs` | `RulesModel`: cards, banners, the share dropped | `model::rules` (`rows`, `dropped_line`, `file_error_line`) | "The Discard rules screen" |
 | `RuleEditorView` | `views/rule_editor_view.rs` | `RulesModel`: the editor session (draft, preview, banner) | `model::rules` (`Draft`, `draft_error_line`, `preview_text`) | "The Discard rules screen" |
-| `SettingsView` | `views/settings_view.rs` | `UiBackend`: `settings()`, `status()` listeners once a second, `login_item()` | `model::settings` (`Form`, `endpoint_state`, `failures`) | "The Settings window" |
+| `SettingsView` | `views/settings_view.rs` | `UiBackend`: `settings()`, `status()` listeners and disk once a second, `login_item()` | `model::settings` (`Form`, `endpoint_state`, `failures`, `usage_line`) | "The Settings window" |
 | `StatusView` | `status_view.rs` | `StatusModel` | `menu_text` | "What is in the crate" |
 
 `HomeModel` (`app/data.rs`), `TraceModel` (`app/trace_data.rs`) and `LogsModel`
@@ -208,7 +209,7 @@ screens, `tests/model_logs.rs`, `tests/model_rules.rs` and `tests/model_misc.rs`
 
 | Model | What it is for | Entry points | Test file |
 |---|---|---|---|
-| `format` | durations, clock times, rates, error shares, cut-off text | `duration`, `clock`, `rate`, `error_pct`, `truncate_*` | `model_format.rs` |
+| `format` | durations, clock times, rates, error shares, sizes on disk, cut-off text | `duration`, `clock`, `rate`, `error_pct`, `bytes`, `truncate_*` | `model_format.rs` |
 | `colors` | the colour a service keeps for the run | `ServiceColors::index` | `model_table.rs` |
 | `trace_table` | the trace table's rows and `Failed in` text | `rows`, `failed_in_text`, `count_line` | `model_table.rs` |
 | `query_bar` | the TraceQL bar's state and the queries a click writes | `validate`, `service_filter`, `span_name_filter` | `model_table.rs` |
@@ -219,8 +220,8 @@ screens, `tests/model_logs.rs`, `tests/model_rules.rs` and `tests/model_misc.rs`
 | `logs` | the Logs list's rows, an expanded line's details, the LogQL bar and its error line, `Open in Logs`, the level toggles' state, the count line, the context banner, how the live tail joins a page | `rows`, `details`, `validate`, `error_line`, `span_logs_query`, `level_is_on`, `levels_with`, `count_line`, `context_banner`, `merge_head` | `model_logs.rs` |
 | `histogram` | the log volume bars and their four time labels | `bars` | `model_logs.rs` |
 | `rules` | the rule cards and their counts, the total dropped, the editor's draft, the log suggestion | `rows`, `dropped_line`, `Draft`, `suggest_from_log` | `model_rules.rs` |
-| `settings` | the Settings form's port validation | `Form::from`, `Form::validate` | `model_misc.rs` |
-| `popover` | the menu bar popover's pill, stats, endpoints and rows | `from_status` | `model_misc.rs` |
+| `settings` | the Settings form's port and disk cap validation, the storage line | `Form::from`, `Form::validate`, `Form::validate_disk_cap`, `usage_line` | `model_misc.rs` |
+| `popover` | the menu bar popover's pill, stats (the fourth is the disk), endpoints and rows | `from_status` | `model_misc.rs` |
 
 ### Formats (`model::format`)
 
@@ -233,6 +234,7 @@ them and nothing formats a number or a time by itself.
 | clock | `clock(unix_nano, utc_offset_secs)` | `HH:MM:SS.mmm` in the zone `utc_offset_secs` east of UTC; no date; milliseconds are cut, not rounded | `14:32:07.412` |
 | rate | `rate(per_sec, unit)` | 10 or more: whole; below: one decimal (so zero is `0.0`); not a non-negative number reads as zero | `84 req/s`, `0.3 req/s` |
 | error share | `error_pct(errors, total)` | one decimal; no errors, or no total, is `0%` | `2.1% err`, `0% err` |
+| size on disk | `bytes(value)` | binary units (`B`, `KB`, `MB`, `GB`, `TB`, 1 KB = 1024 B); under 10 one decimal, from 10 whole; a `.0` is left out | `0 B`, `512 KB`, `1.3 GB`, `4 GB`, `12 GB` |
 | cut-off text | `truncate_end(s, max_chars)`, `truncate_middle(s, max_chars)` | at most `max_chars` characters, `…` included; text that fits is unchanged | `abc…` (`abcdef`, 4), `ab…ij` (`abcdefghij`, 5) |
 
 Details that the examples do not show, each pinned by a test:
@@ -245,6 +247,14 @@ Details that the examples do not show, each pinned by a test:
   A value that rounds up to 10.0 reads `10 req/s`, not `10.0 req/s`. (The
   status line's `menu_text::format_rate` is a different, compact format for
   the spans/s and logs/s counters.)
+- **`bytes`** (Milestone 5) is for the disk tile and the Settings storage line, so
+  the units are binary: the cap's default of 4 GiB reads `4 GB`, and 1.3 billion
+  bytes reads `1.2 GB`. The unit comes from the exact value and the number is
+  rounded half up in it, so the unit never rolls over (a hair under 1 MB is `1024 KB`)
+  and a value that rounds to 10 reads `10 GB`, not `10.0 GB`. A size that rounds to a
+  whole at one decimal has no `.0` (`4 GB`, and 1.04 GB reads `1 GB`): the plan's
+  strings `on disk, cap 4 GB` and `Using 1.3 GB of 4 GB` need it (decision 0052).
+  `TB` is the largest unit, with as many digits as it takes.
 - **`error_pct`**: `0% err` means exactly no errors. An error count too small
   to show, one in 100,000, reads `0.0% err`, so the two can be told apart. More
   errors than total (which cannot happen) reads `100.0% err`.
@@ -642,22 +652,35 @@ Pinned in `tests/model_rules.rs`.
 Pinned in `tests/model_misc.rs`.
 
 - `settings::Form` holds the text of the three port fields (`grpc`, `http`,
-  `mcp`) and `start_at_login: Option<bool>`. `Form::from(&Settings, login)` fills
-  the ports from the saved settings and the switch from what the system says
-  (`login`, `None` where there is no login item: the settings file's own
-  `start_at_login` is never read).
+  `mcp`), the disk cap field `disk_cap_gb` (Milestone 5) and `start_at_login:
+  Option<bool>`. `Form::from(&Settings, login)` fills the ports from the saved
+  settings, the cap in whole GB (`disk_cap_bytes` rounded up to the next GB, so
+  the default 4 GiB reads `4`) and the switch from what the system says (`login`,
+  `None` where there is no login item: the settings file's own `start_at_login` is
+  never read).
 - `Form::validate()` gives the `Ports` or the problems per `Field` (`Grpc`,
   `Http`, `Mcp`, in that order). A field is digits only, 1 to 65535, blanks around
   it ignored, else `Enter a port from 1 to 65535`. Fields that are ports and share
   a number (as numbers: `4318` and `04318` are the same) each get `Each endpoint
   needs its own port`.
+- `Form::validate_disk_cap()` is the cap in bytes or the message `Enter a size
+  from 1 to 100 GB` (`DISK_CAP_RANGE`): digits only, 1 to 100, blanks around it
+  ignored, compared as a number (`04` is 4); `1.5`, `4 GB`, `0`, `101` and the
+  empty field are the message. A GB is 2^30 bytes (`BYTES_PER_GB`). The cap is
+  not a `Field` (those are the ports and their listeners) and `validate()` does
+  not look at it; `Form::is_valid()` is both. `usage_line(used, cap)` is the line
+  under the field, `Using 1.3 GB of 4 GB` (`format::bytes` of each).
 - `popover::from_status(&EngineStatus, login)` is the `Popover` (drawn by
   `views::PopoverView`, see "The popover"). `pill` is the
   first that applies, as in the status line: a failed listener `Port problem`
   (`Tone::Error`), paused `Paused` (`Tone::Warn`), else `Receiving` (`Tone::Ok`).
   `stats` are `(value, label)` for `spans per second` and `log lines per second`
-  (`menu_text::format_rate`: `413`, `1.2k`) and `traces held` and `log lines held`
-  (thousands separator: `1,200,000`). `endpoints` are `(name, address, ok)` for
+  (`menu_text::format_rate`: `413`, `1.2k`), `traces held` (thousands separator:
+  `1,204`) and, since Milestone 5, the disk: `(format::bytes(disk_bytes), "on disk,
+  cap " + format::bytes(disk_cap_bytes))`, `1.3 GB` over `on disk, cap 4 GB` (it
+  replaced `log lines held`). With a `spill_error` the value is `Disk full`, the
+  label stays, and `disk_full` is true (the view paints the value in `error_text`);
+  the pill is still only about the ports. `endpoints` are `(name, address, ok)` for
   `OTLP gRPC` and `OTLP HTTP` (`127.0.0.1:4317`) and `MCP` (the URL
   `http://127.0.0.1:4319/mcp`, which the Copy button copies); a failed listener
   shows the address it was asked for with `ok` false. `rules_line` is
@@ -1658,36 +1681,44 @@ the screen looks and behaves on a Mac is unverified.
 
 `views::SettingsView` (`src/views/settings_view.rs`, Milestone 4 Task 6) is the
 form of the Settings window, and `app::open_settings_window(backend, cx)`
-(`src/app/settings_window.rs`) opens it: 520 by 360 logical pixels, centred, not
+(`src/app/settings_window.rs`) opens it: 520 by 480 logical pixels (360 until
+Milestone 5 added `Storage`, decision 0052), centred, not
 resizable, titled `Settings`, the view in GPUI Kit's `Root` like the main window.
 If a Settings window is already open it focuses that one and returns its handle
 (the handle is kept in a GPUI global and checked against `cx.windows()`, so a
 window that was closed is forgotten and the next call opens a new one). The view
 takes the theme from the window's appearance and follows it, as `MainWindow`
-does. The disk cap is not on the form yet (Milestone 5, Task 8 puts it there); the
-engine already enforces the one in the file, and `AppBackend::apply_settings` hands
-whatever cap the settings hold to `EngineHandle::set_disk_cap`. The form's
-rules are `model::settings::Form` (see "Models"); decision 0039 has the choices
-the plan left open.
+does. Since Milestone 5 (Task 8) the form has the disk cap: the engine enforces
+it, and `AppBackend::apply_settings` hands whatever cap the settings hold to
+`EngineHandle::set_disk_cap`, so a lower one deletes the oldest data at once. The
+form's rules are `model::settings::Form` (see "Models"); decision 0039 has the
+choices the plan left open.
 
 **Layout** (the fields scroll, the buttons are pinned under them; all of it fits
-the 360 px even with all three messages showing, which `settings_invalid_dark`
-checks):
+the 480 px even with a message under every field, which `settings_invalid_dark`
+and `everything_fits_the_window_with_every_message_showing` check):
 
 | Part | What |
 |---|---|
 | title | `Settings` (18 px, semibold) |
 | `Endpoints` | a panel with a row per field: the caption (`OTLP gRPC port`, `OTLP HTTP port`, `MCP port`), a 96 px input, and how that endpoint is doing: a green dot and `listening` in `ok`, or a red dot and `failed: <reason>` in `error_text`. A text that is not a port, or a port two fields share, gets its message (`Enter a port from 1 to 65535`, `Each endpoint needs its own port`) in `error_text` under its input |
+| `Storage` | a panel with one row: the caption `Disk cap`, a 96 px input holding whole GB (`4`) and the unit `GB`. Under the input, from its left edge: the message `Enter a size from 1 to 100 GB` in `error_text` while the text is not a size, and always `Using 1.3 GB of 4 GB` (`text_tertiary`): what the segment files take of the cap in force (the engine's, read once a second, not the one being typed) |
 | `Startup` | only where `UiBackend::login_item()` is `Some` (macOS): a panel with the `Start loctel at login` switch, set from `LoginItem::is_enabled()` when the window opens |
 | buttons | `Apply` (primary; on while the form differs from what was saved and every field is valid) and `Close` (closes the window); beside them, in `error_text`, what the last Apply could not do |
 
 **Apply** (`SettingsView::apply`, the button; nothing happens while it is off):
 
 1. It takes the settings the backend has (`UiBackend::settings()`), puts the three
-   ports in them and calls `UiBackend::apply_settings`. That saves `settings.toml`
-   and rebinds the listeners whose port changed (`EngineHandle::rebind`). Every
-   other setting stays as it was; the login switch is not written to the file (the
-   system is the source of truth, see `login_item.rs`).
+   ports and the disk cap (`GB` times 2^30) in them and calls
+   `UiBackend::apply_settings`. That saves `settings.toml`, gives the engine the cap
+   (`EngineHandle::set_disk_cap`, which applies at once) and rebinds the listeners
+   whose port changed (`EngineHandle::rebind`). Every other setting stays as it
+   was; the login switch is not written to the file (the system is the source of
+   truth, see `login_item.rs`). **A cap that was not edited is saved as it was:** the
+   field holds whole GB (rounded up), and a settings file edited by hand can hold
+   1.5 GB, which a change of port must not round
+   (`a_cap_that_was_not_edited_is_saved_as_it_was`; `apply_sets_disk_cap` for the
+   edited one).
 2. **A port that cannot be bound is not an error of Apply.** It is saved; the
    listener comes back `Failed`; the row says `failed: address in use`; the line
    beside the buttons says `otlp-http: address in use` (`failures`); the other
@@ -1703,7 +1734,8 @@ checks):
    are saved. If the system refuses, `Could not change Start at login: <reason>`
    is shown (the ports stay applied) and the switch shows what
    `LoginItem::is_enabled()` says now, whatever was asked.
-5. The inputs are rewritten to the ports as saved (`" 4500 "` reads `4500`).
+5. The inputs are rewritten to the ports and the cap as saved (`" 4500 "` reads
+   `4500`, `08` reads `8`).
 
 What the last Apply could not do goes away when the form is edited again.
 
@@ -1716,23 +1748,30 @@ engine's, so while a port is edited and not applied a row still says what is tru
 of the port it listens on.
 
 **For tests.** `SettingsView` reads: `form()`, `can_apply()`, `endpoint(field)`,
-`message(field)`, `notice()`, `sections()`, `input_text(field, cx)` and
-`bounds_of(SettingsPart, cx)` / `center_of` (`Input(field)`, `Status(field)`,
-`Message(field)`, `LoginSwitch`, `Apply`, `Close`). `tests/settings_popover.rs`
-(the popover's tests are in the same file, see "The popover") drives it in a `Driver<SettingsView>` at
-520 by 360 over a `FixedBackend`: `fail_bind` makes the HTTP listener `Failed`
-the way a port in use does, `fail_save` makes `apply_settings` an error, and the
-login item is a `FakeLogin` the test can move behind the window's back. `Driver`
+`message(field)`, `disk_message()`, `disk_usage()`, `notice()`, `sections()`
+(`Endpoints`, `Storage`, and `Startup` where there is a login item),
+`input_text(field, cx)`, `disk_cap_text(cx)` and `bounds_of(SettingsPart, cx)` /
+`center_of` (`Input(field)`, `Status(field)`, `Message(field)`, `DiskCap`,
+`DiskMessage`, `DiskUsage`, `LoginSwitch`, `Apply`, `Close`).
+`tests/settings_popover.rs` (the popover's tests are in the same file, see "The
+popover") drives it in a `Driver<SettingsView>` at 520 by 480 over a
+`FixedBackend`: `fail_bind` makes the HTTP listener `Failed` the way a port in use
+does, `fail_save` makes `apply_settings` an error, `set_disk_bytes` moves what the
+status says is on disk while the window is open, and the login item is a
+`FakeLogin` the test can move behind the window's back. `apply_settings` of a
+`FixedBackend` also makes the status say the cap it was given, as the engine does. `Driver`
 gained `is_open()` for `Close` (a click that closes the window leaves nothing to
 draw).
 
-**References** (520 by 360, at 2x: 1040 by 720): `settings_dark.png` and
-`settings_light.png` (all three listening, the login switch on, `Apply` dimmed),
-`settings_edited_dark.png` (HTTP typed as 4400 and the switch clicked, not applied:
-`Apply` lit and the HTTP row still `listening`), `settings_failed_dark.png` (HTTP applied to a port that is in use: the red
-row and `otlp-http: address in use` beside the buttons) and
-`settings_invalid_dark.png` (the worst case: two fields with the same port and a
-third out of range, each with its message, and everything still in view). How the
+**References** (520 by 480, at 2x: 1040 by 960; all five show 1.3 GB in use of the
+default cap, so the line reads `Using 1.3 GB of 4 GB`): `settings_dark.png` and
+`settings_light.png` (all three listening, `4` GB, the login switch on, `Apply`
+dimmed), `settings_edited_dark.png` (HTTP typed as 4400 and the switch clicked, not
+applied: `Apply` lit and the HTTP row still `listening`), `settings_failed_dark.png`
+(HTTP applied to a port that is in use: the red row and `otlp-http: address in use`
+beside the buttons) and `settings_invalid_dark.png` (the worst case: two fields
+with the same port, a third out of range and the cap typed as 101, each with its
+message, and everything still in view). How the
 window looks and behaves on a Mac (its chrome, that it is not resizable, how it
 takes the focus from a menu bar app) is unverified.
 
@@ -1756,7 +1795,7 @@ top:
 | Row | What |
 |---|---|
 | title and pill | `loctel` (16 px, semibold) and the pill: a dot and the words `Receiving` (green), `Paused` (amber) or `Port problem` (red, in `error_text`), as `popover::from_status` says (a failed listener over paused over receiving) |
-| stats | four tiles, two by two (56 px high): the value (20 px, semibold) over its label: `412` `spans per second`, `1.2k` `log lines per second`, `1,204` `traces held`, `96,433` `log lines held` |
+| stats | four tiles, two by two (56 px high): the value (20 px, semibold) over its label: `412` `spans per second`, `1.2k` `log lines per second`, `1,204` `traces held`, `1.3 GB` `on disk, cap 4 GB`. The fourth is the disk (Milestone 5, the mockup's tile, in the place of `log lines held`): while loctel cannot write to disk (`EngineStatus::spill_error`) its value is `Disk full` in `error_text` over the same label, and the pill stays about the ports |
 | endpoints | a group of three 28 px rows: a dot (green, or red for a listener that is not listening), the name (`OTLP gRPC`, `OTLP HTTP`, `MCP`), and the address in the mono face: `127.0.0.1:4317`, and for MCP the URL without its scheme, `127.0.0.1:4319/mcp`. A listener that could not be bound is red and says `127.0.0.1:4318 · failed` (the colour is not the only sign). `Copy` ends the MCP row, only while MCP is listening: there is no address to copy otherwise |
 | rules line | a dot, `menu_text::rules_line` (`1 discard rule on · 31% dropped`) and a chevron; red for a rule or a file with an error, grey for none on, green otherwise (the status view's rules row). A click opens the main window on Discard rules |
 | divider | |
@@ -1831,26 +1870,28 @@ view read the result back.
 
 **References** (336 by 504, at 2x: 672 by 1008): `popover_dark.png` and
 `popover_light.png` (receiving with 412 spans and 1.2k lines per second, one rule on
-with 31% dropped, the login switch on), `popover_paused_dark.png` (paused, zeros, `Resume
-receiving`, no rules, the switch off), `popover_port_problem_dark.png` (`otlp-http`
-failed and a rule with an error), `popover_clear_asks_dark.png` (the row asking) and
+with 31% dropped, the login switch on, and the disk tile `1.3 GB` over `on disk, cap
+4 GB`), `popover_paused_dark.png` (paused, zeros, `0 B` on disk, `Resume receiving`,
+no rules, the switch off), `popover_port_problem_dark.png` (`otlp-http` failed and a
+rule with an error), `popover_disk_full_dark.png` (the first popover with a
+`spill_error`: `Disk full` in red in the fourth tile, the pill still green),
+`popover_clear_asks_dark.png` (the row asking) and
 `popover_glass_dark.png` / `popover_glass_light.png` (a `RecordingBackdrop` over a flat
 stand-in for the desktop: the panel clear, tiles translucent, corners outside the
 radius showing the desktop; on a Mac the stand-in is Apple's glass).
 
 ## Theme tokens
 
-The dark tokens come from the accepted mockups; a test pins them. The light
-ones are the builder's reading of them (the same hues, darkened to hold their
-contrast on a pale ground; a test checks that text stays at 4.5:1 or better on
-both grounds in both themes). Views read `Theme` fields and never write a hex
-literal.
+The dark tokens come from the accepted mockups; a test pins them (all but the
+hairline, see "Contrast"). The light ones are the builder's reading of them (the
+same hues, darkened to hold their contrast on a pale ground). Views read `Theme`
+fields and never write a hex literal.
 
 | Token | Dark | Light | Use |
 |---|---|---|---|
 | `bg` | `#15161a` | `#f4f4f6` | window background |
 | `panel` | `#1a1b20` | `#ffffff` | cards and lists |
-| `border` | `#2a2b32` | `#dcdce2` | hairlines |
+| `border` | `#303139` | `#dcdce2` | hairlines |
 | `text` | `#ececf1` | `#1b1c20` | primary text |
 | `text_secondary` | `#a3a3ad` | `#4d4d57` | addresses, state |
 | `text_tertiary` | `#8b8b95` | `#62626c` | small labels |
@@ -1860,6 +1901,27 @@ literal.
 | `warn` | `#f5c26b` | `#9a5b00` | paused |
 | `ok` | `#34c759` | `#1a7f37` | listening |
 | `service_palette` | `#4c9dff #3cc8b4 #f0a04b #b18cff #f07fb0` | `#0a62d6 #0f7f70 #b45f06 #6f42c1 #c2306f` | one per service, in order, wrapped |
+
+### Contrast
+
+`loctel_ui::contrast::ratio(a, b)` is the WCAG 2 contrast ratio of two colours
+(1 to 21, in either order), and `tests/contrast.rs` holds both themes to it
+(`theme_contrast_dark`, `theme_contrast_light`; a failing pair is named with its
+ratio):
+
+| What | Against | At least |
+|---|---|---|
+| `text`, `text_secondary`, `text_tertiary` | `bg` and `panel` | 4.5 |
+| `error_text`, `warn`, `accent` (as text) | `panel` | 4.5 |
+| `border` | `panel` | 1.3, so a hairline stays visible |
+
+Milestone 5 found one pair short: the mockup's dark hairline `#2a2b32` is 1.22:1
+against `#1a1b20`. It is `#303139` now (1.33:1, the same blue-grey, one step
+lighter), which moved every dark reference that has a panel or a table line (the
+changed pixels are the hairlines and nothing else: the largest channel change away
+from them is 8 of 255). Every light pair already passed. A token that fails the
+check is moved within its hue family, never the threshold, and the references are
+regenerated and looked at (`update-screenshots`).
 
 Two more are derived, with methods and not fields, for the glass parts of the
 window: `glass_hairline()` (the text colour at 16% on the dark look and 14% on
@@ -2051,12 +2113,13 @@ complete; "empty store" has nothing in it.
 | `rules_file_error_dark` | `rules_screen.rs` | three rules, a file error | the red banner `The rules file has an error: ... loctel keeps using the rules it had.` over the three cards |
 | `rules_editor_invalid_dark` | `rules_screen.rs` | `New rule`, a name and `{ name = ` typed | the focused query with `at column 10: expected a value` in red under it, `Fix the query to see what it would drop.` in the preview, `Save` and `Cancel` only |
 | `rules_editor_changed_dark` | `rules_screen.rs` | the first rule open with a new name typed, the file then changed (its query, a fourth rule) and a second passed | the amber banner `The rules file changed while you were editing.` with `Keep my draft` and `Discard my draft`, the dimmed `Save`, the draft kept, four cards |
-| `settings_dark`, `settings_light` | `settings_popover.rs` | a `FixedBackend` with a login item that is on, the default ports (4317, 4318, 4319) | the Settings window (520 by 360): `Settings`, the three ports with a green dot and `listening`, `Startup` with the `Start loctel at login` switch on, `Apply` dimmed and `Close` |
+| `settings_dark`, `settings_light` | `settings_popover.rs` | a `FixedBackend` with a login item that is on, the default ports (4317, 4318, 4319) and 1.3 GB in use of the 4 GB cap | the Settings window (520 by 480): `Settings`, the three ports with a green dot and `listening`, `Storage` with `Disk cap`, `4`, `GB` and `Using 1.3 GB of 4 GB` under it, `Startup` with the `Start loctel at login` switch on, `Apply` dimmed and `Close` |
 | `settings_edited_dark` | `settings_popover.rs` | the same with the login item off, HTTP typed as `4400` and the switch clicked | the edit not applied: `Apply` lit, the switch on, the HTTP row still `listening` (the old port) |
 | `settings_failed_dark` | `settings_popover.rs` | the login item off, HTTP typed as `4400` and `Apply` clicked, with `fail_bind` on `otlp-http` | the red dot and `failed: address in use` on the HTTP row (the input still shows `4400`), `otlp-http: address in use` beside the buttons, `Apply` dimmed again |
-| `settings_invalid_dark` | `settings_popover.rs` | the login item on, HTTP typed as `4317` and MCP as `70000` | `Each endpoint needs its own port` under the first two inputs and `Enter a port from 1 to 65535` under the third, the rows still `listening`, `Apply` dimmed, the `Startup` panel still in view above the buttons |
-| `popover_dark`, `popover_light` | `settings_popover.rs` | a `FixedBackend` with a login item that is on, 412 spans and 1,234 log lines per second, 1,204 traces and 96,433 log lines held, one rule on with 31% dropped | the popover (336 by 504): `loctel` and the green `Receiving` pill, the four tiles, the three endpoints with `Copy` on MCP (`127.0.0.1:4319/mcp`), `1 discard rule on · 31% dropped` with its chevron, `Open loctel ⌘O`, `Pause receiving`, `Clear all data…`, `Start at login` with its switch on, `Settings… ⌘,` and `Quit loctel ⌘Q` |
-| `popover_paused_dark` | `settings_popover.rs` | paused, nothing flowing, no rules, the login item off | the amber `Paused` pill, the zeros, `Resume receiving`, the grey `No discard rules on`, the switch off |
+| `settings_invalid_dark` | `settings_popover.rs` | the login item on, HTTP typed as `4317`, MCP as `70000` and the cap as `101` | `Each endpoint needs its own port` under the first two inputs and `Enter a port from 1 to 65535` under the third, `Enter a size from 1 to 100 GB` over `Using 1.3 GB of 4 GB` under the cap, the rows still `listening`, `Apply` dimmed, the `Startup` panel still in view above the buttons |
+| `popover_dark`, `popover_light` | `settings_popover.rs` | a `FixedBackend` with a login item that is on, 412 spans and 1,234 log lines per second, 1,204 traces held, 1.3 GB on disk of the 4 GB cap, one rule on with 31% dropped | the popover (336 by 504): `loctel` and the green `Receiving` pill, the four tiles (the last `1.3 GB`, `on disk, cap 4 GB`), the three endpoints with `Copy` on MCP (`127.0.0.1:4319/mcp`), `1 discard rule on · 31% dropped` with its chevron, `Open loctel ⌘O`, `Pause receiving`, `Clear all data…`, `Start at login` with its switch on, `Settings… ⌘,` and `Quit loctel ⌘Q` |
+| `popover_paused_dark` | `settings_popover.rs` | paused, nothing flowing, no rules, the login item off | the amber `Paused` pill, the zeros (`0 B` on disk), `Resume receiving`, the grey `No discard rules on`, the switch off |
+| `popover_disk_full_dark` | `settings_popover.rs` | the first popover with a `spill_error` (No space left on device) | the fourth tile says `Disk full` in `error_text` over `on disk, cap 4 GB`; the pill is the green `Receiving` (it is about ports), everything else as in `popover_dark` |
 | `popover_port_problem_dark` | `settings_popover.rs` | `otlp-http` failed to bind, one rule on with a query that does not parse | the red `Port problem` pill, the HTTP row red with `127.0.0.1:4318 · failed`, and the red `1 discard rule on · 1 has an error` |
 | `popover_clear_asks_dark` | `settings_popover.rs` | the first popover, a click on `Clear all data…` | the row replaced by `Clear all traces and logs?` with the red `Clear` and the outlined `Cancel`, everything else and the height unchanged |
 | `popover_glass_dark`, `popover_glass_light` | `settings_popover.rs` | the first popover with a `RecordingBackdrop`, over a flat stand-in for the desktop | the glass look: no fill, the stand-in colour showing in the padding and outside the rounded corners, the hairline and highlight, translucent tiles and endpoint group. On a Mac the stand-in is Apple's glass |

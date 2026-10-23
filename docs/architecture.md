@@ -599,7 +599,7 @@ details, the theme tokens and the workflow are in
   bar), `histogram` (`bars`: the log volume bars and their labels), `rules`
   (`RuleRow`, `rows`, `dropped_line`, `Draft`, `suggest_from_log`: the Discard
   rules cards, the editor's draft and the rule a log suggests), `settings`
-  (`Form`: the Settings window's port validation) and `popover` (`from_status`:
+  (`Form`: the Settings window's port and disk cap validation) and `popover` (`from_status`:
   the menu bar popover's pill, stats and endpoints). It has no GPUI types, so
   `tests/model_format.rs`, `tests/model_table.rs`, `tests/model_map.rs`,
   `tests/model_waterfall.rs`, `tests/model_trace_view.rs`, `tests/model_logs.rs`,

@@ -1,6 +1,11 @@
 //! Colours and the font. The dark tokens come from the accepted mockups
 //! (design section 9.3); the light ones are in the same spirit, with the same
 //! hues darkened so text and accents keep their contrast on a pale ground.
+//!
+//! Both looks are held to the contrast of `tests/contrast.rs` (Milestone 5): the
+//! texts at least 4.5:1 on the grounds they are read on, and the hairline at
+//! least 1.3:1 against the panel. The mockup's dark hairline (`#2a2b32`, 1.22:1)
+//! was fainter than that, so it is one step lighter in the same hue (`#303139`).
 
 use std::borrow::Cow;
 
@@ -43,7 +48,8 @@ pub struct Theme {
     pub bg: Rgba,
     /// Raised surfaces: cards and lists.
     pub panel: Rgba,
-    /// Hairlines around panels.
+    /// Hairlines around panels: at least 1.3:1 against `panel`, so they stay
+    /// visible.
     pub border: Rgba,
     pub text: Rgba,
     pub text_secondary: Rgba,
@@ -68,7 +74,7 @@ impl Theme {
             dark: true,
             bg: rgb(0x15161a),
             panel: rgb(0x1a1b20),
-            border: rgb(0x2a2b32),
+            border: rgb(0x303139),
             text: rgb(0xececf1),
             text_secondary: rgb(0xa3a3ad),
             text_tertiary: rgb(0x8b8b95),
@@ -160,27 +166,15 @@ impl Global for Theme {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contrast::{ratio, relative_luminance};
 
     fn hex(color: Rgba) -> u32 {
         let byte = |channel: f32| (channel * 255.0).round() as u32;
         (byte(color.r) << 16) | (byte(color.g) << 8) | byte(color.b)
     }
 
-    /// WCAG relative luminance.
     fn luminance(color: Rgba) -> f32 {
-        let linear = |channel: f32| {
-            if channel <= 0.03928 {
-                channel / 12.92
-            } else {
-                ((channel + 0.055) / 1.055).powf(2.4)
-            }
-        };
-        0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)
-    }
-
-    fn contrast(a: Rgba, b: Rgba) -> f32 {
-        let (a, b) = (luminance(a), luminance(b));
-        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+        relative_luminance(color) as f32
     }
 
     #[test]
@@ -208,14 +202,14 @@ mod tests {
             for text in [theme.text, theme.text_secondary, theme.text_tertiary] {
                 for ground in [theme.bg, theme.panel] {
                     assert!(
-                        contrast(text, ground) >= 4.5,
+                        ratio(text, ground) >= 4.5,
                         "{text:?} on {ground:?} is {:.2}:1",
-                        contrast(text, ground)
+                        ratio(text, ground)
                     );
                 }
             }
             for text in [theme.error_text, theme.ok, theme.accent] {
-                assert!(contrast(text, theme.panel) >= 3.0, "{text:?} on the panel");
+                assert!(ratio(text, theme.panel) >= 3.0, "{text:?} on the panel");
             }
         }
     }

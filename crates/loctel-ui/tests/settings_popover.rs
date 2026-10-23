@@ -1,7 +1,8 @@
 //! The Settings window (M4 plan, Task 6): three port fields with the state of
-//! their endpoints, the `Start loctel at login` switch where there is a login
-//! item, `Apply` and `Close`, in a 520 by 360 window of its own; and the menu
-//! bar popover (Task 8), below the Settings tests. The references are
+//! their endpoints, since Milestone 5 (Task 8) the disk cap with what is in use,
+//! the `Start loctel at login` switch where there is a login item, `Apply` and
+//! `Close`, in a window of its own (520 wide, `SIZE` tall); and the menu bar
+//! popover (Task 8), below the Settings tests. The references are
 //! `snapshots/settings_*.png` and `snapshots/popover_*.png`; build them with
 //! `cargo xtask screenshots --update` and look at them before committing
 //! (`docs/areas/ui.md`).
@@ -43,8 +44,9 @@ use loctel_ui::views::{
 
 use common::{BASE, SEED, feed};
 
-/// The size the plan fixes for the window, in logical pixels.
-const SIZE: (u32, u32) = (520, 360);
+/// The size of the window, in logical pixels: 360 tall until the `Storage`
+/// section of Milestone 5 (decision 0052).
+const SIZE: (u32, u32) = (520, 480);
 
 /// What the OS says when a port is taken (Linux's wording; macOS's differs by a
 /// word, and the window shortens both to `address in use`).
@@ -192,6 +194,36 @@ fn login_switch(driver: &Driver<SettingsView>) -> Option<bool> {
     read(driver, |view, _| view.form().start_at_login)
 }
 
+/// Replaces what the disk cap field holds with `text`, as `type_into` does a port.
+fn type_cap(driver: &mut Driver<SettingsView>, text: &str) {
+    driver.click(center(driver, SettingsPart::DiskCap));
+    driver.key("ctrl-a");
+    if text.is_empty() {
+        driver.key("backspace");
+    } else {
+        driver.type_text(text);
+    }
+    settle(driver);
+}
+
+/// What the disk cap input holds, as drawn.
+fn cap_text(driver: &Driver<SettingsView>) -> String {
+    read(driver, |view, cx| view.disk_cap_text(cx))
+}
+
+/// The message under the disk cap input, `None` when it is fine.
+fn cap_message(driver: &Driver<SettingsView>) -> Option<String> {
+    read(driver, |view, _| view.disk_message())
+}
+
+/// The line under the disk cap: `Using 1.3 GB of 4 GB`.
+fn usage(driver: &Driver<SettingsView>) -> String {
+    read(driver, |view, _| view.disk_usage())
+}
+
+/// A gigabyte, as the window means it: 2^30 bytes.
+const GB: u64 = 1024 * 1024 * 1024;
+
 fn listening() -> (bool, String) {
     (true, "listening".to_owned())
 }
@@ -202,21 +234,29 @@ fn failed_in_use() -> (bool, String) {
 
 // --- the references ----------------------------------------------------------------------
 
+/// What the references show: a login item, and 1.3 GB in use of the default cap
+/// (the line under the disk cap says `Using 1.3 GB of 4 GB`, the plan's example).
+fn shown_backend(login: &Rc<FakeLogin>) -> FixedBackend {
+    let backend = backend_with(login);
+    backend.set_disk_bytes(GB * 13 / 10);
+    backend
+}
+
 #[test]
 fn settings_dark() {
     let login = FakeLogin::new(true);
-    let (mut driver, _) = window_on(backend_with(&login), &Theme::dark());
+    let (mut driver, _) = window_on(shown_backend(&login), &Theme::dark());
     let image = driver.capture();
-    assert_eq!(image.dimensions(), (1040, 720));
+    assert_eq!(image.dimensions(), (1040, 960));
     assert_snapshot("settings_dark", &image);
 }
 
 #[test]
 fn settings_light() {
     let login = FakeLogin::new(true);
-    let (mut driver, _) = window_on(backend_with(&login), &Theme::light());
+    let (mut driver, _) = window_on(shown_backend(&login), &Theme::light());
     let image = driver.capture();
-    assert_eq!(image.dimensions(), (1040, 720));
+    assert_eq!(image.dimensions(), (1040, 960));
     assert_snapshot("settings_light", &image);
 }
 
@@ -225,7 +265,7 @@ fn settings_failed_dark() {
     // HTTP moved to a port in use: saved, shown as failed with its reason, in
     // the row and in the line under the endpoints; the other two untouched.
     let login = FakeLogin::new(false);
-    let mut backend = backend_with(&login);
+    let mut backend = shown_backend(&login);
     backend.fail_bind = Some(("otlp-http", IN_USE.to_owned()));
     let (mut driver, _) = window_on(backend, &Theme::dark());
     type_into(&mut driver, Field::Http, "4400");
@@ -238,7 +278,7 @@ fn settings_edited_dark() {
     // An edit not applied yet: `Apply` lit, and the line of the endpoint still
     // says what is true of the port it listens on.
     let login = FakeLogin::new(false);
-    let (mut driver, _) = window_on(backend_with(&login), &Theme::dark());
+    let (mut driver, _) = window_on(shown_backend(&login), &Theme::dark());
     type_into(&mut driver, Field::Http, "4400");
     click(&mut driver, SettingsPart::LoginSwitch);
     assert!(can_apply(&driver));
@@ -247,11 +287,13 @@ fn settings_edited_dark() {
 
 #[test]
 fn settings_invalid_dark() {
-    // The worst case for the height: all three fields have a message.
+    // The worst case for the height: all three ports and the disk cap have a
+    // message.
     let login = FakeLogin::new(true);
-    let (mut driver, _) = window_on(backend_with(&login), &Theme::dark());
+    let (mut driver, _) = window_on(shown_backend(&login), &Theme::dark());
     type_into(&mut driver, Field::Http, "4317");
     type_into(&mut driver, Field::Mcp, "70000");
+    type_cap(&mut driver, "101");
     assert_snapshot("settings_invalid_dark", &driver.capture());
 }
 
@@ -293,14 +335,17 @@ fn an_endpoint_that_is_already_failing_says_so_when_the_window_opens() {
 }
 
 #[test]
-fn the_sections_are_endpoints_and_where_there_is_a_login_item_startup() {
+fn the_sections_are_endpoints_storage_and_where_there_is_a_login_item_startup() {
     let (driver, _) = plain_window();
-    assert_eq!(read(&driver, |view, _| view.sections()), ["Endpoints"]);
+    assert_eq!(
+        read(&driver, |view, _| view.sections()),
+        ["Endpoints", "Storage"]
+    );
     let login = FakeLogin::new(false);
     let (driver, _) = window_on(backend_with(&login), &Theme::dark());
     assert_eq!(
         read(&driver, |view, _| view.sections()),
-        ["Endpoints", "Startup"]
+        ["Endpoints", "Storage", "Startup"]
     );
 }
 
@@ -514,6 +559,261 @@ fn the_statuses_follow_the_engine_while_the_window_is_open() {
     );
 }
 
+// --- Storage (M5 plan, Task 8) -------------------------------------------------------------
+
+#[test]
+fn the_storage_section_shows_the_cap_and_what_is_in_use_under_it() {
+    let backend = plain_backend();
+    backend.set_disk_bytes(GB * 13 / 10);
+    let (driver, _) = window_on(backend, &Theme::dark());
+    assert_eq!(cap_text(&driver), "4", "the default cap, in whole GB");
+    assert_eq!(usage(&driver), "Using 1.3 GB of 4 GB");
+    assert_eq!(cap_message(&driver), None);
+    assert!(!can_apply(&driver), "nothing was changed yet");
+
+    // The line is under the input and starts where it does; the section is
+    // between the endpoints and the login switch.
+    let input = bounds(&driver, SettingsPart::DiskCap).expect("the cap input");
+    let line = bounds(&driver, SettingsPart::DiskUsage).expect("the usage line");
+    assert!(
+        line.origin.y >= input.origin.y + input.size.height,
+        "{line:?} under {input:?}"
+    );
+    assert_eq!(line.origin.x, input.origin.x, "from the input's left edge");
+    assert_eq!(bounds(&driver, SettingsPart::DiskMessage), None);
+    let mcp = bounds(&driver, SettingsPart::Input(Field::Mcp)).expect("the MCP input");
+    assert!(
+        input.origin.y > mcp.origin.y + mcp.size.height,
+        "below Endpoints"
+    );
+}
+
+#[test]
+fn the_storage_section_is_above_the_login_switch() {
+    let login = FakeLogin::new(true);
+    let (driver, _) = window_on(backend_with(&login), &Theme::dark());
+    let line = bounds(&driver, SettingsPart::DiskUsage).expect("the usage line");
+    let switch = bounds(&driver, SettingsPart::LoginSwitch).expect("the switch");
+    assert!(switch.origin.y > line.origin.y + line.size.height);
+}
+
+#[test]
+fn the_storage_line_says_the_cap_in_force_not_the_one_being_typed() {
+    let backend = plain_backend();
+    backend.set_disk_bytes(512 * 1024 * 1024);
+    let (mut driver, _) = window_on(backend, &Theme::dark());
+    type_cap(&mut driver, "50");
+    assert_eq!(usage(&driver), "Using 512 MB of 4 GB");
+}
+
+#[test]
+fn disk_cap_validation_shows_under_the_field() {
+    let (mut driver, backend) = plain_window();
+    for text in ["", "0", "101", "1000", "abc", "1.5", "-4", "4 GB"] {
+        type_cap(&mut driver, text);
+        assert_eq!(
+            cap_message(&driver),
+            Some("Enter a size from 1 to 100 GB".to_owned()),
+            "{text:?}"
+        );
+        assert!(!can_apply(&driver), "{text:?}");
+    }
+    // The message is drawn under the input, and the usage line stays.
+    let input = bounds(&driver, SettingsPart::DiskCap).expect("the cap input");
+    let shown = bounds(&driver, SettingsPart::DiskMessage).expect("the message");
+    assert!(shown.origin.y >= input.origin.y + input.size.height);
+    assert_eq!(shown.origin.x, input.origin.x);
+    assert!(bounds(&driver, SettingsPart::DiskUsage).is_some());
+    // The ports have no message of their own for it.
+    for field in Field::ALL {
+        assert_eq!(message(&driver, field), None, "{field:?}");
+    }
+
+    // Refused in the form: a click on the dimmed button saves nothing.
+    click(&mut driver, SettingsPart::Apply);
+    assert_eq!(backend.settings(), Settings::default());
+
+    for text in ["1", "100", " 8 ", "04"] {
+        type_cap(&mut driver, text);
+        assert_eq!(cap_message(&driver), None, "{text:?}");
+        assert!(
+            can_apply(&driver),
+            "{text:?} is a size that differs from the text"
+        );
+    }
+    type_cap(&mut driver, "4");
+    assert!(!can_apply(&driver), "back to what was saved");
+}
+
+#[test]
+fn a_bad_cap_blocks_apply_for_good_ports_and_a_bad_port_for_a_good_cap() {
+    let (mut driver, _) = plain_window();
+    type_into(&mut driver, Field::Http, "4400");
+    assert!(can_apply(&driver));
+    type_cap(&mut driver, "0");
+    assert!(!can_apply(&driver), "a good port does not carry a bad cap");
+    type_cap(&mut driver, "8");
+    assert!(can_apply(&driver));
+    type_into(&mut driver, Field::Http, "x");
+    assert!(!can_apply(&driver), "a good cap does not carry a bad port");
+}
+
+#[test]
+fn apply_sets_disk_cap() {
+    // The cap is saved in bytes and handed to the engine (the real backend's
+    // `apply_settings` saves it and calls `set_disk_cap`; `app_backend.rs` pins
+    // that), so the status says the new one at once.
+    let backend = plain_backend();
+    backend.set_disk_bytes(GB * 13 / 10);
+    let (mut driver, backend) = window_on(backend, &Theme::dark());
+    type_cap(&mut driver, " 08 ");
+    assert!(can_apply(&driver));
+    click(&mut driver, SettingsPart::Apply);
+
+    let saved = backend.settings();
+    assert_eq!(saved.disk_cap_bytes, 8 * GB);
+    assert_eq!(
+        (saved.otlp_grpc_port, saved.otlp_http_port, saved.mcp_port),
+        (4317, 4318, 4319),
+        "only the cap moved"
+    );
+    assert_eq!(backend.status().disk_cap_bytes, 8 * GB, "the engine has it");
+    assert_eq!(usage(&driver), "Using 1.3 GB of 8 GB");
+    assert_eq!(
+        cap_text(&driver),
+        "8",
+        "the input shows the cap as it was saved"
+    );
+    assert_eq!(cap_message(&driver), None);
+    assert!(notice(&driver).is_empty());
+    assert!(!can_apply(&driver), "what is shown is what is saved");
+
+    // Lowering it works the same way.
+    type_cap(&mut driver, "1");
+    click(&mut driver, SettingsPart::Apply);
+    assert_eq!(backend.settings().disk_cap_bytes, GB);
+    assert_eq!(backend.status().disk_cap_bytes, GB);
+    assert_eq!(usage(&driver), "Using 1.3 GB of 1 GB");
+
+    // The ends of the range are fine.
+    type_cap(&mut driver, "100");
+    click(&mut driver, SettingsPart::Apply);
+    assert_eq!(backend.settings().disk_cap_bytes, 100 * GB);
+}
+
+#[test]
+fn apply_saves_the_ports_and_the_cap_together() {
+    let (mut driver, backend) = plain_window();
+    type_into(&mut driver, Field::Http, "4400");
+    type_cap(&mut driver, "12");
+    click(&mut driver, SettingsPart::Apply);
+    let saved = backend.settings();
+    assert_eq!(
+        (saved.otlp_http_port, saved.disk_cap_bytes),
+        (4400, 12 * GB)
+    );
+    assert_eq!(backend.status().disk_cap_bytes, 12 * GB);
+    assert_eq!(endpoint(&driver, Field::Http), Some(listening()));
+}
+
+#[test]
+fn a_cap_that_was_not_edited_is_saved_as_it_was() {
+    // A settings file edited by hand can hold a cap the window cannot write
+    // (1.5 GB): the field shows the next whole GB up, and an Apply of a port
+    // does not round the file's value to it.
+    let backend = plain_backend();
+    backend
+        .apply_settings(Settings {
+            disk_cap_bytes: GB + GB / 2,
+            ..Settings::default()
+        })
+        .expect("the settings are saved");
+    let (mut driver, backend) = window_on(backend, &Theme::dark());
+    assert_eq!(cap_text(&driver), "2");
+    assert_eq!(usage(&driver), "Using 0 B of 1.5 GB");
+    type_into(&mut driver, Field::Http, "4400");
+    click(&mut driver, SettingsPart::Apply);
+    assert_eq!(backend.settings().otlp_http_port, 4400);
+    assert_eq!(backend.settings().disk_cap_bytes, GB + GB / 2, "left alone");
+    assert_eq!(backend.status().disk_cap_bytes, GB + GB / 2);
+
+    // Once the field is edited, it is the user's number.
+    type_cap(&mut driver, "3");
+    click(&mut driver, SettingsPart::Apply);
+    assert_eq!(backend.settings().disk_cap_bytes, 3 * GB);
+}
+
+#[test]
+fn a_settings_file_that_cannot_be_written_keeps_the_cap_in_the_form() {
+    let mut backend = plain_backend();
+    backend.fail_save = Some("Permission denied (os error 13)".to_owned());
+    let (mut driver, backend) = window_on(backend, &Theme::dark());
+    type_cap(&mut driver, "8");
+    click(&mut driver, SettingsPart::Apply);
+    assert_eq!(
+        notice(&driver),
+        ["Could not save the settings: Permission denied (os error 13)"]
+    );
+    assert_eq!(backend.settings().disk_cap_bytes, 4 * GB, "nothing moved");
+    assert_eq!(cap_text(&driver), "8", "the form is kept");
+    assert!(can_apply(&driver), "to try again");
+}
+
+#[test]
+fn the_usage_follows_the_engine_while_the_window_is_open() {
+    let (mut driver, backend) = plain_window();
+    type_cap(&mut driver, "50");
+    assert_eq!(usage(&driver), "Using 0 B of 4 GB");
+
+    backend.set_disk_bytes(2 * GB);
+    assert_eq!(
+        usage(&driver),
+        "Using 0 B of 4 GB",
+        "nothing refreshes before the second is up"
+    );
+    driver.advance(Duration::from_secs(1));
+    assert_eq!(usage(&driver), "Using 2 GB of 4 GB");
+    assert_eq!(
+        cap_text(&driver),
+        "50",
+        "a refresh never rewrites what is typed"
+    );
+}
+
+#[test]
+fn everything_fits_the_window_with_every_message_showing() {
+    // The fields scroll in a window that is too short, but the form is meant to
+    // need no scrolling: with a message under every field (the worst case, the
+    // `settings_invalid_dark` reference) every part is above the buttons.
+    let login = FakeLogin::new(true);
+    let (mut driver, _) = window_on(backend_with(&login), &Theme::dark());
+    type_into(&mut driver, Field::Http, "4317");
+    type_into(&mut driver, Field::Mcp, "70000");
+    type_cap(&mut driver, "101");
+    let apply = bounds(&driver, SettingsPart::Apply).expect("Apply");
+    assert!(
+        apply.origin.y + apply.size.height <= px(SIZE.1 as f32),
+        "the buttons are inside the window"
+    );
+    let parts = [
+        SettingsPart::Input(Field::Grpc),
+        SettingsPart::Message(Field::Grpc),
+        SettingsPart::Message(Field::Http),
+        SettingsPart::Message(Field::Mcp),
+        SettingsPart::DiskCap,
+        SettingsPart::DiskMessage,
+        SettingsPart::DiskUsage,
+        SettingsPart::LoginSwitch,
+    ];
+    for part in parts {
+        let found = bounds(&driver, part).unwrap_or_else(|| panic!("no {part:?} on the screen"));
+        assert!(
+            found.origin.y >= px(0.0) && found.origin.y + found.size.height <= apply.origin.y,
+            "{part:?} at {found:?} must be above the buttons at {apply:?}"
+        );
+    }
+}
+
 // --- Start at login ------------------------------------------------------------------------
 
 #[test]
@@ -521,7 +821,11 @@ fn login_switch_hidden_without_login_item() {
     let (driver, _) = plain_window();
     assert!(bounds(&driver, SettingsPart::LoginSwitch).is_none());
     assert_eq!(login_switch(&driver), None);
-    assert_eq!(read(&driver, |view, _| view.sections()), ["Endpoints"]);
+    assert_eq!(
+        read(&driver, |view, _| view.sections()),
+        ["Endpoints", "Storage"],
+        "no Startup section"
+    );
 }
 
 #[test]
@@ -632,7 +936,7 @@ fn close_closes_the_window() {
 }
 
 #[test]
-fn the_settings_window_opens_once_at_520_by_360_and_is_focused_when_asked_again() {
+fn the_settings_window_opens_once_at_520_by_480_and_is_focused_when_asked_again() {
     let mut cx = headless_app();
     let backend: Rc<dyn loctel_ui::app::UiBackend> = Rc::new(plain_backend());
 
@@ -645,7 +949,7 @@ fn the_settings_window_opens_once_at_520_by_360_and_is_focused_when_asked_again(
         .expect("the window is open");
     assert_eq!(
         (f32::from(size.width), f32::from(size.height)),
-        (520.0, 360.0)
+        (520.0, 480.0)
     );
 
     let second = cx
@@ -832,6 +1136,8 @@ fn busy_backend(login: &Rc<FakeLogin>) -> FixedBackend {
     backend.status.logs_per_sec = 1_234.0;
     backend.status.stats.traces = 1_204;
     backend.status.stats.logs = 96_433;
+    // The mockup's disk tile: 1.3 GB of the default cap of 4 GB.
+    backend.status.disk_bytes = GB * 13 / 10;
     backend.status.dropped_fraction = 0.31;
     backend
         .set_rules(vec![health_rule()])
@@ -919,6 +1225,18 @@ fn popover_port_problem_dark() {
         .expect("a draft with a bad query is kept");
     let (mut driver, _, _) = popover_on(backend, &Theme::dark());
     assert_snapshot("popover_port_problem_dark", &driver.capture());
+}
+
+#[test]
+fn popover_disk_full_dark() {
+    // The volume under the temp directory is full: the fourth tile says `Disk
+    // full` in the error colour over its label, and nothing else changes (the
+    // pill is green: the ports are fine).
+    let login = FakeLogin::new(true);
+    let backend = busy_backend(&login);
+    backend.set_spill_error(Some("No space left on device (os error 28)".to_owned()));
+    let (mut driver, _, _) = popover_on(backend, &Theme::dark());
+    assert_snapshot("popover_disk_full_dark", &driver.capture());
 }
 
 #[test]
@@ -1013,6 +1331,19 @@ fn is_colour(found: image::Rgba<u8>, color: gpui::Rgba) -> bool {
     found[3] == 255 && (0..3).all(|channel| found[channel].abs_diff(expected[channel]) <= 2)
 }
 
+/// Whether any pixel of `image` (drawn at scale 2) inside `part`, in logical
+/// pixels, is the opaque `color`: text of that colour is in the part. The
+/// glyphs of a 20 px semibold value have solid pixels in their strokes.
+fn has_colour_in(image: &image::RgbaImage, part: Bounds<Pixels>, color: gpui::Rgba) -> bool {
+    let scaled = |value: Pixels| (f32::from(value) * 2.0) as u32;
+    let (left, top) = (scaled(part.origin.x), scaled(part.origin.y));
+    let (right, bottom) = (
+        left + scaled(part.size.width),
+        top + scaled(part.size.height),
+    );
+    (top..bottom).any(|y| (left..right).any(|x| is_colour(*image.get_pixel(x, y), color)))
+}
+
 #[test]
 fn the_glass_shows_through_where_the_popover_has_no_fill() {
     // The stand-in desktop shows in the padding of the panel (here, left of the
@@ -1084,12 +1415,13 @@ fn the_popover_shows_what_the_engine_says() {
     assert_eq!(
         popover.stats,
         [
-            ("412".to_owned(), "spans per second"),
-            ("1.2k".to_owned(), "log lines per second"),
-            ("1,204".to_owned(), "traces held"),
-            ("96,433".to_owned(), "log lines held"),
+            ("412".to_owned(), "spans per second".to_owned()),
+            ("1.2k".to_owned(), "log lines per second".to_owned()),
+            ("1,204".to_owned(), "traces held".to_owned()),
+            ("1.3 GB".to_owned(), "on disk, cap 4 GB".to_owned()),
         ]
     );
+    assert!(!popover.disk_full);
     assert_eq!(
         popover.endpoints,
         [
@@ -1158,11 +1490,90 @@ fn the_stats_are_a_grid_of_two_by_two() {
         a.origin.y, b.origin.y,
         "spans and logs per second share a row"
     );
-    assert_eq!(c.origin.y, d.origin.y, "traces and logs held share a row");
+    assert_eq!(
+        c.origin.y, d.origin.y,
+        "traces held and the disk share a row"
+    );
     assert!(a.origin.x < b.origin.x && a.origin.x == c.origin.x && b.origin.x == d.origin.x);
     assert!(c.origin.y > a.origin.y);
     assert_eq!(a.size, b.size, "the tiles are the same size");
     assert_eq!(a.size, d.size);
+}
+
+#[test]
+fn popover_disk_tile_and_disk_full() {
+    // The fourth tile is the disk (the mockup's): what the segment files take
+    // over `on disk, cap <the cap>`. With a spill error it says `Disk full` in
+    // the error colour; the label and the other tiles stay, and the pill is
+    // still only about the ports.
+    for theme in [Theme::dark(), Theme::light()] {
+        let login = FakeLogin::new(true);
+        let (mut driver, backend, _) = popover_on(busy_backend(&login), &theme);
+        let tile = place(&driver, PopoverPart::Stat(3)).expect("the disk tile");
+        let popover = popover_of(&driver);
+        assert_eq!(
+            popover.stats[3],
+            ("1.3 GB".to_owned(), "on disk, cap 4 GB".to_owned())
+        );
+        assert!(!popover.disk_full);
+        let image = driver.capture();
+        assert!(
+            !has_colour_in(&image, tile, theme.error_text),
+            "a disk with room is not red"
+        );
+
+        // It follows the engine, once a second like the rest.
+        backend.set_disk_bytes(2 * GB);
+        driver.advance(Duration::from_secs(1));
+        assert_eq!(popover_of(&driver).stats[3].0, "2 GB");
+
+        // A write that failed: the volume is full.
+        backend.set_spill_error(Some("No space left on device (os error 28)".to_owned()));
+        driver.advance(Duration::from_secs(1));
+        let popover = popover_of(&driver);
+        assert_eq!(
+            popover.stats[3],
+            ("Disk full".to_owned(), "on disk, cap 4 GB".to_owned())
+        );
+        assert!(popover.disk_full);
+        assert_eq!(popover.pill.text, "Receiving", "the pill is for ports");
+        assert_eq!(popover.pill.tone, Tone::Ok);
+        let image = driver.capture();
+        assert!(
+            has_colour_in(&image, tile, theme.error_text),
+            "`Disk full` is in error_text"
+        );
+        for index in 0..3 {
+            let other = place(&driver, PopoverPart::Stat(index)).expect("a tile");
+            assert!(
+                !has_colour_in(&image, other, theme.error_text),
+                "tile {index} is not red"
+            );
+        }
+        let pill = place(&driver, PopoverPart::Pill).expect("the pill");
+        assert!(!has_colour_in(&image, pill, theme.error_text));
+        assert!(!has_colour_in(&image, pill, theme.error));
+
+        // Written again: the tile is back.
+        backend.set_spill_error(None);
+        driver.advance(Duration::from_secs(1));
+        assert_eq!(popover_of(&driver).stats[3].0, "2 GB");
+        assert!(!popover_of(&driver).disk_full);
+    }
+}
+
+#[test]
+fn a_port_problem_and_a_full_disk_are_each_shown_where_they_belong() {
+    // The pill says `Port problem` for a port and the tile says `Disk full` for
+    // the disk, and one is not mistaken for the other.
+    let login = FakeLogin::new(true);
+    let backend = port_problem_backend("otlp-http", &login);
+    backend.set_spill_error(Some("No space left on device (os error 28)".to_owned()));
+    let (driver, _, _) = popover_on(backend, &Theme::dark());
+    let popover = popover_of(&driver);
+    assert_eq!(popover.pill.text, "Port problem");
+    assert_eq!(popover.pill.tone, Tone::Error);
+    assert_eq!(popover.stats[3].0, "Disk full");
 }
 
 #[test]

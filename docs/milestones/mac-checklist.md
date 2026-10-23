@@ -288,7 +288,9 @@ a menu bar app that has no menu, and the Settings window and the login switch.
 The text is the bundled Inter font, not San Francisco, as in Milestone 3. There
 is no `Edit discard rules…` row any more: the rules are edited in the Discard rules
 screen (item 4), or by hand in `~/Library/Application Support/loctel/rules.toml`.
-The disk cap is not in Settings yet (Milestone 5). Items 3 to 5 need data: from a
+The disk cap went into Settings, and the popover's fourth tile became the disk, in
+Milestone 5 (the text below says what is there now; Milestone 5's own list checks
+them). Items 3 to 5 need data: from a
 checkout of this repository, the commands in Milestone 1, item 3 send it, and each
 item says which scenario to use. Report what you see, and say which item it is.
 
@@ -297,7 +299,8 @@ item says which scenario to use. Report what you see, and say which item it is.
    the icon (a few points below the menu bar), centred on where you clicked, and
    kept inside the screen if the icon is near its edge. Top to bottom it has: the
    title `loctel` with a pill (`Receiving`, green); four tiles (`spans per second`,
-   `log lines per second`, `traces held`, `log lines held`); the three endpoints
+   `log lines per second`, `traces held`, and the disk: `0 B` over `on disk, cap
+   4 GB`); the three endpoints
    (OTLP gRPC `127.0.0.1:4317`, OTLP HTTP `127.0.0.1:4318`, MCP `127.0.0.1:4319/mcp`
    with a `Copy` button) with green dots; the rules line (`No discard rules on`);
    a line; `Open loctel` ⌘O, `Pause receiving`, `Clear all data…`, `Start at login`
@@ -315,7 +318,7 @@ item says which scenario to use. Report what you see, and say which item it is.
    arrives, then `Resume receiving`. `Copy` beside MCP puts
    `http://127.0.0.1:4319/mcp` on the clipboard (paste it). `Clear all data…` asks
    `Clear all traces and logs?` first: `Cancel` puts the row back, and `Clear` empties
-   the data (the `traces held` and `log lines held` tiles go to 0). The rules line
+   the data (the `traces held` tile goes to 0). The rules line
    opens the main window on Discard rules. `Open loctel` opens the window on
    Map & traces, and the popover closes. `Settings…` opens the Settings window.
    *Right* for the last three: the panel closes, and loctel is in the Dock and ⌘-Tab
@@ -365,9 +368,10 @@ item says which scenario to use. Report what you see, and say which item it is.
    "<the message>"`, and the preview shows how many of the last five minutes' lines
    it would have dropped. `Cancel` leaves nothing behind (check `rules.toml`).
 6. **Settings.** Choose `Settings…` in the popover (or ⌘, in the main window). *Right:*
-   a window 520 by 360 points that cannot be resized, with the three ports (4317,
-   4318, 4319) each with a green dot and `listening`, a `Start loctel at login`
-   switch and `Apply` and `Close`; choosing `Settings…` again brings the same window
+   a window 520 by 480 points (360 before Milestone 5 added `Storage`) that cannot be
+   resized, with the three ports (4317, 4318, 4319) each with a green dot and
+   `listening`, `Storage` with the `Disk cap` field (`4` GB, and `Using ... of 4 GB`
+   under it), a `Start loctel at login` switch and `Apply` and `Close`; choosing `Settings…` again brings the same window
    forward. Change the OTLP HTTP port to a free one (such as 4400) and `Apply`: the
    row stays `listening` and a service pointed at the new port arrives (send meshgen
    to `http://127.0.0.1:4400`; the old port 4318 is free again). Change it to a port

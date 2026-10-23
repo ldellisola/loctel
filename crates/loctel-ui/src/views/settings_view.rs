@@ -1,5 +1,6 @@
-//! The Settings window's form (design 9.2, M4 plan Task 6): 520 by 360, in the
-//! window [`open_settings_window`](crate::app::open_settings_window) opens.
+//! The Settings window's form (design 9.2, M4 plan Task 6, M5 plan Task 8): 520
+//! wide and [`SETTINGS_SIZE`](crate::app::SETTINGS_SIZE) tall, in the window
+//! [`open_settings_window`](crate::app::open_settings_window) opens.
 //!
 //! From the top, over the scrolling part:
 //!
@@ -10,7 +11,11 @@
 //!    in the error colour). A text that is not a port, or a port two fields
 //!    share, gets its message under its input (`Enter a port from 1 to 65535`,
 //!    `Each endpoint needs its own port`)
-//! 3. where the platform has a login item (macOS: `UiBackend::login_item` is
+//! 3. `Storage`: the `Disk cap` input, in whole GB (`4`, then the unit `GB`), a
+//!    message under it for a text that is not a size from 1 to 100 (`Enter a
+//!    size from 1 to 100 GB`) and, under that, how much is in use of the cap in
+//!    force: `Using 1.3 GB of 4 GB`
+//! 4. where the platform has a login item (macOS: `UiBackend::login_item` is
 //!    `Some`), `Startup`: the `Start loctel at login` switch
 //!
 //! and pinned under it the buttons: `Apply` (on while the form differs from
@@ -20,16 +25,18 @@
 //! login item the system refused.
 //!
 //! The rules are not here: the form is [`Form`] (its messages are exact and
-//! pinned in `tests/model_misc.rs`), the words of the endpoint lines are
-//! `model::settings`'s, and what `Apply` saves and rebinds is the backend's.
-//! The view keeps the text of the three inputs (an input owns its text; they
-//! are copied into the form as they are typed, and rewritten when an Apply
-//! normalises them, so `" 4500 "` reads `4500`) and the switch, and refreshes
-//! the endpoint lines, and a switch nobody has touched, every second.
+//! pinned in `tests/model_misc.rs`), the words of the endpoint lines and of the
+//! storage line are `model::settings`'s, and what `Apply` saves, rebinds and
+//! hands to the engine as the disk cap is the backend's. The view keeps the text
+//! of the four inputs (an input owns its text; they are copied into the form as
+//! they are typed, and rewritten when an Apply normalises them, so `" 4500 "`
+//! reads `4500` and `08` reads `8`) and the switch, and refreshes the endpoint
+//! lines, the storage line, and a switch nobody has touched, every second.
 //!
 //! The listeners' lines show what the engine reports, which is the ports it
 //! listens on; the inputs show the form. They differ while an edit is not
-//! applied, and the line then still says what is true of the old port.
+//! applied, and the line then still says what is true of the old port. The
+//! storage line is the same: it says the cap in force, not the one being typed.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -38,8 +45,8 @@ use std::time::Duration;
 
 use gpui::{
     App, AppContext as _, Bounds, Context, Entity, FontWeight, InteractiveElement as _,
-    IntoElement, ParentElement as _, Pixels, Point, Render, Styled as _, Subscription, Window,
-    canvas, div, prelude::FluentBuilder as _, px,
+    IntoElement, ParentElement as _, Pixels, Point, Render, Rgba, Styled as _, Subscription,
+    Window, canvas, div, prelude::FluentBuilder as _, px,
 };
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -49,13 +56,17 @@ use gpui_kit::component::{Disableable as _, Sizable as _};
 use loctel_engine::ListenerStatus;
 
 use crate::app::{LoginItem, UiBackend, kit_theme};
-use crate::model::settings::{EndpointState, Field, Form, endpoint_state, failures};
+use crate::model::settings::{
+    BYTES_PER_GB, DISK_CAP_LABEL, EndpointState, Field, Form, endpoint_state, failures, usage_line,
+};
 use crate::{FONT_FAMILY, Theme};
 
 /// The window's title.
 pub const TITLE: &str = "Settings";
 /// The section of the three ports.
 pub const ENDPOINTS: &str = "Endpoints";
+/// The section of the disk cap.
+pub const STORAGE: &str = "Storage";
 /// The section of the login switch.
 pub const STARTUP: &str = "Startup";
 /// The login switch's words.
@@ -73,8 +84,10 @@ const PAD_X: f32 = 20.0;
 /// message under an input starts where the input does.
 const LABEL_WIDTH: f32 = 128.0;
 const ROW_GAP: f32 = 12.0;
-/// The width of a port input.
+/// The width of a port input, and of the disk cap's.
 const INPUT_WIDTH: f32 = 96.0;
+/// The unit after the disk cap's input.
+const DISK_CAP_UNIT: &str = "GB";
 
 /// The parts of the Settings window a test can ask the place of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -85,6 +98,12 @@ pub enum SettingsPart {
     Status(Field),
     /// The message under this field's input; there only while it has one.
     Message(Field),
+    /// The input of the disk cap.
+    DiskCap,
+    /// The message under the disk cap's input; there only while it has one.
+    DiskMessage,
+    /// The line under the disk cap: `Using 1.3 GB of 4 GB`.
+    DiskUsage,
     /// The `Start loctel at login` switch; there only with a login item.
     LoginSwitch,
     /// `Apply`.
@@ -121,6 +140,8 @@ pub struct SettingsView {
     login: Option<Rc<dyn LoginItem>>,
     /// The three port inputs, in [`Field::ALL`] order.
     inputs: [Entity<InputState>; 3],
+    /// The disk cap input, in whole GB.
+    disk_input: Entity<InputState>,
     /// What the fields and the switch hold now.
     form: Form,
     /// What they held when the form was last loaded or applied: `Apply` is
@@ -128,6 +149,9 @@ pub struct SettingsView {
     saved: Form,
     /// The listeners as the engine last said.
     listeners: Vec<ListenerStatus>,
+    /// What the segment files take and the cap in force, as the engine last said
+    /// (the storage line).
+    disk: (u64, u64),
     /// What the last `Apply` could not do, one line each; empty until one
     /// fails, and again as soon as the form is edited.
     notice: Vec<String>,
@@ -155,13 +179,16 @@ impl SettingsView {
             &backend.settings(),
             login.as_ref().map(|item| item.is_enabled()),
         );
-        let listeners = backend.status().listeners;
+        let status = backend.status();
+        let (listeners, disk) = (status.listeners, (status.disk_bytes, status.disk_cap_bytes));
 
         let inputs = Field::ALL.map(|field| {
             let text = text_of(&form, field).to_owned();
             cx.new(|cx| InputState::new(window, cx).default_value(text))
         });
-        let subscriptions = Field::ALL
+        let disk_text = form.disk_cap_gb.clone();
+        let disk_input = cx.new(|cx| InputState::new(window, cx).default_value(disk_text));
+        let mut subscriptions: Vec<Subscription> = Field::ALL
             .iter()
             .zip(&inputs)
             .map(|(&field, input)| {
@@ -177,6 +204,16 @@ impl SettingsView {
                 )
             })
             .collect();
+        subscriptions.push(cx.subscribe_in(
+            &disk_input,
+            window,
+            |view, input, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change) {
+                    let text = input.read(cx).value().to_string();
+                    view.edited_disk_cap(text, cx);
+                }
+            },
+        ));
 
         cx.spawn(async move |view, cx| {
             loop {
@@ -193,9 +230,11 @@ impl SettingsView {
             backend,
             login,
             inputs,
+            disk_input,
             saved: form.clone(),
             form,
             listeners,
+            disk,
             notice: Vec::new(),
             frame: Rc::new(Frame::default()),
             _inputs: subscriptions,
@@ -213,7 +252,7 @@ impl SettingsView {
     /// Whether `Apply` is on: the form differs from what was saved and every
     /// field is valid.
     pub fn can_apply(&self) -> bool {
-        self.form != self.saved && self.form.validate().is_ok()
+        self.form != self.saved && self.form.is_valid()
     }
 
     /// The state of `field`'s endpoint as drawn, `None` when the engine does not
@@ -232,15 +271,31 @@ impl SettingsView {
         })
     }
 
+    /// The message under the disk cap's input, `None` when it is fine.
+    pub fn disk_message(&self) -> Option<String> {
+        self.form.validate_disk_cap().err().map(str::to_owned)
+    }
+
+    /// The line under the disk cap's input: `Using 1.3 GB of 4 GB`, from what the
+    /// engine last said (the cap in force, not the one being typed).
+    pub fn disk_usage(&self) -> String {
+        usage_line(self.disk.0, self.disk.1)
+    }
+
+    /// What the disk cap's input holds, as the input has it.
+    pub fn disk_cap_text(&self, cx: &App) -> String {
+        self.disk_input.read(cx).value().to_string()
+    }
+
     /// What the last `Apply` could not do, one line each.
     pub fn notice(&self) -> Vec<String> {
         self.notice.clone()
     }
 
-    /// The titles of the sections, top to bottom: `Endpoints`, and `Startup`
-    /// where there is a login item.
+    /// The titles of the sections, top to bottom: `Endpoints`, `Storage`, and
+    /// `Startup` where there is a login item.
     pub fn sections(&self) -> Vec<&'static str> {
-        let mut sections = vec![ENDPOINTS];
+        let mut sections = vec![ENDPOINTS, STORAGE];
         if self.login.is_some() {
             sections.push(STARTUP);
         }
@@ -277,6 +332,13 @@ impl SettingsView {
         cx.notify();
     }
 
+    /// The disk cap's text changed: the same as for a port.
+    fn edited_disk_cap(&mut self, text: String, cx: &mut Context<Self>) {
+        self.form.disk_cap_gb = text;
+        self.notice.clear();
+        cx.notify();
+    }
+
     /// The switch was clicked.
     fn set_login(&mut self, on: bool, cx: &mut Context<Self>) {
         self.form.start_at_login = Some(on);
@@ -284,10 +346,13 @@ impl SettingsView {
         cx.notify();
     }
 
-    /// `Apply`: saves the ports and moves the listeners to them
-    /// ([`UiBackend::apply_settings`]), then switches the login item if the
-    /// switch changed, and shows what came of it. It does nothing while
-    /// [`can_apply`](Self::can_apply) is false.
+    /// `Apply`: saves the ports and the disk cap, moves the listeners to the
+    /// ports and gives the engine the cap ([`UiBackend::apply_settings`]), then
+    /// switches the login item if the switch changed, and shows what came of it.
+    /// It does nothing while [`can_apply`](Self::can_apply) is false.
+    ///
+    /// - A disk cap that was not edited is saved as it was: the field holds whole
+    ///   GB, and a file edited by hand can hold something it cannot show.
     ///
     /// - A port that cannot be bound is not a failure of the Apply: it is saved,
     ///   and its line says `failed: <reason>` (and the line beside the buttons
@@ -300,15 +365,19 @@ impl SettingsView {
         if !self.can_apply() {
             return;
         }
-        let Ok(ports) = self.form.validate() else {
+        let (Ok(ports), Ok(cap)) = (self.form.validate(), self.form.validate_disk_cap()) else {
             return;
         };
         // The other settings stay as they are on disk: the form only moves the
-        // ports. The login item is the system's, and is not mirrored in the file.
+        // ports and the cap. The login item is the system's, and is not mirrored
+        // in the file.
         let mut settings = self.backend.settings();
         settings.otlp_grpc_port = ports.otlp_grpc;
         settings.otlp_http_port = ports.otlp_http;
         settings.mcp_port = ports.mcp;
+        if self.form.validate_disk_cap() != self.saved.validate_disk_cap() {
+            settings.disk_cap_bytes = cap;
+        }
 
         self.notice.clear();
         match self.backend.apply_settings(settings) {
@@ -321,6 +390,8 @@ impl SettingsView {
             Ok(listeners) => {
                 self.notice = failures(&listeners);
                 self.listeners = listeners;
+                // The cap is in force now; the next refresh brings the bytes.
+                self.disk.1 = self.backend.status().disk_cap_bytes;
             }
         }
 
@@ -336,7 +407,7 @@ impl SettingsView {
             self.form.start_at_login = Some(login.is_enabled());
         }
 
-        // The ports as they were saved: no blanks, no leading zeros.
+        // The ports and the cap as they were saved: no blanks, no leading zeros.
         let canonical = [
             ports.otlp_grpc.to_string(),
             ports.otlp_http.to_string(),
@@ -353,17 +424,30 @@ impl SettingsView {
                 }
             }
         }
+        let cap_text = (cap / BYTES_PER_GB).to_string();
+        if self.form.disk_cap_gb != cap_text {
+            self.disk_input.update(cx, |input, cx| {
+                input.set_value(cap_text.clone(), window, cx)
+            });
+            self.form.disk_cap_gb = cap_text;
+        }
         self.saved = self.form.clone();
         cx.notify();
     }
 
-    /// Reads the endpoints (and the system's login item, while the switch is
-    /// as it was loaded: the user may change it in System Settings) again.
+    /// Reads the endpoints and the disk (and the system's login item, while the
+    /// switch is as it was loaded: the user may change it in System Settings)
+    /// again.
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let mut changed = false;
-        let listeners = self.backend.status().listeners;
-        if listeners != self.listeners {
-            self.listeners = listeners;
+        let status = self.backend.status();
+        if status.listeners != self.listeners {
+            self.listeners = status.listeners;
+            changed = true;
+        }
+        let disk = (status.disk_bytes, status.disk_cap_bytes);
+        if disk != self.disk {
+            self.disk = disk;
             changed = true;
         }
         if let Some(login) = &self.login
@@ -509,6 +593,71 @@ impl Render for SettingsView {
             .child(caption(&theme, ENDPOINTS))
             .child(panel(&theme).children(rows));
 
+        // --- the storage -------------------------------------------------------------
+        // The line under the input starts where the input does, and so does the
+        // message, which is above it: what is wrong with the number first.
+        let under_input = |ink: Rgba, part: SettingsPart, text: String| {
+            div().pl(px(LABEL_WIDTH + ROW_GAP)).child(
+                div()
+                    .relative()
+                    .text_size(px(12.0))
+                    .text_color(ink)
+                    .child(text)
+                    .child(measure(frame, part)),
+            )
+        };
+        let disk_row =
+            div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .gap(px(1.0))
+                .px(px(14.0))
+                .py(px(5.0))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(ROW_GAP))
+                        .child(
+                            div()
+                                .flex_none()
+                                .w(px(LABEL_WIDTH))
+                                .text_size(px(13.0))
+                                .text_color(theme.text)
+                                .child(DISK_CAP_LABEL),
+                        )
+                        .child(
+                            div()
+                                .relative()
+                                .flex_none()
+                                .w(px(INPUT_WIDTH))
+                                .child(Input::new(&self.disk_input).small())
+                                .child(measure(frame, SettingsPart::DiskCap)),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.5))
+                                .text_color(theme.text_secondary)
+                                .child(DISK_CAP_UNIT),
+                        ),
+                )
+                .children(self.disk_message().map(|message| {
+                    under_input(theme.error_text, SettingsPart::DiskMessage, message)
+                }))
+                .child(under_input(
+                    theme.text_tertiary,
+                    SettingsPart::DiskUsage,
+                    self.disk_usage(),
+                ));
+        let storage = div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(px(5.0))
+            .child(caption(&theme, STORAGE))
+            .child(panel(&theme).child(disk_row));
+
         // --- the login switch --------------------------------------------------------
         let startup = self.form.start_at_login.map(|on| {
             let this = this.clone();
@@ -557,6 +706,7 @@ impl Render for SettingsView {
                     .child(TITLE),
             )
             .child(endpoints)
+            .child(storage)
             .children(startup)
             .overflow_y_scrollbar();
 

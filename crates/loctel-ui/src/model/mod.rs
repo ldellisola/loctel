@@ -4,7 +4,8 @@
 //! design (the formats, the failure display of 9.4, the colours of 9.3) are
 //! tested with plain `assert_eq!`s, and a view only lays out what it is given.
 //!
-//! - [`format`]: durations, clock times, rates, error shares, cut-off text.
+//! - [`format`]: durations, clock times, rates, error shares, sizes on disk,
+//!   cut-off text.
 //! - [`colors`]: [`ServiceColors`](colors::ServiceColors), the colour a
 //!   service keeps for the whole run.
 //! - [`trace_table`]: the rows of the trace table, and the `Failed in` text.
@@ -25,7 +26,8 @@
 //! - [`rules`]: the Discard rules screen's cards and count texts, the total
 //!   dropped, the editor's draft and its validation, and the rule
 //!   `Discard lines like this…` suggests.
-//! - [`settings`]: the Settings window's form and its port validation.
+//! - [`settings`]: the Settings window's form, its port and disk cap
+//!   validation and its storage line.
 //! - [`popover`]: the menu bar popover's pill, stats, endpoints and rows.
 //!
 //! `docs/areas/ui.md` ("Models") has the formats table.

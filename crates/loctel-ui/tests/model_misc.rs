@@ -12,20 +12,32 @@ use loctel_ui::StatusModel;
 use loctel_ui::menu_text::rules_line;
 use loctel_ui::model::popover::{Pill, Popover, Tone, from_status};
 use loctel_ui::model::settings::{
-    DUPLICATE_PORTS, EndpointState, Field, Form, LISTENING, PORT_RANGE, endpoint_state, failures,
+    BYTES_PER_GB, DISK_CAP_LABEL, DISK_CAP_RANGE, DUPLICATE_PORTS, EndpointState, Field, Form,
+    LISTENING, PORT_RANGE, endpoint_state, failures, usage_line,
 };
 
 // --- the Settings form ------------------------------------------------------------
 
 const RANGE: &str = "Enter a port from 1 to 65535";
 const DUPLICATE: &str = "Each endpoint needs its own port";
+const CAP_RANGE: &str = "Enter a size from 1 to 100 GB";
+const GB: u64 = 1024 * 1024 * 1024;
 
 fn form(grpc: &str, http: &str, mcp: &str) -> Form {
     Form {
         grpc: grpc.to_owned(),
         http: http.to_owned(),
         mcp: mcp.to_owned(),
+        disk_cap_gb: "4".to_owned(),
         start_at_login: None,
+    }
+}
+
+/// A form whose ports are the defaults and whose disk cap field holds `text`.
+fn cap_form(text: &str) -> Form {
+    Form {
+        disk_cap_gb: text.to_owned(),
+        ..form("4317", "4318", "4319")
     }
 }
 
@@ -223,6 +235,115 @@ fn the_login_switch_is_not_part_of_the_ports() {
     assert_eq!(f.validate(), Ok(ports(4317, 4318, 4319)));
 }
 
+// --- the disk cap (M5 plan, Task 8) ------------------------------------------------
+
+#[test]
+fn disk_cap_validation() {
+    // The message is the plan's, and a GB is 2^30 bytes (the unit `format::bytes`
+    // and the default cap of 4 GiB use, so the default reads `4`).
+    assert_eq!(DISK_CAP_RANGE, CAP_RANGE);
+    assert_eq!(BYTES_PER_GB, GB);
+
+    // A whole number of GB from 1 to 100, blanks around it ignored, compared as
+    // a number (`04` is 4), is the cap in bytes.
+    for (text, gb) in [
+        ("1", 1),
+        ("4", 4),
+        ("100", 100),
+        (" 8 ", 8),
+        ("\t12\n", 12),
+        ("04", 4),
+        ("0100", 100),
+    ] {
+        assert_eq!(cap_form(text).validate_disk_cap(), Ok(gb * GB), "{text:?}");
+    }
+
+    // Anything else is the message: empty, zero, over the limit, not digits
+    // only, a number that does not fit.
+    for text in [
+        "",
+        "  ",
+        "0",
+        "00",
+        "101",
+        "1000",
+        "-1",
+        "+4",
+        "1.5",
+        "4,5",
+        "4 GB",
+        "4GB",
+        "abc",
+        "1e2",
+        "0x10",
+        "\u{664}",
+        "99999999999999999999999",
+    ] {
+        assert_eq!(
+            cap_form(text).validate_disk_cap(),
+            Err(CAP_RANGE),
+            "{text:?}"
+        );
+    }
+}
+
+#[test]
+fn the_disk_cap_is_not_one_of_the_ports_and_the_form_needs_both_valid() {
+    // `validate` is about the ports only (its results are pinned above), so a bad
+    // cap does not hide behind a port and a bad port does not hide behind the cap.
+    let bad_cap = cap_form("0");
+    assert_eq!(bad_cap.validate(), Ok(ports(4317, 4318, 4319)));
+    assert!(!bad_cap.is_valid());
+
+    let bad_port = Form {
+        grpc: "x".to_owned(),
+        ..cap_form("4")
+    };
+    assert!(bad_port.validate().is_err());
+    assert_eq!(bad_port.validate_disk_cap(), Ok(4 * GB));
+    assert!(!bad_port.is_valid());
+
+    assert!(cap_form("4").is_valid());
+}
+
+#[test]
+fn the_form_starts_from_the_saved_cap_in_whole_gb() {
+    let cap = |bytes: u64| {
+        Form::from(
+            &Settings {
+                disk_cap_bytes: bytes,
+                ..Settings::default()
+            },
+            None,
+        )
+        .disk_cap_gb
+    };
+    assert_eq!(Form::from(&Settings::default(), None).disk_cap_gb, "4");
+    assert_eq!(cap(GB), "1");
+    assert_eq!(cap(100 * GB), "100");
+    // A file edited by hand can hold what the window does not offer. The field
+    // shows the next whole GB up (never a cap lower than the file's), and Apply
+    // leaves the file's value alone until the field is edited.
+    assert_eq!(cap(GB + 1), "2");
+    assert_eq!(cap(GB + GB / 2), "2");
+    assert_eq!(cap(512 * 1024 * 1024), "1");
+    // Out of range, and so refused until it is changed.
+    assert_eq!(cap(0), "0");
+    assert_eq!(cap(200 * GB), "200");
+    assert_eq!(cap(u64::MAX), (u64::MAX.div_ceil(GB)).to_string());
+}
+
+#[test]
+fn the_storage_line_says_what_is_in_use_of_the_cap() {
+    assert_eq!(DISK_CAP_LABEL, "Disk cap");
+    assert_eq!(usage_line(0, 4 * GB), "Using 0 B of 4 GB");
+    assert_eq!(usage_line(GB * 13 / 10, 4 * GB), "Using 1.3 GB of 4 GB");
+    assert_eq!(usage_line(512 * 1024, 4 * GB), "Using 512 KB of 4 GB");
+    assert_eq!(usage_line(12 * GB, 100 * GB), "Using 12 GB of 100 GB");
+    // A cap the window cannot write (a file edited by hand) is said as it is.
+    assert_eq!(usage_line(GB, GB + GB / 2), "Using 1 GB of 1.5 GB");
+}
+
 // --- the Settings window's endpoint lines (M4 plan, Task 6) -----------------------
 
 #[test]
@@ -367,7 +488,7 @@ fn engine(paused: bool, listeners: Vec<ListenerStatus>) -> EngineStatus {
         dropped_spans: 0,
         dropped_logs: 0,
         dropped_fraction: 0.0,
-        disk_bytes: 0,
+        disk_bytes: 1_395_864_371,
         disk_cap_bytes: 4 * 1024 * 1024 * 1024,
         spill_error: None,
     }
@@ -435,16 +556,89 @@ fn the_pill_prefers_a_failed_listener_over_paused_over_receiving() {
 
 #[test]
 fn the_four_stats_are_in_the_plans_order_with_its_labels() {
+    // Since Milestone 5 the fourth tile is the disk (the mockup's), not the
+    // log lines held.
     let popover = from_status(&engine(false, healthy()), None);
     assert_eq!(
         popover.stats,
         [
-            ("413".to_owned(), "spans per second"),
-            ("1.2k".to_owned(), "log lines per second"),
-            ("7".to_owned(), "traces held"),
-            ("1,200,000".to_owned(), "log lines held"),
+            ("413".to_owned(), "spans per second".to_owned()),
+            ("1.2k".to_owned(), "log lines per second".to_owned()),
+            ("7".to_owned(), "traces held".to_owned()),
+            ("1.3 GB".to_owned(), "on disk, cap 4 GB".to_owned()),
         ]
     );
+    assert!(!popover.disk_full);
+}
+
+#[test]
+fn the_disk_tile_is_the_bytes_on_disk_and_the_cap() {
+    let tile = |disk_bytes: u64, disk_cap_bytes: u64| {
+        let mut status = engine(false, healthy());
+        status.disk_bytes = disk_bytes;
+        status.disk_cap_bytes = disk_cap_bytes;
+        from_status(&status, None).stats[3].clone()
+    };
+    let (kb, mb, gb) = (1024, 1024 * 1024, GB);
+    // Nothing on disk (a spill-less run reads the same), the default cap.
+    assert_eq!(
+        tile(0, 4 * gb),
+        ("0 B".to_owned(), "on disk, cap 4 GB".to_owned())
+    );
+    assert_eq!(tile(512 * kb, 4 * gb).0, "512 KB");
+    assert_eq!(tile(250 * mb, 4 * gb).0, "250 MB");
+    assert_eq!(tile(gb * 13 / 10, 4 * gb).0, "1.3 GB");
+    assert_eq!(tile(12 * gb, 100 * gb).1, "on disk, cap 100 GB");
+    // The cap is the one in force, as the engine says it, whole GB or not.
+    assert_eq!(tile(gb, gb * 3 / 2).1, "on disk, cap 1.5 GB");
+}
+
+#[test]
+fn a_spill_error_says_disk_full_in_the_tile_and_the_pill_stays_about_ports() {
+    let mut status = engine(false, healthy());
+    status.spill_error = Some("No space left on device (os error 28)".to_owned());
+    let popover = from_status(&status, None);
+    // The tile says it, and keeps the label (the cap is still what it was).
+    assert_eq!(
+        popover.stats[3],
+        ("Disk full".to_owned(), "on disk, cap 4 GB".to_owned())
+    );
+    assert!(popover.disk_full);
+    // The other tiles are untouched, and the pill is still about the ports.
+    assert_eq!(popover.stats[2].0, "7");
+    assert_eq!(
+        popover.pill,
+        Pill {
+            text: "Receiving",
+            tone: Tone::Ok
+        }
+    );
+
+    // A port problem is still the pill's, with or without a full disk.
+    let failing = vec![failed("otlp-http", 4318)];
+    let both = from_status(
+        &EngineStatus {
+            listeners: failing.clone(),
+            ..status.clone()
+        },
+        None,
+    );
+    assert_eq!(both.pill.text, "Port problem");
+    assert!(both.disk_full);
+    let ports_only = from_status(&engine(false, failing), None);
+    assert_eq!(ports_only.pill.text, "Port problem");
+    assert!(!ports_only.disk_full);
+
+    // Paused with a full disk is paused.
+    let paused = from_status(
+        &EngineStatus {
+            paused: true,
+            ..status
+        },
+        None,
+    );
+    assert_eq!(paused.pill.text, "Paused");
+    assert!(paused.disk_full);
 }
 
 #[test]
@@ -453,14 +647,14 @@ fn rates_use_the_menus_format_and_counts_a_thousands_separator() {
     status.spans_per_sec = 0.4;
     status.logs_per_sec = 1_300_000.0;
     status.stats.traces = 1_234;
-    status.stats.logs = 0;
+    status.disk_bytes = 0;
 
     let stats = from_status(&status, None).stats;
 
     assert_eq!(stats[0].0, "0");
     assert_eq!(stats[1].0, "1.3M");
     assert_eq!(stats[2].0, "1,234");
-    assert_eq!(stats[3].0, "0");
+    assert_eq!(stats[3].0, "0 B");
 }
 
 #[test]

@@ -437,14 +437,19 @@ impl<V: Render + 'static> Driver<V> {
 ///   replacements. There is no file, so nothing changes behind a test's back
 ///   unless it calls these.
 /// - [`UiBackend::apply_settings`] keeps the settings and makes up three
-///   listening listeners at the ports they name (nothing is bound); with
-///   [`FixedBackend::fail_bind`] one of them is `Failed`, and with
-///   [`FixedBackend::fail_save`] the call is an error and nothing changes.
+///   listening listeners at the ports they name (nothing is bound), and the
+///   status says the disk cap they hold, as the engine does once
+///   `set_disk_cap` has been called; with [`FixedBackend::fail_bind`] one of the
+///   listeners is `Failed`, and with [`FixedBackend::fail_save`] the call is an
+///   error and nothing changes.
 /// - [`UiBackend::set_paused`] is remembered.
+/// - [`FixedBackend::set_disk_bytes`] and [`FixedBackend::set_spill_error`] move
+///   the disk of the status while a window is open, as a growing store and a
+///   volume that fills up would.
 ///
-/// [`UiBackend::status`] is [`FixedBackend::status`] with the rules, the pause and
-/// the listeners of those calls laid over it, once they have been made; until then
-/// it is `status` as it is.
+/// [`UiBackend::status`] is [`FixedBackend::status`] with the rules, the pause,
+/// the listeners and the disk cap of those calls laid over it, once they have
+/// been made; until then it is `status` as it is.
 pub struct FixedBackend {
     pub store: Store,
     /// What [`UiBackend::status`] starts from.
@@ -467,6 +472,12 @@ pub struct FixedBackend {
     settings: RefCell<Settings>,
     paused: Cell<Option<bool>>,
     listeners: RefCell<Option<Vec<ListenerStatus>>>,
+    /// What [`set_disk_bytes`](Self::set_disk_bytes) and
+    /// [`set_spill_error`](Self::set_spill_error) laid over the status, and the
+    /// cap of the settings last applied.
+    disk_bytes: Cell<Option<u64>>,
+    disk_cap_bytes: Cell<Option<u64>>,
+    spill_error: RefCell<Option<Option<String>>>,
 }
 
 impl FixedBackend {
@@ -485,7 +496,22 @@ impl FixedBackend {
             settings: RefCell::new(Settings::default()),
             paused: Cell::new(None),
             listeners: RefCell::new(None),
+            disk_bytes: Cell::new(None),
+            disk_cap_bytes: Cell::new(None),
+            spill_error: RefCell::new(None),
         }
+    }
+
+    /// What the status says the segment files take from now on, for a window
+    /// that is already open: it reads it again within a second.
+    pub fn set_disk_bytes(&self, bytes: u64) {
+        self.disk_bytes.set(Some(bytes));
+    }
+
+    /// What the status says is wrong with writing to disk from now on (`None`:
+    /// nothing, as when the volume has room again).
+    pub fn set_spill_error(&self, error: Option<String>) {
+        *self.spill_error.borrow_mut() = Some(error);
     }
 
     fn replaced(&self) {
@@ -515,6 +541,15 @@ impl UiBackend for FixedBackend {
         }
         if let Some(listeners) = &*self.listeners.borrow() {
             status.listeners.clone_from(listeners);
+        }
+        if let Some(bytes) = self.disk_bytes.get() {
+            status.disk_bytes = bytes;
+        }
+        if let Some(cap) = self.disk_cap_bytes.get() {
+            status.disk_cap_bytes = cap;
+        }
+        if let Some(error) = &*self.spill_error.borrow() {
+            status.spill_error.clone_from(error);
         }
         status
     }
@@ -593,6 +628,8 @@ impl UiBackend for FixedBackend {
             listening("otlp-http", s.otlp_http_port),
             listening("mcp", s.mcp_port),
         ];
+        // The engine is given the cap at once (`EngineHandle::set_disk_cap`).
+        self.disk_cap_bytes.set(Some(s.disk_cap_bytes));
         *self.settings.borrow_mut() = s;
         *self.listeners.borrow_mut() = Some(listeners.clone());
         Ok(listeners)

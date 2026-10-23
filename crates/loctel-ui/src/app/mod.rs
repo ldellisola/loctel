@@ -25,7 +25,7 @@
 //! - [`open_main_window`] opens it, and [`show_screen`] shows a screen in a main
 //!   window that is already open, from its handle alone (what the macOS popover's
 //!   `Open loctel` and its rules line do).
-//! - [`open_settings_window`] opens the Settings window (Milestone 4), 520 by 360
+//! - [`open_settings_window`] opens the Settings window (Milestone 4), 520 by 480
 //!   and not resizable, or focuses the one that is open; what it shows is
 //!   [`SettingsView`](crate::views::SettingsView).
 //! - [`Backdrop`] and [`GlassRegion`]: how the shell tells a platform where its

@@ -4,11 +4,16 @@
 //! failing row with the input in the message.
 
 use loctel_ui::model::format::{
-    clock, duration, error_pct, local_utc_offset, rate, truncate_end, truncate_middle,
+    bytes, clock, duration, error_pct, local_utc_offset, rate, truncate_end, truncate_middle,
 };
 
 const MS: u64 = 1_000_000;
 const SECOND: u64 = 1_000 * MS;
+
+const KIB: u64 = 1_024;
+const MIB: u64 = 1_024 * KIB;
+const GIB: u64 = 1_024 * MIB;
+const TIB: u64 = 1_024 * GIB;
 
 /// 2027-01-15T08:00:00Z, the base time the fake mesh is generated at.
 const BASE: u64 = 1_800_000_000 * SECOND;
@@ -212,4 +217,55 @@ fn truncate_middle_and_end() {
     assert_eq!(middle.chars().count(), 80);
     assert!(middle.starts_with(&value[..40]));
     assert!(middle.ends_with(&value[value.len() - 39..]));
+}
+
+#[test]
+fn bytes_format() {
+    let cases: [(u64, &str); 30] = [
+        // Under a kilobyte: whole bytes.
+        (0, "0 B"),
+        (1, "1 B"),
+        (512, "512 B"),
+        (1_023, "1023 B"),
+        // From a kilobyte the units step by 1024. One decimal under 10, and a
+        // value that is whole at that precision has no `.0`: the cap of 4 GiB
+        // reads `4 GB`, which is how the popover and Settings say it.
+        (KIB, "1 KB"),
+        (KIB + KIB / 2, "1.5 KB"),
+        (9 * KIB + KIB / 2, "9.5 KB"),
+        // From 10 whole numbers.
+        (10 * KIB, "10 KB"),
+        (512 * KIB, "512 KB"),
+        (MIB, "1 MB"),
+        (MIB + MIB / 4, "1.3 MB"),
+        (250 * MIB, "250 MB"),
+        (GIB, "1 GB"),
+        (GIB * 13 / 10, "1.3 GB"),
+        (GIB * 27 / 10, "2.7 GB"),
+        (4 * GIB, "4 GB"),
+        (12 * GIB, "12 GB"),
+        (100 * GIB, "100 GB"),
+        (TIB, "1 TB"),
+        (TIB + TIB / 2, "1.5 TB"),
+        // A value that rounds to 10 reads `10`, not `10.0`, and one that
+        // rounds to a whole reads without its decimal.
+        (GIB * 996 / 100, "10 GB"),
+        (GIB * 994 / 100, "9.9 GB"),
+        (GIB * 104 / 100, "1 GB"),
+        // The unit comes from the exact value and the number is rounded in it,
+        // so it never rolls over after rounding.
+        (10 * KIB - 1, "10 KB"),
+        (MIB - 1, "1024 KB"),
+        (GIB - 1, "1024 MB"),
+        // The largest unit is the terabyte, with as many digits as it takes,
+        // and no thousands separator.
+        (TIB * 1_000, "1000 TB"),
+        (u64::MAX, "16777216 TB"),
+        // The sizes are binary: 1.3 GiB is `1.3 GB`, and 1.3 billion bytes is less.
+        (1_395_864_371, "1.3 GB"),
+        (1_300_000_000, "1.2 GB"),
+    ];
+    for (value, expected) in cases {
+        assert_eq!(bytes(value), expected, "bytes({value})");
+    }
 }

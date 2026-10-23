@@ -112,7 +112,7 @@ and what its actions do.
   the display of the screen unknown, GPUI refusing the window) the main window opens
   instead (`open_or_focus`) and the reason is printed once. loctel never becomes
   unreachable.
-- **Settings** opens in a window of its own (520 by 360, one at a time) with the
+- **Settings** opens in a window of its own (520 by 480, one at a time) with the
   activation policy `Regular` while it is open, so that it gets the keyboard and a
   Dock icon; see the next section for when the icon goes.
 
@@ -463,7 +463,7 @@ and report in words what it sees:
   likewise.
 - **The fallback.** Only if you can force it (for instance by denying the window): the
   main window opens instead, with one line on stderr, and loctel stays reachable.
-- **Settings window activation.** `Settings…` opens the window 520 by 360 at the
+- **Settings window activation.** `Settings…` opens the window 520 by 480 at the
   front and focused, with the Dock icon on, even when no other window was open (the
   policy goes `Regular` before the window opens and back to `Accessory` when the last
   loctel window closes; the popover's own window never counts). Asking again brings
