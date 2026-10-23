@@ -1277,8 +1277,10 @@ view and a store whose clock the test moves.
   (`LoadState::Missing`) and keeps polling, so one that arrives shows up.
 - A trace that was on the screen and is gone from the store (the disk cap deleted
   the segment it was in, the trace limit evicted it, the store was cleared) says
-  `This trace is no longer held (the disk cap removed it)` (`NO_LONGER_HELD`,
-  `LoadState::Evicted`; Milestone 5 Task 7), in the middle of the body. The header
+  `This trace is no longer held` over `The disk cap, the trace limit or Clear all
+  removed it.` (`NO_LONGER_HELD` and `NO_LONGER_HELD_HINT`, `LoadState::Evicted`;
+  Milestone 5 Task 7), in the middle of the body. The screen cannot tell which of the
+  three it was, so it names them all. The header
   stays, with the root's name, the numbers, `Copy ID` and the `Back` button (Esc
   too), but not the failure badge or `Complete`. The next read (every 2 s) is what
   finds out; a trace that comes back (a late span, an exporter that retries) shows
@@ -1375,8 +1377,8 @@ selected and in the inspector), `trace_charges_selected_dark.png` (a click on
 Milestone 4 Task 4 for one visible change, the `Open in Logs` button at the right
 of the span-logs header. Milestone 5 Task 7 adds `trace_evicted_dark.png` (the
 failing checkout opened in a spilling store, then the disk cap lowered below what the
-segments take: the header without its badge, and `This trace is no longer held (the
-disk cap removed it)` in the middle). The colours of the services are the
+segments take: the header without its badge, and `This trace is no longer held` with its
+hint in the middle). The colours of the services are the
 session's, in the order the home screen first met them (the health checks of
 `home_store` come first, so `web-bff` is not blue). The monospace face is Inter
 on Linux, as in the table. How the screen looks and scrolls on a Mac is
@@ -2114,7 +2116,7 @@ complete; "empty store" has nothing in it.
 | `logs_query_error_dark` | `logs_screen.rs` | the same, `{service_name="payments-api"` typed | the focused input, `at column 29: expected `,` or `}`` in red under it, the rows kept |
 | `logs_context_dark` | `logs_screen.rs` | the same, the lines around the 600 ms error | the banner `Lines around 08:00:01.440 · Back to search`, `28 lines · oldest first`, the target highlighted, a scrollbar |
 | `logs_10m_middle_dark` | `logs_scale.rs` | 10,000,000 bulk logs (20 us apart, five services) in a spilling store, the list jumped to the middle | a windowed list: the rows at position 5,000,000 from `08:01:40.000`, continuous, the 8 px scrollbar with its thumb in the middle of the track, the `New lines · Jump to newest` pill, `10,000,000 lines · newest first` in the footer and at the right of the toggles |
-| `trace_evicted_dark` | `logs_scale.rs` | the failing checkout in a spilling store, opened, then the disk cap set to 1 byte | the trace view of a trace the store dropped: the header (name, numbers, `Copy ID`, `Back`) and `This trace is no longer held (the disk cap removed it)` in the middle of the body |
+| `trace_evicted_dark` | `logs_scale.rs` | the failing checkout in a spilling store, opened, then the disk cap set to 1 byte | the trace view of a trace the store dropped: the header (name, numbers, `Copy ID`, `Back`) and `This trace is no longer held` over `The disk cap, the trace limit or Clear all removed it.` in the middle of the body |
 | `rules_dark`, `rules_light` | `rules_screen.rs` | the rules store (failing and successful checkout, 600 health checks), three rules, 1,500 health checks and 40,000 log lines sent through them, 31% dropped | the Discard rules screen: header, subtitle and `New rule`, three cards (`1,500 spans dropped in 1,500 traces`, `1,217 lines dropped`, `Off` with its switch off) |
 | `rules_editor_dark` | `rules_screen.rs` | the same rules (only the health checks counted), a click on the first card | that card with its accent ring and the editor beside it: name, `Traces (TraceQL)` chosen, the query, the whole-trace radio, the preview with 600 spans in 600 traces, `Save`, `Cancel`, `Delete` |
 | `rules_empty_dark` | `rules_screen.rs` | no rules | `No discard rules. Nothing is dropped unless you add one.` and `Nothing dropped yet` |

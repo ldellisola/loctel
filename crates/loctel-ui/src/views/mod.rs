@@ -81,7 +81,7 @@ pub use trace_table_view::{
 };
 pub use trace_view::{
     BACK_LABEL, INSPECTOR_MAX_WIDTH, INSPECTOR_MIN_WIDTH, INSPECTOR_WIDTH, LOADING, MISSING,
-    MISSING_HINT, NO_LONGER_HELD, TracePart, TraceView, TraceViewEvent,
+    MISSING_HINT, NO_LONGER_HELD, NO_LONGER_HELD_HINT, TracePart, TraceView, TraceViewEvent,
 };
 pub use waterfall_view::{
     NO_ERRORS, ROW_HEIGHT as WATERFALL_ROW_HEIGHT, RULER_HEIGHT, WaterfallView,

@@ -74,9 +74,13 @@ pub const MISSING: &str = "This trace is not in the store";
 /// And why that can be.
 pub const MISSING_HINT: &str = "It may have been evicted or cleared.";
 /// What it says when the trace it shows was held and the store dropped it: the
-/// disk cap deleted the segment file it was in (Milestone 5), or the trace limit
-/// evicted it. The header's `Back` button is still there.
-pub const NO_LONGER_HELD: &str = "This trace is no longer held (the disk cap removed it)";
+/// disk cap deleted the segment file it was in (Milestone 5), the trace limit
+/// evicted it, or the store was cleared. The header's `Back` button is still
+/// there.
+pub const NO_LONGER_HELD: &str = "This trace is no longer held";
+/// And what can have dropped it. The screen cannot tell which, so it names
+/// them all rather than blame one.
+pub const NO_LONGER_HELD_HINT: &str = "The disk cap, the trace limit or Clear all removed it.";
 
 fn rgba(color: Rgba, alpha: f32) -> Rgba {
     Rgba { a: alpha, ..color }
@@ -336,7 +340,9 @@ impl Render for TraceView {
             LoadState::Loaded => self.body(&theme).into_any_element(),
             LoadState::Loading => centered(&theme, LOADING, None).into_any_element(),
             LoadState::Missing => centered(&theme, MISSING, Some(MISSING_HINT)).into_any_element(),
-            LoadState::Evicted => centered(&theme, NO_LONGER_HELD, None).into_any_element(),
+            LoadState::Evicted => {
+                centered(&theme, NO_LONGER_HELD, Some(NO_LONGER_HELD_HINT)).into_any_element()
+            }
         };
 
         div()

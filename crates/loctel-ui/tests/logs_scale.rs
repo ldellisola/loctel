@@ -32,7 +32,7 @@ use loctel_ui::model::logs::{
 };
 use loctel_ui::model::window::{Anchor, MIN_THUMB_PX, RowWindow};
 use loctel_ui::testing::{Driver, FixedBackend, assert_snapshot};
-use loctel_ui::views::{LogsPart, LogsView, NO_LONGER_HELD, TracePart};
+use loctel_ui::views::{LogsPart, LogsView, NO_LONGER_HELD, NO_LONGER_HELD_HINT, TracePart};
 
 use common::{BASE, SECOND, SEED, WINDOW, failing_trace_id, feed, open_trace, part_center};
 
@@ -1142,9 +1142,10 @@ fn evicted_open_trace_shows_gone() {
         driver.draw();
     }
     assert_eq!(driver.read(|cx| model.read(cx).state()), LoadState::Evicted);
+    assert_eq!(NO_LONGER_HELD, "This trace is no longer held");
     assert_eq!(
-        NO_LONGER_HELD,
-        "This trace is no longer held (the disk cap removed it)"
+        NO_LONGER_HELD_HINT,
+        "The disk cap, the trace limit or Clear all removed it."
     );
     assert_eq!(
         driver.read(|cx| trace.read(cx).notice(cx)),
