@@ -167,6 +167,48 @@ fn spill_defaults_match_the_plan() {
 }
 
 #[test]
+fn a_store_with_a_run_directory_keeps_ten_million_logs() {
+    // The default is the limit of a store in memory. A store that spills keeps
+    // far more (decision 0053): the app has to hold the 10M+ lines of design
+    // 9.2, and its disk cap, not the count, is what is meant to decide.
+    assert_eq!(StoreConfig::SPILLING_MAX_LOG_RECORDS, 20_000_000);
+    let spilling = StoreConfig::default().with_spill_limits();
+    assert!(spilling.max_log_records >= 10_000_000, "{spilling:?}");
+    assert_eq!(
+        spilling.max_log_records,
+        StoreConfig::SPILLING_MAX_LOG_RECORDS
+    );
+    // The trace limit stays: a cold trace costs about 1.3 KB of the index (10M
+    // spans took 2.4 GB resident), so it is memory that bounds it.
+    assert_eq!(spilling.max_traces, StoreConfig::default().max_traces);
+    // Nothing else moves.
+    assert_eq!(
+        spilling,
+        StoreConfig {
+            max_log_records: StoreConfig::SPILLING_MAX_LOG_RECORDS,
+            ..StoreConfig::default()
+        }
+    );
+}
+
+#[test]
+fn a_limit_that_was_chosen_is_not_raised_for_spilling() {
+    let default = StoreConfig::default();
+    // Lower than the default (a test, a user who wants less) stays.
+    let few = StoreConfig {
+        max_log_records: 1_234,
+        ..default.clone()
+    };
+    assert_eq!(few.clone().with_spill_limits(), few);
+    // Higher than what spilling gives stays too (the performance budgets).
+    let many = StoreConfig {
+        max_log_records: 100_000_000,
+        ..default
+    };
+    assert_eq!(many.clone().with_spill_limits(), many);
+}
+
+#[test]
 fn spilling_for_tests_exercises_every_cold_path() {
     let config = StoreConfig::spilling_for_tests(PathBuf::from("/some/dir"));
     assert_eq!(config.spill_dir, Some(PathBuf::from("/some/dir")));

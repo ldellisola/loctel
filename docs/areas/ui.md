@@ -580,7 +580,9 @@ Pinned in `tests/model_logs.rs`, over the fixed fake mesh's seven checkout logs.
   third, two thirds and the end of the range (cut to a millisecond, not rounded).
 
 - Milestone 5 Task 7 added what a list of ten million lines needs, pinned in
-  `tests/logs_scale.rs`:
+  `tests/logs_scale.rs` (whose store has the log limit the app's has, 20,000,000: an
+  engine with a run directory raises the store's default of 5,000,000, decision 0053, so
+  the 10M list is one the shipped app reaches):
   - `model::window::RowWindow` is where such a list is scrolled to, in rows.
     A 10,000,000-row list of 30 px rows is 300 million pixels, and GPUI's `f32`
     pixels cannot tell which row is on top past about 16 million, so the window

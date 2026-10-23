@@ -16,7 +16,9 @@ pub struct StoreConfig {
     /// evicted whole.
     pub max_traces: usize,
     /// Most log records kept. Past this, the oldest (by log time) are
-    /// evicted.
+    /// evicted. The default is the limit of a store in memory; the engine raises
+    /// it to [`SPILLING_MAX_LOG_RECORDS`](Self::SPILLING_MAX_LOG_RECORDS) when it
+    /// has a run directory ([`with_spill_limits`](Self::with_spill_limits)).
     pub max_log_records: usize,
     /// How long a trace must go without a new span to count as complete.
     pub completeness_quiet: Duration,
@@ -83,6 +85,38 @@ impl Default for StoreConfig {
 }
 
 impl StoreConfig {
+    /// The most log records a store that spills keeps (decision 0053), where a
+    /// store in memory keeps [`max_log_records`](Self::max_log_records)'s default
+    /// of 5,000,000: twice the 10 million lines the Logs screen has to scroll
+    /// through (design 9.2), so that the disk cap and not the count is what
+    /// decides what goes. A log costs about 15 bytes of memory once it is in a
+    /// segment (the dedup keys and the counts of its block), so every 10 million
+    /// more cost about 150 MB resident; measured with 1,000,000 spans beside
+    /// them, 20 million logs make 1,061 MB, under the 1.5 GB of `rss_10m`.
+    pub const SPILLING_MAX_LOG_RECORDS: usize = 20_000_000;
+
+    /// `self` with the limits of a store that has somewhere to put what it
+    /// keeps: `max_log_records` goes from the default of a store in memory to
+    /// [`SPILLING_MAX_LOG_RECORDS`](Self::SPILLING_MAX_LOG_RECORDS). A limit that
+    /// was set to anything else is the caller's choice and stays (a test that
+    /// wants a store that forgets after four logs, a harness that holds more).
+    ///
+    /// `max_traces` stays too. What a trace costs in memory once it is cold is its
+    /// index entry, about 1.3 KB (a store of 10 million spans, a million traces,
+    /// took 2.4 GB resident), so a count that held 10 million spans would break
+    /// the memory budget by itself; the 200,000 traces it keeps are 2 million spans
+    /// of the shape the budgets use.
+    ///
+    /// The engine calls this once it has made its run directory (`spill_base` of
+    /// `EngineConfig`), and not when it falls back to memory.
+    #[must_use]
+    pub fn with_spill_limits(mut self) -> StoreConfig {
+        if self.max_log_records == StoreConfig::default().max_log_records {
+            self.max_log_records = Self::SPILLING_MAX_LOG_RECORDS;
+        }
+        self
+    }
+
     /// A config that spills into `dir` as eagerly as it can: a trace goes to a
     /// segment the moment it is complete (`spill_after` is zero), a segment
     /// rolls every 4 KiB, the oldest complete traces go early past 16 hot

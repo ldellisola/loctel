@@ -104,6 +104,13 @@ pub struct EngineConfig {
     /// engine: it runs in memory and says why in
     /// [`EngineStatus::spill_error`].
     ///
+    /// With the directory made, `store.max_log_records` is also raised from its
+    /// default (5,000,000, a store in memory) to
+    /// [`StoreConfig::SPILLING_MAX_LOG_RECORDS`] (20,000,000), so that the app
+    /// holds the ten million lines the Logs screen is for, and a limit set to
+    /// anything else stays (see [`StoreConfig::with_spill_limits`]). Without it
+    /// the limits are the ones given.
+    ///
     /// Either way `store.disk_cap_bytes` is replaced by
     /// `settings.disk_cap_bytes` at start.
     pub spill_base: Option<PathBuf>,
@@ -220,6 +227,10 @@ impl Engine {
             match RunDir::create(base) {
                 Ok(dir) => {
                     store.spill_dir = Some(dir.path().to_path_buf());
+                    // A store with a place for its logs is not held to the count
+                    // of one in memory: the Logs screen scrolls through ten
+                    // million lines (decision 0053).
+                    store = store.with_spill_limits();
                     run_dir = Some(dir);
                 }
                 Err(error) => {

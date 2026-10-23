@@ -469,9 +469,12 @@ twenty seconds). Report what you see, and say which item it is, the items that p
    --repeat 600 --interval-ms 1000` and `cargo run -p loctel-meshgen -- --scenario
    checkout-failure --transport http-json --endpoint http://127.0.0.1:4318 --repeat 600
    --interval-ms 1000`. Write down loctel's `Memory` at the start and after 2, 5 and 10
-   minutes. *Right:* it rises at first and then levels off (the Linux budget for ten
-   million lines and a million spans is 1.5 GB, so a few hundred MB here is expected); it
-   does not keep climbing the whole ten minutes. Say what the numbers were, and whether
+   minutes. *Right:* it rises at first and then levels off, apart from a slow climb of
+   about 10 MB a minute (the index of the Logs list takes about 15 bytes for every line
+   kept, and this stream is ten thousand a second; loctel keeps up to 20 million lines, so
+   the climb only stops far past these ten minutes). The Linux budget for ten million
+   lines and a million spans is 1.5 GB, so a few hundred MB here is expected; it does not
+   jump or keep accelerating. Say what the numbers were, and whether
    the window stayed responsive and the popover's tile kept growing.
 6. **The light theme.** In System Settings, Appearance, choose Light (loctel follows).
    Look over every screen: Map & traces, a trace (open one from the table), Logs (with a

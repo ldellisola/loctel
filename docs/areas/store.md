@@ -118,8 +118,8 @@ The rules that hold it together:
   chunk seals" and "The disk cap" for what each costs).
 - **Memory is bounded by what is hot, and by two limits that always applied.**
   `max_traces` and `max_log_records` still evict the oldest whole trace and the oldest
-  logs, so a store whose disk is full (see "A failing disk") keeps working in memory up
-  to them. `HOT_MAX_SPANS` is how a flood of complete traces leaves memory before
+  logs (20,000,000 logs in a store that has a run directory, decision 0053), so a store
+  whose disk is full (see "A failing disk") keeps working in memory up to them. `HOT_MAX_SPANS` is how a flood of complete traces leaves memory before
   `SPILL_AFTER` runs out.
 - **Eviction by the cap is by whole segment.** A trace is one record in one file, so a
   trace is held whole or not at all, and a chunk of logs likewise. The price is that the
@@ -202,7 +202,7 @@ store.clear();
   | Field | Default | Meaning |
   |---|---|---|
   | `max_traces` | 200,000 | past this, the oldest trace is evicted whole |
-  | `max_log_records` | 5,000,000 | past this, the oldest log records are evicted |
+  | `max_log_records` | 5,000,000 | past this, the oldest log records are evicted; 20,000,000 in a store that has a run directory (see below) |
   | `completeness_quiet` | 10 s | quiet time after which a trace is complete |
   | `spill_dir` | `None` | where the segment files go; `None` keeps everything in memory |
   | `spill_after` | 30 s | how long a complete trace stays in memory before it is spilled |
@@ -213,6 +213,17 @@ store.clear();
   | `log_chunk_max` | 65,536 | logs the open chunk takes before it is sealed |
   | `log_block_rows` | 1,024 | logs in a block of a chunk written to a segment: the unit `logs_at` reads (see "Blocks") |
   | `log_chunk_age` | 10 s | how long the open chunk may stay open, from its first log, before it is sealed |
+
+  **The log limit of a store that spills.** 5,000,000 is the limit of a store in memory (what
+  `--no-spill` and a run directory that could not be made keep). The engine, once it has made
+  its run directory, calls `StoreConfig::with_spill_limits`, which raises `max_log_records` to
+  `StoreConfig::SPILLING_MAX_LOG_RECORDS`, 20,000,000, when it is still the default, so that the
+  app holds the 10M+ lines of design 9.2 and the disk cap, not the count, is what decides what
+  goes (five million bulk logs are 150 MB on disk). A limit set to anything else stays.
+  `max_traces` is not raised: a cold trace costs about 1.3 KB of memory (10M spans took 2.4 GB
+  resident), so the app keeps 200,000 traces, 2M spans of the budgets' shape. Why 20M, the
+  measurements and the memory it costs (about 150 MB per ten million logs): decision
+  [0053](../decisions/0053-the-app-keeps-twenty-million-logs.md).
 
   `StoreConfig::spilling_for_tests(dir)` (hidden from the docs) is the config
   the tests spill with: `spill_after` 0, `segment_max_bytes` 4 KiB,

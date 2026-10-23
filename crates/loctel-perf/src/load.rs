@@ -28,16 +28,20 @@ pub const SEED: u64 = 1;
 /// How many converted batches wait for the store.
 const QUEUE: usize = 8;
 
-/// The store config of the big-data budgets: the defaults, spilling into `dir`,
-/// with the limits raised past what the budgets load (the app's defaults are
-/// 200,000 traces and 5,000,000 logs, and a budget over ten million logs must
-/// not measure a store that evicted half of them) and the disk cap past what
-/// ten million of each take.
+/// The store config of the big-data budgets: the defaults, spilling into `dir`.
+/// The log limit is the app's own (a store with a run directory keeps
+/// 20,000,000 logs, decision 0053), so that a budget over ten million logs
+/// measures what the app holds, and `expect_held` fails if that limit ever drops
+/// below what the budgets load. The trace limit is raised past what the budgets
+/// load (the app keeps 200,000 traces, and the ten million spans of
+/// `traceql_first_page` are a million of them: the app does not hold that many,
+/// since a cold trace costs about 1.3 KB of memory) and so is the disk cap, past
+/// what ten million of each take.
 pub fn store_config(dir: &Path) -> StoreConfig {
     StoreConfig {
         spill_dir: Some(dir.to_path_buf()),
         max_traces: 20_000_000,
-        max_log_records: 100_000_000,
+        max_log_records: StoreConfig::SPILLING_MAX_LOG_RECORDS,
         disk_cap_bytes: 64 * 1024 * 1024 * 1024,
         ..StoreConfig::default()
     }

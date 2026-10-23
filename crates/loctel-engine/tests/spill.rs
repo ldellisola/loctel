@@ -7,11 +7,13 @@
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use loctel_engine::{Engine, EngineConfig, EngineHandle, ListenerState, Settings, StoreConfig};
 use loctel_meshgen::{Scenario, Transport, generate};
+use loctel_model::{AttrValue, LogRecord, Resource, Severity};
 
 const GIB: u64 = 1024 * 1024 * 1024;
 
@@ -149,6 +151,69 @@ fn engine_status_reports_disk() {
         engine.status().stats.spilled_traces == 1
     });
     assert!(engine.status().disk_bytes > 0);
+    engine.shutdown();
+}
+
+/// `count` logs of one service, a microsecond apart from `first_micro` on, so
+/// that none is another's retry (the store drops those) and the oldest is the
+/// first.
+fn logs(first_micro: u64, count: usize) -> Vec<LogRecord> {
+    let resource = Arc::new(Resource {
+        attributes: vec![(
+            "service.name".to_owned(),
+            AttrValue::Str("bulk-api".to_owned()),
+        )],
+    });
+    (0..count as u64)
+        .map(|i| {
+            let time = (first_micro + i) * 1_000;
+            LogRecord {
+                time_unix_nano: time,
+                observed_unix_nano: time,
+                severity: Severity::Info,
+                severity_text: "INFO".to_owned(),
+                body: format!("line {}", first_micro + i),
+                attributes: vec![],
+                trace_id: None,
+                span_id: None,
+                resource: Arc::clone(&resource),
+                scope_name: "bulk".to_owned(),
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn a_spilling_engine_keeps_more_logs_than_a_store_in_memory_does() {
+    // The app's engine has a run directory, and a store that has one is not held
+    // to the 5,000,000 logs of a store in memory (decision 0053): the Logs
+    // screen is meant to scroll through ten million, and the disk cap decides
+    // what goes.
+    let in_memory = StoreConfig::default().max_log_records;
+    let base = tempfile::tempdir().unwrap();
+    let engine = Engine::start(EngineConfig {
+        // The store's own sizes (a chunk of 65,536 logs), not the tiny ones the
+        // other tests spill with: this is five million logs.
+        store: StoreConfig::default(),
+        ..config(Some(base.path()))
+    })
+    .unwrap();
+
+    let total = in_memory + 100_000;
+    let batch = 100_000;
+    let first = 1_700_000_000_000_000_u64 / 1_000;
+    for start in (0..total).step_by(batch) {
+        engine
+            .store()
+            .ingest_logs(logs(first + start as u64, batch.min(total - start)));
+    }
+
+    let stats = engine.status().stats;
+    assert_eq!(stats.logs_received, total as u64);
+    assert_eq!(
+        stats.logs, total,
+        "the oldest logs were evicted at the limit of a store in memory: {stats:?}"
+    );
     engine.shutdown();
 }
 

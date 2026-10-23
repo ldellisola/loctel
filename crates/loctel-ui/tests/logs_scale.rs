@@ -371,13 +371,16 @@ fn a_search_is_indexed_when_it_is_a_service_and_levels() {
 
 // --- the data -------------------------------------------------------------------------------
 
-/// A store that spills, with the limits raised so that it holds everything the
-/// tests put in, and `chunk` logs to a chunk of its log segments.
+/// A store that spills, with the log limit of the app's (a store with a run
+/// directory keeps 20,000,000 logs, decision 0053: what the engine passes, so that
+/// the ten million lines of these tests are ones the app holds) and the other
+/// limits raised so that it holds everything the tests put in, and `chunk` logs to a
+/// chunk of its log segments.
 fn store_config(dir: &Path, chunk: usize) -> StoreConfig {
     StoreConfig {
         spill_dir: Some(dir.to_path_buf()),
         max_traces: 1_000_000,
-        max_log_records: 100_000_000,
+        max_log_records: StoreConfig::SPILLING_MAX_LOG_RECORDS,
         disk_cap_bytes: 64 * 1024 * 1024 * 1024,
         log_chunk_max: chunk,
         log_block_rows: 512,

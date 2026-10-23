@@ -67,7 +67,10 @@ budget that failed (`logs_at`, decision 0050).
   traces, 5,000,000 logs, 4 GiB) would evict half of what a budget over ten million logs
   is meant to read. This is the harness's config, not a change to the app's defaults (a
   store that holds ten million logs, like the one Task 7's test builds, has to raise them
-  too).
+  too). **Superseded in part by decision 0053:** the app does keep 20,000,000 logs when it
+  has a run directory, and the harness takes its log limit from that
+  (`StoreConfig::SPILLING_MAX_LOG_RECORDS`) instead of 100,000,000; the trace limit and the
+  disk cap stay raised.
 - **Spans first, then logs, in the store of the log budgets.** The 1M spans of `rss_10m`
   go in first; the 200 seconds of logs after them carry the clock far enough that the
   spans are complete and on disk when the number is read, which is what a long run looks

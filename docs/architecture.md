@@ -252,7 +252,8 @@ What other crates rely on:
   cursor (`Page`, `PageRequest`).
 - **Logs.** `Store::ingest_logs` keeps log records in time order (observed
   time when the timestamp is unset), drops exporter retries by
-  `LogRecord::dedup_key()` and evicts the oldest past `max_log_records`.
+  `LogRecord::dedup_key()` and evicts the oldest past `max_log_records` (5,000,000;
+  20,000,000 in the app, whose store has a run directory).
   `Store::search_logs` filters by time window (`since` inclusive, `until`
   exclusive), service, minimum severity, a set of levels (`LogFilter::levels`),
   body text (case-insensitive), trace and span, newest first with the same keyset
@@ -526,9 +527,13 @@ and, for the rules,
   the directories of runs whose process is gone first), has the store spill into it
   and deletes it at `shutdown` (and when the last handle is dropped). The app passes
   `default_spill_base()`, `$TMPDIR/loctel`, unless it was started with `--no-spill`;
-  the default (`None`) keeps everything in memory, which is what the tests want. A
-  directory that cannot be made does not stop the engine: it runs in memory and says
-  why in `EngineStatus::spill_error`. After `shutdown` the store still answers for
+  the default (`None`) keeps everything in memory, which is what the tests want. With
+  the directory made, the engine also raises the store's log limit from the 5,000,000 of
+  a store in memory to 20,000,000 (`StoreConfig::with_spill_limits`, decision
+  [0053](decisions/0053-the-app-keeps-twenty-million-logs.md)), which is what lets the
+  app hold the ten million lines of the Logs screen; the trace limit stays 200,000. A
+  directory that cannot be made does not stop the engine: it runs in memory, with the
+  limits it was given, and says why in `EngineStatus::spill_error`. After `shutdown` the store still answers for
   what it holds in memory, and what was spilled is gone with the directory.
 
 ## Headless mode

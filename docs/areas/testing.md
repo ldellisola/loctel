@@ -485,8 +485,9 @@ How each is measured:
 - **The data** is built in the process through the store, with `loctel-meshgen`'s bulk
   generators and the real OTLP converter, on a `ManualClock` that follows the data (so
   traces complete and spill, and logs seal, as in a long run); the limits of the store
-  are raised past what a budget loads (`max_traces` 20M, `max_log_records` 100M, 64 GiB
-  of disk cap) and the run fails if the store does not hold everything it was given.
+  are raised past what a budget loads (`max_traces` 20M, 64 GiB of disk cap; the log limit is
+  the app's own, `StoreConfig::SPILLING_MAX_LOG_RECORDS`, 20M, decision 0053) and the run fails
+  if the store does not hold everything it was given.
   The log budgets share one store (1M spans, then 10M logs) and `rss_10m` is read first,
   before a query has filled the caches; `traceql_first_page` has a store of 10M spans of
   its own, settled so that they are in segment files. `ingest` is the exception: a real
